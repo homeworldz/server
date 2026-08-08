@@ -273,6 +273,44 @@ int main() {
         if (parsed_rig->high.empty()) return 44;
         if (parsed_rig->high.front().influences.empty()) return 45;
 
+        // bind_shape_matrix must carry the stored geometry back to the space the
+        // inverse bind matrices are written in. Stored positions are normalized
+        // to about half a unit; the joints are metres apart. Identity here skins
+        // one against the other, which is a body drawn as stretched spikes that
+        // still animates (in-world, 2026-08-08).
+        //
+        // Asserted as a round trip rather than by reading the matrix: put every
+        // stored vertex through bind_shape and the bounding box must come back
+        // to what the GLB declared, on the region's axes. That fails for a wrong
+        // matrix whatever shape the wrongness takes, including the identity this
+        // shipped with.
+        {
+            const auto& submesh = parsed_rig->high.front();
+            if (submesh.positions.empty()) return 47;
+            const auto& bind_shape = parsed_rig->skin->bind_shape;
+            std::array<float, 3> low{std::numeric_limits<float>::max(),
+                                     std::numeric_limits<float>::max(),
+                                     std::numeric_limits<float>::max()};
+            std::array<float, 3> high{std::numeric_limits<float>::lowest(),
+                                      std::numeric_limits<float>::lowest(),
+                                      std::numeric_limits<float>::lowest()};
+            for (const auto& position : submesh.positions)
+                for (int axis = 0; axis < 3; ++axis) {
+                    const auto value = position[axis] * bind_shape[axis * 4 + axis] +
+                                       bind_shape[12 + axis];
+                    low[axis] = (std::min)(low[axis], value);
+                    high[axis] = (std::max)(high[axis], value);
+                }
+            // The GLB declares min [0,0,0] max [1,1,0]; on the region's axes
+            // (x,y,z) <- (z,x,y) that is [0,0,0] to [0,1,1].
+            const std::array<float, 3> expected_low{0.0f, 0.0f, 0.0f};
+            const std::array<float, 3> expected_high{0.0f, 1.0f, 1.0f};
+            for (int axis = 0; axis < 3; ++axis) {
+                if (std::fabs(low[axis] - expected_low[axis]) > 0.01f) return 48;
+                if (std::fabs(high[axis] - expected_high[axis]) > 0.01f) return 49;
+            }
+        }
+
         // An alias resolves to its canonical joint rather than being carried
         // through: what a viewer resolves and what the asset says should not
         // differ, or two readers of the same file disagree about the skeleton.

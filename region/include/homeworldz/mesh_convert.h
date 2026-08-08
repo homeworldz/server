@@ -112,7 +112,7 @@ TextureExtraction extract_textures(std::span<const std::byte> glb);
 // a predecessor produced is a model facing the wrong way and reconverts. This is
 // what makes the correction free: canonical assets are stored as uploaded and
 // never rewritten, so nothing a creator sent is lost or has to be re-sent.
-inline constexpr const char* generator = "meshsmith/0.9";
+inline constexpr const char* generator = "meshsmith/0.10";
 
 } // namespace homeworldz::mesh
 

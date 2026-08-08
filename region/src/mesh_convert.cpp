@@ -498,6 +498,26 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             for (int axis = 0; axis < 3; ++axis)
                 position[axis] = (position[axis] - bounds.center[axis]) / bounds.extent[axis];
 
+    // A rigged mesh is the exception to the paragraph above. Worn, it is not
+    // scaled by its prim at all: the viewer drives its vertices with the
+    // skeleton, in metres. bind_shape_matrix is the transform that carries the
+    // normalization back out, and llmodel folds it in as
+    // bind_shape * inverse_bind before skinning.
+    //
+    // Left identity — as it was — the viewer skins geometry spanning half a
+    // unit with joint matrices metres apart. The result renders as stretched
+    // spikes and animates correctly while doing it, because the rig is right
+    // and only the space it is applied in is wrong (in-world, 2026-08-08).
+    //
+    // Scale and translation only, so the flat array reads the same whether the
+    // consumer treats it as row- or column-major: a diagonal 3x3 is its own
+    // transpose, and the translation sits at 12..14 under both conventions.
+    if (skin)
+        skin->bind_shape = {bounds.extent[0], 0.0f, 0.0f, 0.0f,
+                            0.0f, bounds.extent[1], 0.0f, 0.0f,
+                            0.0f, 0.0f, bounds.extent[2], 0.0f,
+                            bounds.center[0], bounds.center[1], bounds.center[2], 1.0f};
+
     // Compact the joint table to what the mesh actually moves.
     //
     // Blender writes every armature bone into the shared skin whatever each
