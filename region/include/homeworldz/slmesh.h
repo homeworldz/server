@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <span>
 #include <string>
 #include <vector>
@@ -56,6 +57,16 @@ struct Submesh {
 // proportions differ from the default skeleton ships its own joint positions
 // here rather than deforming wrongly. Empty means "use the skeleton's", which
 // is what a body rigged to the standard proportions wants.
+// Matrices here are glTF's flat 16 floats — column-major, column vector,
+// translation at 12..14 — and they are written to the asset unchanged.
+//
+// That looks wrong and is not, which is why it is written down. The viewer
+// reads them row-major into a row-vector LLMatrix4 (llmodel.cpp:
+// mMatrix[j][k] = flat[j*4+k]). Those two conventions are duals: both compute
+// result[i] = sum_k flat[k*4+i] * p[k] + flat[12+i]. Transposing on the way out
+// to "correct" the convention introduces exactly the defect it looks like it is
+// preventing. A test in slmesh_test asserts the duality; it was written while
+// making that mistake, and it caught it.
 struct Skin {
     std::vector<std::string> joints;
     std::vector<std::array<float, 16>> inverse_bind;

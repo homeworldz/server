@@ -159,5 +159,45 @@ int main() {
     mismatched.skin->inverse_bind.pop_back();
     if (!serialize(mismatched).empty()) return 43;
 
+    // Matrices go into the asset as they are held, and this asserts why that is
+    // right rather than an oversight. We hold glTF's flat 16 (column-major,
+    // column vector); the viewer reads row-major into a row-vector LLMatrix4.
+    // Those conventions are duals — both compute
+    // result[i] = sum_k flat[k*4+i] * p[k] + flat[12+i] — so the same bytes mean
+    // the same transform to both readers, and a transpose "to convert between
+    // them" introduces the error it appears to remove.
+    //
+    // Written while making that mistake, chasing arms that folded the wrong way.
+    // It failed on the transposed version before it could ship, and the arms
+    // turned out to be something else.
+    //
+    // A quarter turn about x with a translation: asymmetric, so a transpose
+    // cannot hide in it.
+    {
+        const std::array<float, 16> matrix{
+            1, 0, 0, 0,      // column 0
+            0, 0, 1, 0,      // column 1: y -> z
+            0, -1, 0, 0,     // column 2: z -> -y
+            0.25f, 0.5f, 0.75f, 1};
+        const std::array<float, 3> point{2.0f, 3.0f, 5.0f};
+        // Column-major, column vector: p' = M * p.
+        std::array<float, 3> as_gltf{};
+        for (int row = 0; row < 3; ++row) {
+            float sum = matrix[12 + row];
+            for (int k = 0; k < 3; ++k) sum += matrix[k * 4 + row] * point[k];
+            as_gltf[row] = sum;
+        }
+        // Row-major, row vector, the way llmodel reads it: mMatrix[j][k] =
+        // flat[j*4+k], translation in row 3, p' = p * M.
+        std::array<float, 3> as_viewer{};
+        for (int column = 0; column < 3; ++column) {
+            float sum = matrix[3 * 4 + column];
+            for (int k = 0; k < 3; ++k) sum += point[k] * matrix[k * 4 + column];
+            as_viewer[column] = sum;
+        }
+        for (int axis = 0; axis < 3; ++axis)
+            if (std::fabs(as_gltf[axis] - as_viewer[axis]) > 1e-5f) return 44;
+    }
+
     return 0;
 }
