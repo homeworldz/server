@@ -1677,6 +1677,89 @@ int main() {
         if (homeworldz::viewer::decode_object_detach(detach)) return 36;
     }
     {
+        // RezMultipleAttachmentsFromInv: the message a viewer actually sends.
+        // Built to the layout of the viewer's own sender (llattachmentsmgr.cpp),
+        // batched two objects to a packet the way it batches four.
+        std::vector<std::byte> batch{std::byte{0xff}, std::byte{0xff},
+                                     std::byte{0x01}, std::byte{0x8c}};
+        const auto push_uuid = [&](std::uint8_t fill) {
+            for (int index = 0; index < 16; ++index) batch.push_back(std::byte{fill});
+        };
+        const auto push_u32 = [&](std::uint32_t value) {
+            for (int shift = 0; shift < 32; shift += 8)
+                batch.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+        };
+        const auto push_string = [&](const std::string& text) {
+            batch.push_back(static_cast<std::byte>(text.size() + 1));
+            for (const char character : text) batch.push_back(static_cast<std::byte>(character));
+            batch.push_back(std::byte{});   // the viewer's trailing NUL
+        };
+        push_uuid(0xa1);                    // AgentID
+        push_uuid(0xb2);                    // SessionID
+        push_uuid(0xc3);                    // CompoundMsgID
+        batch.push_back(std::byte{2});      // TotalObjects
+        batch.push_back(std::byte{1});      // FirstDetachAll: replace the outfit
+        batch.push_back(std::byte{2});      // ObjectData count
+        push_uuid(0xd4);                    // first ItemID
+        push_uuid(0xe5);                    // first OwnerID
+        batch.push_back(std::byte{0x85});   // point 5 with ATTACHMENT_ADD
+        push_u32(5);                        // ItemFlags: the remembered point
+        push_u32(0); push_u32(0); push_u32(0);   // the three cruft masks
+        push_string("Left Hand Torch");
+        push_string("burns");
+        push_uuid(0xf6);                    // second ItemID
+        push_uuid(0xe5);
+        batch.push_back(std::byte{31});     // a point above 15, no ADD
+        push_u32(0);
+        push_u32(0); push_u32(0); push_u32(0);
+        push_string("Hat");
+        push_string("");
+
+        const auto parsed = homeworldz::viewer::decode_rez_multiple_attachments_from_inv(batch);
+        if (!parsed) return 41;
+        if (parsed->agent_id[0] != std::byte{0xa1} ||
+            parsed->compound_id[0] != std::byte{0xc3}) return 42;
+        if (parsed->total_objects != 2 || !parsed->first_detach_all) return 43;
+        if (parsed->objects.size() != 2) return 44;
+        if (parsed->objects[0].item_id[0] != std::byte{0xd4} ||
+            parsed->objects[0].attachment_point != 0x85 ||
+            parsed->objects[0].item_flags != 5 ||
+            parsed->objects[0].name != "Left Hand Torch" ||
+            parsed->objects[0].description != "burns") return 45;
+        // The second object is only reached by walking the first one's two
+        // variable-length strings correctly. Its point is the assertion that
+        // the walk landed where it should.
+        if (parsed->objects[1].item_id[0] != std::byte{0xf6} ||
+            parsed->objects[1].attachment_point != 31 ||
+            parsed->objects[1].name != "Hat" ||
+            !parsed->objects[1].description.empty()) return 46;
+        // A batch cut short is malformed, not a shorter batch.
+        if (homeworldz::viewer::decode_rez_multiple_attachments_from_inv(
+                std::span(batch).first(batch.size() - 1))) return 47;
+        // A count larger than the objects that follow must not read past them.
+        auto overcounted = batch;
+        overcounted[54] = std::byte{4};
+        if (homeworldz::viewer::decode_rez_multiple_attachments_from_inv(overcounted)) return 48;
+    }
+    {
+        // DetachAttachmentIntoInv carries no SessionID. Decoding must not
+        // expect one, and 36 bytes is the whole message.
+        std::vector<std::byte> detach{std::byte{0xff}, std::byte{0xff},
+                                      std::byte{0x01}, std::byte{0x8d}};
+        for (int index = 0; index < 16; ++index) detach.push_back(std::byte{0xa1});
+        for (int index = 0; index < 16; ++index) detach.push_back(std::byte{0xd4});
+        const auto parsed = homeworldz::viewer::decode_detach_attachment_into_inv(detach);
+        if (!parsed) return 49;
+        if (parsed->agent_id[0] != std::byte{0xa1} ||
+            parsed->item_id[0] != std::byte{0xd4}) return 50;
+        if (homeworldz::viewer::decode_detach_attachment_into_inv(
+                std::span(detach).first(35))) return 51;
+        // And it must not answer to its neighbours' message ids.
+        auto wrong_id = detach;
+        wrong_id[3] = std::byte{0x8c};
+        if (homeworldz::viewer::decode_detach_attachment_into_inv(wrong_id)) return 52;
+    }
+    {
         // The State byte carries the attachment point with its nibbles swapped.
         // The check is against the viewer's own expression, written out here, and
         // not against what this region happens to produce.

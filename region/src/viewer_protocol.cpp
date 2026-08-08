@@ -2215,6 +2215,80 @@ std::optional<ObjectDetach> decode_object_detach(std::span<const std::byte> payl
     return result;
 }
 
+// Low 396. AgentData (agent, session), HeaderData (compound id, total, detach
+// all), then a variable ObjectData block: a count byte and that many objects,
+// each ending in two length-prefixed strings. Layout read off the viewer's own
+// sender in llattachmentsmgr.cpp, which is where the offsets are settled — the
+// template says what the fields are, the sender says what goes on the wire.
+std::optional<RezMultipleAttachmentsFromInv> decode_rez_multiple_attachments_from_inv(
+    std::span<const std::byte> payload) {
+    constexpr std::array<std::byte, 4> message_id{
+        std::byte{0xff}, std::byte{0xff}, std::byte{0x01}, std::byte{0x8c}};
+    // 4 header + 16 agent + 16 session + 16 compound + 1 total + 1 detach-all
+    // + 1 object count
+    if (payload.size() < 55 ||
+        !std::equal(message_id.begin(), message_id.end(), payload.begin()))
+        return std::nullopt;
+    RezMultipleAttachmentsFromInv result;
+    std::copy_n(payload.begin() + 4, 16, result.agent_id.begin());
+    std::copy_n(payload.begin() + 20, 16, result.session_id.begin());
+    std::copy_n(payload.begin() + 36, 16, result.compound_id.begin());
+    result.total_objects = std::to_integer<std::uint8_t>(payload[52]);
+    result.first_detach_all = std::to_integer<std::uint8_t>(payload[53]) != 0;
+    const auto count = std::to_integer<std::size_t>(payload[54]);
+    std::size_t at = 55;
+    const auto read_u32 = [&](std::size_t from) {
+        return static_cast<std::uint32_t>(std::to_integer<std::uint32_t>(payload[from]) |
+               (std::to_integer<std::uint32_t>(payload[from + 1]) << 8) |
+               (std::to_integer<std::uint32_t>(payload[from + 2]) << 16) |
+               (std::to_integer<std::uint32_t>(payload[from + 3]) << 24));
+    };
+    const auto take_string = [&](std::string& into) {
+        if (at >= payload.size()) return false;
+        const auto length = std::to_integer<std::size_t>(payload[at]);
+        ++at;
+        if (at + length > payload.size()) return false;
+        auto text = std::string(reinterpret_cast<const char*>(payload.data() + at), length);
+        if (!text.empty() && text.back() == '\0') text.pop_back();
+        into = std::move(text);
+        at += length;
+        return true;
+    };
+    for (std::size_t index = 0; index < count; ++index) {
+        // 16 item + 16 owner + 1 point + 16 of the four masks
+        if (at + 49 > payload.size()) return std::nullopt;
+        AttachmentRequest object;
+        std::copy_n(payload.begin() + static_cast<std::ptrdiff_t>(at), 16, object.item_id.begin());
+        std::copy_n(payload.begin() + static_cast<std::ptrdiff_t>(at) + 16, 16,
+                    object.owner_id.begin());
+        object.attachment_point = std::to_integer<std::uint8_t>(payload[at + 32]);
+        object.item_flags = read_u32(at + 33);
+        // GroupMask, EveryoneMask and NextOwnerMask follow. The viewer's own
+        // comment calls them cruft the server ignores, and the permissions that
+        // decide anything come from inventory, so they are skipped rather than
+        // carried somewhere they might get believed.
+        at += 49;
+        if (!take_string(object.name)) return std::nullopt;
+        if (!take_string(object.description)) return std::nullopt;
+        result.objects.push_back(std::move(object));
+    }
+    return result;
+}
+
+// Low 397. One block, and unusually it carries no SessionID.
+std::optional<DetachAttachmentIntoInv> decode_detach_attachment_into_inv(
+    std::span<const std::byte> payload) {
+    constexpr std::array<std::byte, 4> message_id{
+        std::byte{0xff}, std::byte{0xff}, std::byte{0x01}, std::byte{0x8d}};
+    if (payload.size() < 36 ||
+        !std::equal(message_id.begin(), message_id.end(), payload.begin()))
+        return std::nullopt;
+    DetachAttachmentIntoInv result;
+    std::copy_n(payload.begin() + 4, 16, result.agent_id.begin());
+    std::copy_n(payload.begin() + 20, 16, result.item_id.begin());
+    return result;
+}
+
 std::optional<AssetUploadRequest> decode_asset_upload_request(std::span<const std::byte> payload) {
     constexpr std::array<std::byte, 4> message_id{
         std::byte{0xff}, std::byte{0xff}, std::byte{0x01}, std::byte{0x4d}};

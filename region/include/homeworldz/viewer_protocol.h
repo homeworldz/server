@@ -268,10 +268,15 @@ struct DeRezObject : AgentMessage {
     std::vector<std::uint32_t> local_ids;
 };
 
-// RezSingleAttachmentFromInv (Low 395): wear an object from inventory. The
-// viewer sends this for "Wear" and for "Attach To >" alike; `attachment_point`
-// is zero when the user did not pick one, meaning "use whatever the item asks
-// for, or a default".
+// RezSingleAttachmentFromInv (Low 395): wear one object from inventory.
+//
+// **Firestorm never sends this.** It has no sender for it at all: every Wear,
+// Add and "Attach To >" goes through LLAttachmentsMgr, which batches and sends
+// RezMultipleAttachmentsFromInv below. This decoder was written from
+// message_template.msg and its handler did nothing for a real viewer for that
+// reason (found in-world, 2026-08-08). It is kept because LibreMetaverse-based
+// clients do send it — but it is not the path a viewer exercises, and anything
+// proved here is proved about the other one only by hope.
 struct RezSingleAttachmentFromInv : AgentMessage {
     Uuid item_id{};
     Uuid owner_id{};
@@ -285,14 +290,54 @@ struct RezSingleAttachmentFromInv : AgentMessage {
 };
 
 // ObjectDetach (Low 113): stop wearing, by the local ids of the attachments
-// themselves rather than by inventory item.
+// themselves. Firestorm does not send this either — see
+// DetachAttachmentIntoInv, which is what taking something off actually emits.
 struct ObjectDetach : AgentMessage {
     std::vector<std::uint32_t> local_ids;
+};
+
+// One object of a batched attachment request.
+struct AttachmentRequest {
+    Uuid item_id{};
+    Uuid owner_id{};
+    std::uint8_t attachment_point{};
+    std::uint32_t item_flags{};
+    std::string name;
+    std::string description;
+};
+
+// RezMultipleAttachmentsFromInv (Low 396): **the message a viewer sends** to
+// wear anything. LLAttachmentsMgr collects requests and emits up to four
+// objects per packet, all packets of one batch sharing `compound_id`.
+//
+// `first_detach_all` is the viewer asking for a clean slate before the batch —
+// it is how "replace outfit" differs from adding to what is on.
+struct RezMultipleAttachmentsFromInv : AgentMessage {
+    Uuid compound_id{};
+    std::uint8_t total_objects{};
+    bool first_detach_all{};
+    std::vector<AttachmentRequest> objects;
+};
+
+// DetachAttachmentIntoInv (Low 397): take one item off, named by inventory item
+// rather than by what it rezzed as.
+//
+// It carries **no SessionID** — the viewer sends AgentID and ItemID and nothing
+// else — so a handler cannot check the session on this message the way every
+// neighbouring one does. Checking a field that is not there was the first thing
+// tried, and it silently refused every detach.
+struct DetachAttachmentIntoInv {
+    Uuid agent_id{};
+    Uuid item_id{};
 };
 
 std::optional<RezSingleAttachmentFromInv> decode_rez_single_attachment_from_inv(
     std::span<const std::byte> payload);
 std::optional<ObjectDetach> decode_object_detach(std::span<const std::byte> payload);
+std::optional<RezMultipleAttachmentsFromInv> decode_rez_multiple_attachments_from_inv(
+    std::span<const std::byte> payload);
+std::optional<DetachAttachmentIntoInv> decode_detach_attachment_into_inv(
+    std::span<const std::byte> payload);
 
 // ATTACHMENT_ADD: the viewer sets this bit on the requested point to mean "add
 // to this point, keeping what is already there" rather than "replace". It is

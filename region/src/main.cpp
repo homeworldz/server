@@ -10391,6 +10391,116 @@ int main(int argc, char* argv[]) {
                                 std::cout << ",\"reason\":" << homeworldz::api::json_string(outcome.refused);
                             std::cout << "}" << std::endl;
                         }
+                        // Low 396: what a viewer actually sends to wear anything.
+                        // Batched — up to four objects per packet — so the reply
+                        // to one packet is several wears.
+                        const auto worn_batch =
+                            homeworldz::viewer::decode_rez_multiple_attachments_from_inv(
+                                packet->payload);
+                        if (worn_batch && worn_batch->agent_id == identity->agent_id &&
+                            worn_batch->session_id == identity->session_id) {
+                            const auto wearer = avatars.find(endpoint);
+                            const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
+                            std::size_t attached = 0;
+                            std::size_t inconclusive = 0;
+                            if (wearer == avatars.end()) {
+                                std::cout << "{\"level\":\"warn\",\"message\":\"attachment batch rejected\""
+                                             ",\"reason\":\"wearer has no avatar here\",\"objects\":"
+                                          << worn_batch->objects.size() << "}" << std::endl;
+                            } else {
+                                // "Replace outfit" asks for a clean slate first.
+                                // Everything it takes off has to be forgotten on
+                                // the grid too, or it all comes back at the next
+                                // login and the replacement looks undone.
+                                if (worn_batch->first_detach_all) {
+                                    std::vector<std::string> removed_items;
+                                    for (const auto& [candidate_id, candidate] : scene.entities())
+                                        if (candidate.attachment_point != 0 &&
+                                            candidate.parent_id == wearer->second.entity_id &&
+                                            !candidate.attachment_item_id.empty())
+                                            removed_items.push_back(candidate.attachment_item_id);
+                                    const auto cleared = remove_avatar_attachments(
+                                        wearer->second.entity_id, now);
+                                    if (viewer_grid)
+                                        for (const auto& removed_item : removed_items)
+                                            static_cast<void>(viewer_grid->set_attachment_worn(
+                                                user_id, removed_item, 0, false));
+                                    std::cout << "{\"level\":\"info\",\"message\":"
+                                                 "\"attachments cleared before batch\",\"cleared\":"
+                                              << cleared << "}" << std::endl;
+                                }
+                                for (const auto& object : worn_batch->objects) {
+                                    const auto item_id =
+                                        homeworldz::viewer::format_uuid(object.item_id);
+                                    const auto outcome = wear_attachment(
+                                        user_id, wearer->second.entity_id, item_id,
+                                        object.attachment_point,
+                                        (object.attachment_point &
+                                         homeworldz::viewer::attachment_add) != 0,
+                                        true, now);
+                                    if (outcome.worn) ++attached;
+                                    if (outcome.inconclusive) ++inconclusive;
+                                    std::cout << "{\"level\":"
+                                              << (outcome.worn && outcome.recorded
+                                                      ? "\"info\"" : "\"warn\"")
+                                              << ",\"message\":\"attachment "
+                                              << (outcome.worn ? "worn"
+                                                  : outcome.inconclusive ? "not attempted"
+                                                                         : "rejected")
+                                              << "\",\"itemId\":"
+                                              << homeworldz::api::json_string(item_id)
+                                              << ",\"attachmentPoint\":"
+                                              << static_cast<unsigned>(outcome.point)
+                                              << ",\"requestedPoint\":"
+                                              << static_cast<unsigned>(object.attachment_point)
+                                              << ",\"prims\":" << outcome.prims
+                                              << ",\"recorded\":"
+                                              << (outcome.recorded ? "true" : "false");
+                                    if (!outcome.worn)
+                                        std::cout << ",\"reason\":"
+                                                  << homeworldz::api::json_string(outcome.refused);
+                                    std::cout << "}" << std::endl;
+                                }
+                                std::cout << "{\"level\":"
+                                          << (attached == worn_batch->objects.size()
+                                                  ? "\"info\"" : "\"warn\"")
+                                          << ",\"message\":\"attachment batch processed\",\"attached\":"
+                                          << attached << ",\"inconclusive\":" << inconclusive
+                                          << ",\"objects\":" << worn_batch->objects.size()
+                                          << ",\"totalObjects\":"
+                                          << static_cast<unsigned>(worn_batch->total_objects)
+                                          << ",\"detachAllFirst\":"
+                                          << (worn_batch->first_detach_all ? "true" : "false")
+                                          << "}" << std::endl;
+                            }
+                        }
+                        // Low 397: taking one item off, named by inventory item.
+                        // No SessionID on this message — the agent id is all the
+                        // viewer sends, so it is all that can be checked.
+                        const auto detach_item =
+                            homeworldz::viewer::decode_detach_attachment_into_inv(packet->payload);
+                        if (detach_item && detach_item->agent_id == identity->agent_id) {
+                            const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
+                            const auto item_id = homeworldz::viewer::format_uuid(detach_item->item_id);
+                            std::vector<homeworldz::scene::EntityId> roots;
+                            for (const auto& [candidate_id, candidate] : scene.entities())
+                                if (candidate.attachment_point != 0 &&
+                                    candidate.attachment_item_id == item_id &&
+                                    candidate.owner_id == user_id)
+                                    roots.push_back(candidate_id);
+                            std::size_t detached = 0;
+                            for (const auto root_id : roots)
+                                if (!remove_attachment_linkset(root_id, now).empty()) ++detached;
+                            const bool forgotten = detached == 0 || !viewer_grid ||
+                                viewer_grid->set_attachment_worn(user_id, item_id, 0, false);
+                            std::cout << "{\"level\":" << (detached > 0 && forgotten
+                                              ? "\"info\"" : "\"warn\"")
+                                      << ",\"message\":\"attachment detached into inventory\""
+                                         ",\"itemId\":" << homeworldz::api::json_string(item_id)
+                                      << ",\"detached\":" << detached
+                                      << ",\"forgotten\":" << (forgotten ? "true" : "false")
+                                      << "}" << std::endl;
+                        }
                         const auto detach = homeworldz::viewer::decode_object_detach(packet->payload);
                         if (detach && detach->agent_id == identity->agent_id &&
                             detach->session_id == identity->session_id) {
