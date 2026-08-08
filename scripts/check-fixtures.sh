@@ -33,10 +33,26 @@ if [[ ! -d "$fixtures" ]]; then
   exit 2
 fi
 
-# file:expected-substring. The expectation is the *reason*, not just the verdict,
-# because "refused" is satisfied by being refused for the wrong thing.
+# file:expected|expected|... — every substring must appear.
+#
+# The expectation is the *reason*, never the verdict alone, because "refused" is
+# satisfied by being refused for the wrong thing. The client team mutation-tested
+# the equivalent list and found the sharper form: revert the gate to counting
+# declared joints and both MakeHuman bodies are still refused, just with a
+# different number, so a verdict-only list waves two of three through while
+# reporting a pass — on the exact bug that shipped this morning.
+#
+# The corollary decides what belongs here. **The body that must be ACCEPTED is
+# what catches an over-strict regression**, and over-strict is the direction this
+# gate fails in. SLReference declares 133 against a limit of 110 and moves 21, so
+# anything reverting to declared counts refuses it and this list goes red.
+#
+# The second expectation on that line matters for a different reason: "accepted"
+# alone would still pass if the geometric check were deleted outright. Asserting
+# the rig agreed, with nothing disagreeing, means the check has to have run and
+# reached a verdict on real joints.
 expectations=(
-  "SLReference.glb:accepted"
+  "SLReference.glb:accepted|rig agrees with the skeleton|0 disagreed"
   "makehuman-female.glb:not a joint of the bento-avatar skeleton"
   "makehuman-male.glb:not a joint of the bento-avatar skeleton"
 )
@@ -55,10 +71,16 @@ for entry in "${expectations[@]}"; do
   # mesh-diag exits non-zero when anything was refused, which is an expected
   # outcome here, so the reason text decides rather than the status.
   output=$("$diag" "$path" 2>&1 || true)
-  if grep -qF -- "$expected" <<<"$output"; then
+  missing=()
+  IFS='|' read -r -a wants <<<"$expected"
+  for want in "${wants[@]}"; do
+    grep -qF -- "$want" <<<"$output" || missing+=("$want")
+  done
+  if ((${#missing[@]} == 0)); then
     echo "ok       $name"
   else
-    echo "FAILED   $name: expected \"$expected\"" >&2
+    echo "FAILED   $name" >&2
+    for want in "${missing[@]}"; do echo "           expected: $want" >&2; done
     sed 's/^/           /' <<<"$output" >&2
     failed=$((failed + 1))
   fi
