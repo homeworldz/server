@@ -497,9 +497,13 @@ int main() {
                 "11111111-1111-4111-8111-111111111111").outcome !=
             homeworldz::grid::InventoryLookup::unavailable) return 1;
 
+        // A credential the grid refused and a grid that is not answering. The
+        // body is deliberately a generic refusal: this covers the lookup's
+        // reading of a status, and nothing here exercises the ticket-validation
+        // path that produces ticket_validation_unavailable for real.
         for (const int status : {401, 503}) {
             auto refusing_lookup = std::make_shared<CannedTransport>(status,
-                R"({"code":"ticket_validation_unavailable","message":"unavailable"})");
+                R"({"code":"unavailable","message":"the grid did not answer"})");
             homeworldz::grid::Client refusing_lookup_client(refusing_lookup);
             if (refusing_lookup_client.lookup_inventory_item(
                     "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
