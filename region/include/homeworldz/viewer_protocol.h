@@ -268,6 +268,32 @@ struct DeRezObject : AgentMessage {
     std::vector<std::uint32_t> local_ids;
 };
 
+// RezSingleAttachmentFromInv (Low 395): wear an object from inventory. The
+// viewer sends this for "Wear" and for "Attach To >" alike; `attachment_point`
+// is zero when the user did not pick one, meaning "use whatever the item asks
+// for, or a default".
+struct RezSingleAttachmentFromInv : AgentMessage {
+    Uuid item_id{};
+    Uuid owner_id{};
+    std::uint8_t attachment_point{};
+    std::uint32_t item_flags{};
+    std::uint32_t group_mask{};
+    std::uint32_t everyone_mask{};
+    std::uint32_t next_owner_mask{};
+    std::string name;
+    std::string description;
+};
+
+// ObjectDetach (Low 113): stop wearing, by the local ids of the attachments
+// themselves rather than by inventory item.
+struct ObjectDetach : AgentMessage {
+    std::vector<std::uint32_t> local_ids;
+};
+
+std::optional<RezSingleAttachmentFromInv> decode_rez_single_attachment_from_inv(
+    std::span<const std::byte> payload);
+std::optional<ObjectDetach> decode_object_detach(std::span<const std::byte> payload);
+
 struct RezObject : AgentMessage {
     Uuid group_id{};
     Uuid from_task_id{};
@@ -909,6 +935,12 @@ struct StaticObject {
     std::uint8_t sculpt_type{};
     std::uint32_t local_id{1};
     std::uint32_t parent_local_id{};
+    // ObjectUpdate's State byte. Zero for ordinary prims; for an attachment it
+    // carries the attachment point, which is how a viewer knows to draw the
+    // object on its parent avatar rather than floating at the avatar's origin.
+    // The point occupies the low nibble and the high nibble together, packed as
+    // the viewer's ATTACHMENT_ADD-free form: point | (point >> 4).
+    std::uint8_t state{};
     Uuid id{};
     Uuid owner_id{};
     std::uint32_t update_flags{};

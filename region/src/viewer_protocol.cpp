@@ -2142,6 +2142,79 @@ std::vector<std::byte> encode_avatar_animation(const AvatarAnimation& message) {
     return output;
 }
 
+// Low 395. Layout from message_template.msg: AgentID, SessionID, then the
+// ObjectData block - ItemID, OwnerID, AttachmentPt, and four masks - followed by
+// two length-prefixed strings the viewer sends but the region does not need.
+std::optional<RezSingleAttachmentFromInv> decode_rez_single_attachment_from_inv(
+    std::span<const std::byte> payload) {
+    constexpr std::array<std::byte, 4> message_id{
+        std::byte{0xff}, std::byte{0xff}, std::byte{0x01}, std::byte{0x8b}};
+    // 4 header + 16 agent + 16 session + 16 item + 16 owner + 1 point
+    // + 16 masks + 1 name length + 1 description length
+    if (payload.size() < 87 ||
+        !std::equal(message_id.begin(), message_id.end(), payload.begin()))
+        return std::nullopt;
+    RezSingleAttachmentFromInv result;
+    std::copy_n(payload.begin() + 4, 16, result.agent_id.begin());
+    std::copy_n(payload.begin() + 20, 16, result.session_id.begin());
+    std::copy_n(payload.begin() + 36, 16, result.item_id.begin());
+    std::copy_n(payload.begin() + 52, 16, result.owner_id.begin());
+    result.attachment_point = std::to_integer<std::uint8_t>(payload[68]);
+    const auto read_u32 = [&](std::size_t at) {
+        return static_cast<std::uint32_t>(std::to_integer<std::uint32_t>(payload[at]) |
+               (std::to_integer<std::uint32_t>(payload[at + 1]) << 8) |
+               (std::to_integer<std::uint32_t>(payload[at + 2]) << 16) |
+               (std::to_integer<std::uint32_t>(payload[at + 3]) << 24));
+    };
+    result.item_flags = read_u32(69);
+    result.group_mask = read_u32(73);
+    result.everyone_mask = read_u32(77);
+    result.next_owner_mask = read_u32(81);
+    // Both strings are length-prefixed and NUL-terminated by the viewer; the
+    // trailing NUL is dropped rather than carried into a std::string, because a
+    // name that compares unequal to itself is the kind of thing found weeks
+    // later in an inventory search.
+    std::size_t at = 85;
+    const auto take_string = [&](std::string& into) {
+        if (at >= payload.size()) return false;
+        const auto length = std::to_integer<std::size_t>(payload[at]);
+        ++at;
+        if (at + length > payload.size()) return false;
+        auto text = std::string(reinterpret_cast<const char*>(payload.data() + at), length);
+        if (!text.empty() && text.back() == '\0') text.pop_back();
+        into = std::move(text);
+        at += length;
+        return true;
+    };
+    if (!take_string(result.name)) return std::nullopt;
+    if (!take_string(result.description)) return std::nullopt;
+    return result;
+}
+
+// Low 113. A variable block, so a count byte then that many local ids: the
+// viewer detaches a multi-prim outfit in one message.
+std::optional<ObjectDetach> decode_object_detach(std::span<const std::byte> payload) {
+    constexpr std::array<std::byte, 4> message_id{
+        std::byte{0xff}, std::byte{0xff}, std::byte{0x00}, std::byte{0x71}};
+    if (payload.size() < 37 ||
+        !std::equal(message_id.begin(), message_id.end(), payload.begin()))
+        return std::nullopt;
+    ObjectDetach result;
+    std::copy_n(payload.begin() + 4, 16, result.agent_id.begin());
+    std::copy_n(payload.begin() + 20, 16, result.session_id.begin());
+    const auto count = std::to_integer<std::size_t>(payload[36]);
+    if (payload.size() < 37 + count * 4) return std::nullopt;
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto at = 37 + index * 4;
+        result.local_ids.push_back(
+            static_cast<std::uint32_t>(std::to_integer<std::uint32_t>(payload[at]) |
+            (std::to_integer<std::uint32_t>(payload[at + 1]) << 8) |
+            (std::to_integer<std::uint32_t>(payload[at + 2]) << 16) |
+            (std::to_integer<std::uint32_t>(payload[at + 3]) << 24)));
+    }
+    return result;
+}
+
 std::optional<AssetUploadRequest> decode_asset_upload_request(std::span<const std::byte> payload) {
     constexpr std::array<std::byte, 4> message_id{
         std::byte{0xff}, std::byte{0xff}, std::byte{0x01}, std::byte{0x4d}};
@@ -2899,7 +2972,7 @@ std::vector<std::byte> encode_static_object_update(std::uint64_t region_handle, 
     append_le_u16(output, 65535); // full time dilation
     output.push_back(std::byte{1}); // one ObjectData block
     append_le_u32(output, object.local_id);
-    output.push_back(std::byte{}); // state
+    output.push_back(static_cast<std::byte>(object.state));
     append_uuid(output, object.id);
     append_le_u32(output, 0); // CRC
     output.push_back(static_cast<std::byte>(object.pcode));

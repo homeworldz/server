@@ -1624,5 +1624,58 @@ int main() {
     if (!baked_texture_entry_roundtrip()) return 23;
     if (!home_and_gesture_codecs()) return 24;
     if (decode_packet(std::array<std::byte, 2>{})) return 12;
+    // Attachment messages, decoded against the layouts in message_template.msg
+    // rather than against what seemed likely. Built here as real bytes so the
+    // offsets are exercised, not just the field names.
+    {
+        std::vector<std::byte> wear{std::byte{0xff}, std::byte{0xff},
+                                    std::byte{0x01}, std::byte{0x8b}};
+        const auto push_uuid = [&](std::uint8_t fill) {
+            for (int index = 0; index < 16; ++index) wear.push_back(std::byte{fill});
+        };
+        push_uuid(0xa1);                       // AgentID
+        push_uuid(0xb2);                       // SessionID
+        push_uuid(0xc3);                       // ItemID
+        push_uuid(0xd4);                       // OwnerID
+        wear.push_back(std::byte{0x85});       // AttachmentPt, with ATTACHMENT_ADD set
+        for (int index = 0; index < 16; ++index) wear.push_back(std::byte{});  // four masks
+        const std::string name = "SLReference";
+        wear.push_back(static_cast<std::byte>(name.size() + 1));
+        for (const char character : name) wear.push_back(static_cast<std::byte>(character));
+        wear.push_back(std::byte{});           // the viewer's trailing NUL
+        wear.push_back(std::byte{1});
+        wear.push_back(std::byte{});           // empty description, NUL only
+
+        const auto worn = homeworldz::viewer::decode_rez_single_attachment_from_inv(wear);
+        if (!worn) return 27;
+        if (worn->agent_id[0] != std::byte{0xa1} || worn->item_id[0] != std::byte{0xc3}) return 28;
+        // The NUL the viewer appends is dropped: a name that does not compare
+        // equal to the same name is found weeks later, in a search that fails.
+        if (worn->name != "SLReference") return 29;
+        if (!worn->description.empty()) return 30;
+        // ATTACHMENT_ADD (0x80) rides on the point and is not part of it.
+        if ((worn->attachment_point & 0x7f) != 5) return 31;
+        // Truncation must be refused rather than read past the end.
+        if (homeworldz::viewer::decode_rez_single_attachment_from_inv(
+                std::span(wear).first(wear.size() - 1)))
+            return 32;
+    }
+    {
+        std::vector<std::byte> detach{std::byte{0xff}, std::byte{0xff},
+                                      std::byte{0x00}, std::byte{0x71}};
+        for (int index = 0; index < 32; ++index) detach.push_back(std::byte{0x11});
+        detach.push_back(std::byte{2});        // a variable block: two local ids
+        for (const std::uint32_t id : {std::uint32_t{258}, std::uint32_t{65538}})
+            for (int shift = 0; shift < 32; shift += 8)
+                detach.push_back(static_cast<std::byte>((id >> shift) & 0xff));
+        const auto parsed = homeworldz::viewer::decode_object_detach(detach);
+        if (!parsed) return 33;
+        if (parsed->local_ids.size() != 2) return 34;
+        if (parsed->local_ids[0] != 258 || parsed->local_ids[1] != 65538) return 35;
+        // A count larger than the bytes that follow is malformed, not a short read.
+        detach[36] = std::byte{9};
+        if (homeworldz::viewer::decode_object_detach(detach)) return 36;
+    }
+
     return 0;
 }
