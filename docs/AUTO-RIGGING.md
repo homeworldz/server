@@ -59,10 +59,40 @@ What it needs:
    (`mAlternateBindMatrix`, `pelvis_offset`), which is exactly the mechanism for
    a body that is not Linden-shaped. A retarget should **write** those, not
    flatten them.
-3. **Extra joints folded away.** Twist bones, helper bones and IK targets have no
-   Bento equivalent. Their weight merges into the nearest mapped ancestor.
+3. **Extra joints folded away, and the per-mesh budget respected.** Twist bones,
+   helper bones and IK targets have no Bento equivalent; their weight merges into
+   the nearest mapped ancestor. This is not only tidiness — it is a hard
+   constraint, and the measurement below says correspondence alone will not get a
+   real body in.
 4. **Refusal when correspondence fails.** The rig check already decides this, and
    it should gate the output rather than the input.
+
+**Measured, 2026-08-08, and it contradicts the obvious guess.** A MakeHuman
+export and the Linden reference body, counted three independent ways (the region
+converter, and two scripts written separately here and by the client team):
+
+```
+makehuman-female.glb   1 mesh    declares 163 joints   moves 124
+SLReference.glb        8 meshes  declares 133 joints   moves 21
+                                 per mesh: 1, 1, 1, 2, 2, 7, 6, 12
+```
+
+`maxJointsPerMesh` is **110**, and it is per *mesh*, not per file. MakeHuman is a
+single mesh moving 124, so it is over — and the reference body is not the typical
+case. A rig authored outside the Bento world is likely to be far denser, so
+**joint reduction is a required stage of retargeting rather than an optimisation.**
+
+Two consequences worth having before anyone starts:
+
+- **The name check masks it.** Names are validated before joint counts, so this
+  body is refused today for binding a joint called `root` and never reaches the
+  count. Fix the names and a *second* refusal appears immediately. Somebody doing
+  correspondence work will reasonably suspect their retarget introduced it. It
+  did not; it was always second in line.
+- **Segmentation is a strategy, not just merging.** The budget is per mesh, and
+  the reference body meets it by being eight meshes of 1–12 joints rather than
+  one mesh of 21. Splitting a body by region is therefore as legitimate a way to
+  fit the budget as folding joints away, and it loses no articulation.
 
 ### Case 2 — unrigged mesh, humanoid, roughly A- or T-posed
 
@@ -138,7 +168,9 @@ parts:
 
 - **Whether Case 1 output is good enough to wear.** Nobody has retargeted a body
   and looked at it in a viewer. Every claim above about tractability is
-  reasoning, not measurement.
+  reasoning, not measurement — and the one place reasoning was substituted for
+  measurement, it was wrong: this document's author predicted a MakeHuman body
+  would move "far fewer than 110" joints from a sample of one. It moves 124.
 - **How much of correspondence is nameable.** The alias table may cover more of
   CC/Mixamo than expected, or almost none. This is a morning's measurement
   against real files and has not been done.
