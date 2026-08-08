@@ -43,3 +43,29 @@ Two words are reserved and should not be used loosely:
 ## Line endings
 
 Markdown and plain text files use native line endings — CRLF on Windows.
+
+## Reporting a live observation
+
+State **when** it was taken and **what version of the subject** it was taken
+against. "The region publishes `rigged: false`" and "the region published
+`rigged: false` at 17:40 UTC, on the binary from `4e365b3`" look equally factual
+and have entirely different shelf lives.
+
+A live finding reported bare is indistinguishable from a standing fact, and the
+two go stale at completely different rates. This is not pedantry about
+timestamps: on 2026-08-08 both sides of the client/server boundary got caught by
+it within hours of each other, in opposite directions. A measurement of the
+running grid was accurate when taken and false by the time it was read, because a
+deploy landed in between; and a claim here that inventory support was "not close"
+cited a document that had been accurate when written and was not when it was
+quoted. Neither was a careless check. Both were correct observations of a subject
+that moved.
+
+The corollary is the useful part, and it belongs in prose as much as in code:
+**when a live check disagrees with what another party reports, the first question
+is which of the two is older, not which is wrong.**
+
+Dates already appear throughout this repository's comments and ADRs — `Corrected
+2026-08-08, from 71`, `measured on the reference body` — and that habit is why
+those notes are still readable. Extend it to anything observed rather than
+decided.
