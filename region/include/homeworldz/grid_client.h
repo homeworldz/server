@@ -238,6 +238,18 @@ struct InventoryItem {
     int sale_price{};
 };
 
+// Why an inventory lookup produced no item. `missing` is the grid answering
+// about the item; `unavailable` is no answer at all — an unreachable grid, a
+// refused credential, or a route this grid does not serve. Callers that report
+// a reason must not print the second as the first: "your item is not there" is
+// a verdict, and a lookup that could not be run has not reached one.
+enum class InventoryLookup { found, missing, unavailable };
+
+struct InventoryItemLookup {
+    InventoryLookup outcome{InventoryLookup::unavailable};
+    std::optional<InventoryItem> item;
+};
+
 // One worn item, as the grid records it: the inventory item and the point. The
 // object asset is resolved through inventory at attach time rather than stored,
 // so a worn item that changed comes back as it is now.
@@ -355,6 +367,10 @@ public:
                              std::string_view folder_id, std::string_view new_name);
     bool update_inventory_item_asset(std::string_view user_id, std::string_view item_id,
                                      std::string_view asset_id);
+    // lookup_inventory_item is find_inventory_item with the reason kept. Prefer
+    // it wherever the absence of an item is reported rather than merely acted on.
+    InventoryItemLookup lookup_inventory_item(std::string_view user_id,
+                                              std::string_view item_id);
     std::optional<InventoryItem> find_inventory_item(std::string_view user_id,
                                                      std::string_view item_id);
     std::optional<std::string> find_system_inventory_folder(std::string_view user_id,

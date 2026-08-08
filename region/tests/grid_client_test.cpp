@@ -475,6 +475,46 @@ int main() {
     if (!client.clear_presence(session->agent_id) || !client.revoke_viewer_session(session->session_id) ||
         transport->requests.back().path != "/api/v1/sessions/" + session->session_id) return 1;
 
+    // An inventory lookup that produced no item has to say why. Reporting an
+    // unreachable grid as "the item is not there" accuses a wearer's inventory
+    // of a fault that is on this side of the call (client core, 2026-08-08).
+    {
+        auto absent = std::make_shared<CannedTransport>(404,
+            R"({"code":"inventory_item_not_found","message":"inventory item was not found"})");
+        homeworldz::grid::Client absent_client(absent);
+        const auto missing = absent_client.lookup_inventory_item(
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "11111111-1111-4111-8111-111111111111");
+        if (missing.outcome != homeworldz::grid::InventoryLookup::missing || missing.item) return 1;
+
+        // The grid's bare not_found is an unserved route. It is a 404 like the
+        // one above and means something entirely different: this build did not
+        // ask the question, so it has learned nothing about the item.
+        auto unserved = std::make_shared<CannedTransport>(404,
+            R"({"code":"not_found","message":"route not found"})");
+        homeworldz::grid::Client unserved_client(unserved);
+        if (unserved_client.lookup_inventory_item(
+                "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                "11111111-1111-4111-8111-111111111111").outcome !=
+            homeworldz::grid::InventoryLookup::unavailable) return 1;
+
+        for (const int status : {401, 503}) {
+            auto refusing_lookup = std::make_shared<CannedTransport>(status,
+                R"({"code":"ticket_validation_unavailable","message":"unavailable"})");
+            homeworldz::grid::Client refusing_lookup_client(refusing_lookup);
+            if (refusing_lookup_client.lookup_inventory_item(
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "11111111-1111-4111-8111-111111111111").outcome !=
+                homeworldz::grid::InventoryLookup::unavailable) return 1;
+        }
+        // A 200 this build cannot parse is not an absent item either.
+        auto unreadable = std::make_shared<CannedTransport>(200, R"({"unexpected":true})");
+        homeworldz::grid::Client unreadable_client(unreadable);
+        if (unreadable_client.lookup_inventory_item(
+                "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                "11111111-1111-4111-8111-111111111111").outcome !=
+            homeworldz::grid::InventoryLookup::unavailable) return 1;
+    }
+
     // Worn attachments. The list an arriving avatar is rezzed from, so what it
     // refuses matters as much as what it parses.
     const std::string worn_user = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";

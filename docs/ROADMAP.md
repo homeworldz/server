@@ -393,8 +393,11 @@ client family is served a derived rendition by a grid-side conversion worker.
   axis is up* and left the lateral axis where it found it (a 90° yaw — see
   [ADR 0033](adr/0033-mesh-assets.md)), and inverse bind matrices were not
   mapped at all, which draws a body correctly at rest and deforms it wrongly on
-  the first animation. Remaining: **Firestorm verification of a worn body**,
-  attachments, body wearables, and **wiring the geometric check into the upload
+  the first animation. **Attachments ship as of 2026-08-08** — wearing, taking
+  off, and worn state kept on the grid so it survives a relog into a different
+  region — though objects wear at the joint, since the offset an object was
+  taken off at is not stored yet. Remaining: **Firestorm verification of a worn
+  body**, body wearables, and **wiring the geometric check into the upload
   path** — it runs in the diagnostic tool today, so uploads are still accepted on
   names, joint counts and influence sets alone. A rig it cannot discriminate is
   accepted (decided 2026-08-08, provisional). `maxRigInfluences` is enforced and

@@ -2696,6 +2696,12 @@ int main(int argc, char* argv[]) {
         std::uint8_t point{};
         std::size_t prims{};
         std::string refused;
+        // The refusal is an inability, not an answer: the grid could not be
+        // asked, so nothing has been decided about the item. Reported as a
+        // check that could not be run rather than as a wear that was refused —
+        // a probe that convicts on silence spends the credibility it needs for
+        // the times it is right (client core, 2026-08-08).
+        bool inconclusive{};
     };
     // wear_attachment rezzes one inventory item onto a wearer's avatar. Two
     // callers: the viewer's Wear, and an avatar arriving with worn items the
@@ -2719,9 +2725,15 @@ int main(int argc, char* argv[]) {
         outcome.point = requested_point & attachment_point_mask;
         std::vector<homeworldz::scene::EntityId> entity_ids;
         try {
-            auto item = viewer_grid
-                ? viewer_grid->find_inventory_item(user_id, item_id) : std::nullopt;
+            const auto lookup = viewer_grid
+                ? viewer_grid->lookup_inventory_item(user_id, item_id)
+                : homeworldz::grid::InventoryItemLookup{};
+            const auto& item = lookup.item;
             if (!scene.find(wearer_id)) outcome.refused = "wearer has no avatar here";
+            else if (lookup.outcome == homeworldz::grid::InventoryLookup::unavailable) {
+                outcome.refused = "inventory could not be checked";
+                outcome.inconclusive = true;
+            }
             else if (!item) outcome.refused = "inventory item not found";
             else if (item->asset_type != 6 || item->inventory_type != 6)
                 outcome.refused = "inventory item is not an object";
@@ -2861,6 +2873,7 @@ int main(int argc, char* argv[]) {
         }
         if (worn->empty()) return;
         std::size_t restored = 0;
+        std::size_t inconclusive = 0;
         for (const auto& item : *worn) {
             // keep_others: the grid's list may legitimately hold two items on
             // one point, and rezzing the second must not evict the first.
@@ -2871,7 +2884,15 @@ int main(int argc, char* argv[]) {
                 ++restored;
                 continue;
             }
-            std::cout << "{\"level\":\"warn\",\"message\":\"worn attachment not restored\",\"userId\":"
+            if (outcome.inconclusive) ++inconclusive;
+            // "Could not be run" is not "refused". The distinction is the whole
+            // value of saying anything here: a wearer whose grid hiccuped has
+            // not lost the item, and the log must not read as though they had.
+            std::cout << "{\"level\":\"warn\",\"message\":"
+                      << (outcome.inconclusive
+                              ? "\"worn attachment could not be checked\""
+                              : "\"worn attachment not restored\"")
+                      << ",\"userId\":"
                       << homeworldz::api::json_string(user_id) << ",\"itemId\":"
                       << homeworldz::api::json_string(item.item_id) << ",\"attachmentPoint\":"
                       << static_cast<unsigned>(item.attachment_point) << ",\"reason\":"
@@ -2880,6 +2901,7 @@ int main(int argc, char* argv[]) {
         std::cout << "{\"level\":" << (restored == worn->size() ? "\"info\"" : "\"warn\"")
                   << ",\"message\":\"worn attachments restored\",\"userId\":"
                   << homeworldz::api::json_string(user_id) << ",\"restored\":" << restored
+                  << ",\"inconclusive\":" << inconclusive
                   << ",\"worn\":" << worn->size() << "}" << std::endl;
     };
     // Restore enabled task scripts after a Region restart. VM state is not yet
@@ -10353,7 +10375,9 @@ int main(int argc, char* argv[]) {
                             std::cout << "{\"level\":"
                                       << (outcome.worn && outcome.recorded ? "\"info\"" : "\"warn\"")
                                       << ",\"message\":\"attachment "
-                                      << (outcome.worn ? "worn" : "rejected") << "\",\"itemId\":"
+                                      << (outcome.worn ? "worn"
+                                          : outcome.inconclusive ? "not attempted" : "rejected")
+                                      << "\",\"itemId\":"
                                       << homeworldz::api::json_string(item_id)
                                       << ",\"attachmentPoint\":" << static_cast<unsigned>(outcome.point)
                                       << ",\"requestedPoint\":"

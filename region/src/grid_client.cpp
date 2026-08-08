@@ -884,13 +884,31 @@ bool Client::update_inventory_item_asset(std::string_view user_id, std::string_v
         "/items/" + std::string(item_id) + "/asset", body).status_code == 200;
 }
 
-std::optional<InventoryItem> Client::find_inventory_item(std::string_view user_id,
-                                                          std::string_view item_id) {
+InventoryItemLookup Client::lookup_inventory_item(std::string_view user_id,
+                                                  std::string_view item_id) {
     const auto response = transport_->send(
         "GET", "/api/v1/inventory/" + std::string(user_id) +
                    "/items/" + std::string(item_id), {});
-    if (response.status_code != 200) return std::nullopt;
-    return inventory_item_from_json(response.body, user_id);
+    if (response.status_code == 200) {
+        auto item = inventory_item_from_json(response.body, user_id);
+        // A 200 this build cannot read is the grid saying something else. It is
+        // not the item being absent, and reporting it as absent would send
+        // someone looking through an inventory that has the item in it.
+        if (!item) return {InventoryLookup::unavailable, std::nullopt};
+        return {InventoryLookup::found, std::move(item)};
+    }
+    // Two different 404s. `inventory_item_not_found` is about the item; the
+    // grid's bare `not_found` is a route this grid does not serve, which says
+    // nothing about the item and must not be read as an answer about it.
+    if (response.status_code == 404 &&
+        json_field(response.body, "code") == "inventory_item_not_found")
+        return {InventoryLookup::missing, std::nullopt};
+    return {InventoryLookup::unavailable, std::nullopt};
+}
+
+std::optional<InventoryItem> Client::find_inventory_item(std::string_view user_id,
+                                                          std::string_view item_id) {
+    return lookup_inventory_item(user_id, item_id).item;
 }
 
 std::optional<std::string> Client::find_system_inventory_folder(std::string_view user_id,
