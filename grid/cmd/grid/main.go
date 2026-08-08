@@ -20,6 +20,7 @@ import (
 
 	"github.com/homeworldz/server/grid/internal/arrival"
 	"github.com/homeworldz/server/grid/internal/assetmeta"
+	"github.com/homeworldz/server/grid/internal/attachments"
 	"github.com/homeworldz/server/grid/internal/config"
 	"github.com/homeworldz/server/grid/internal/estate"
 	"github.com/homeworldz/server/grid/internal/gestures"
@@ -179,6 +180,7 @@ func main() {
 			TaskTransfers:     taskTransferStore(db),
 			Locations:         locationStore(db),
 			Gestures:          gestureStore(db),
+			Attachments:       attachmentStore(db),
 			Estates:           estate.NewPostgresStore(db),
 			Welcome:           welcome,
 			TicketVerifier:    ticketVerifier,
@@ -286,6 +288,13 @@ func gestureStore(db *sql.DB) gestures.Store {
 		return nil
 	}
 	return gestures.NewPostgresStore(db)
+}
+
+func attachmentStore(db *sql.DB) attachments.Store {
+	if db == nil {
+		return nil
+	}
+	return attachments.NewPostgresStore(db)
 }
 
 func inventoryStore(db *sql.DB) inventory.Store {

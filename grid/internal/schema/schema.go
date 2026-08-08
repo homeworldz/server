@@ -30,7 +30,7 @@ import (
 // whole point of stating it here rather than reading the directory at runtime: a
 // deployed binary has no migrations directory to read, and the number it was
 // built against is exactly what it needs to assert.
-const Required = 31
+const Required = 32
 
 // ErrNotInitialized reports that schema_metadata itself is absent, which means
 // no migration has ever run against this database.

@@ -891,6 +891,9 @@ std::optional<homeworldz::viewer::StaticObject> static_object_from_entity(
     homeworldz::viewer::StaticObject object;
     object.local_id = static_cast<std::uint32_t>(entity.id);
     object.parent_local_id = static_cast<std::uint32_t>(entity.parent_id);
+    // A worn prim is drawn on its wearer's attachment joint only if the State
+    // byte says which joint. Parenting alone puts it at the avatar's origin.
+    object.state = homeworldz::viewer::attachment_state(entity.attachment_point);
     object.id = *object_id;
     object.owner_id = *owner_id;
     const bool is_owner = entity.owner_id == recipient_id;
@@ -2578,6 +2581,42 @@ int main(int argc, char* argv[]) {
         }
         return homeworldz::session::encode_envelope("kill", {}, "{\"ids\":[" + list + "]}");
     };
+    // An attachment is an ordinary scene entity parented to its wearer's avatar
+    // entity, with a non-zero attachment_point. Taking one off has to reach both
+    // viewers and sessions, and it happens from three places: wearing something
+    // that displaces it, an explicit detach, and the wearer leaving. That last
+    // one is not housekeeping — an attachment that outlives its wearer is a prim
+    // parented to an entity that no longer exists.
+    const auto remove_attachment_linkset = [&](homeworldz::scene::EntityId root_id,
+                                               std::chrono::steady_clock::time_point when) {
+        std::vector<homeworldz::scene::EntityId> part_ids;
+        for (const auto& [candidate_id, candidate] : scene.entities())
+            if (candidate.parent_id == root_id) part_ids.push_back(candidate_id);
+        part_ids.push_back(root_id);
+        std::vector<std::uint32_t> killed;
+        for (const auto part : part_ids)
+            if (scene.remove(part)) killed.push_back(static_cast<std::uint32_t>(part));
+        if (killed.empty()) return killed;
+        const auto kill = homeworldz::viewer::encode_kill_object(killed);
+        for (const auto& [recipient_endpoint, recipient] : avatars) {
+            static_cast<void>(recipient);
+            if (const auto outgoing = circuits.send(recipient_endpoint, kill, true, when))
+                static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+        }
+        deliver_to_embodied(session_kill_many(killed));
+        return killed;
+    };
+    const auto remove_avatar_attachments = [&](homeworldz::scene::EntityId wearer_id,
+                                               std::chrono::steady_clock::time_point when) {
+        std::vector<homeworldz::scene::EntityId> roots;
+        for (const auto& [candidate_id, candidate] : scene.entities())
+            if (candidate.attachment_point != 0 && candidate.parent_id == wearer_id)
+                roots.push_back(candidate_id);
+        std::size_t removed = 0;
+        for (const auto root_id : roots)
+            if (!remove_attachment_linkset(root_id, when).empty()) ++removed;
+        return removed;
+    };
     // retire_session_avatar removes an embodied session's avatar: kill to
     // viewers and other sessions, physics teardown, map erasure. The session
     // itself stays open (back to observer) unless the socket already closed.
@@ -2588,6 +2627,8 @@ int main(int argc, char* argv[]) {
         const std::array<std::uint32_t, 1> kill_ids{static_cast<std::uint32_t>(entity_id)};
         const auto kill = homeworldz::viewer::encode_kill_object(kill_ids);
         const auto kill_now = std::chrono::steady_clock::now();
+        // What this avatar was wearing goes with it.
+        static_cast<void>(remove_avatar_attachments(entity_id, kill_now));
         for (const auto& [recipient_endpoint, recipient] : avatars) {
             static_cast<void>(recipient);
             if (recipient_endpoint == participant_key) continue;
@@ -2645,6 +2686,202 @@ int main(int argc, char* argv[]) {
         }
         if (session_object_visible(entity)) deliver_to_embodied(session_object_envelope(entity));
     };
+    // The outcome of one wear. `refused` is empty only when the object is on,
+    // and `recorded` is separate from `worn` because an attachment the grid did
+    // not record is worn now and gone at the next login — a difference the log
+    // has to be able to state.
+    struct WearOutcome {
+        bool worn{};
+        bool recorded{};
+        std::uint8_t point{};
+        std::size_t prims{};
+        std::string refused;
+    };
+    // wear_attachment rezzes one inventory item onto a wearer's avatar. Two
+    // callers: the viewer's Wear, and an avatar arriving with worn items the
+    // grid remembers. `requested_point` is the viewer's point with
+    // ATTACHMENT_ADD stripped, or 0 to mean "wherever the item says".
+    //
+    // An arrival passes keep_others=true and record=false: the grid's list is
+    // already the record, and a second item legitimately sharing a point must
+    // not evict the first one as it is rezzed back.
+    const auto wear_attachment = [&](const std::string& user_id,
+                                     homeworldz::scene::EntityId wearer_id,
+                                     const std::string& item_id, std::uint8_t requested_point,
+                                     bool keep_others, bool record,
+                                     std::chrono::steady_clock::time_point when) -> WearOutcome {
+        // indra's ATTACHMENT_RIGHT_HAND: where an item with no remembered point
+        // goes, matching what a viewer expects from a plain Wear.
+        constexpr std::uint8_t attachment_point_right_hand = 5;
+        constexpr std::uint8_t attachment_point_mask =
+            static_cast<std::uint8_t>(~homeworldz::viewer::attachment_add);
+        WearOutcome outcome;
+        outcome.point = requested_point & attachment_point_mask;
+        std::vector<homeworldz::scene::EntityId> entity_ids;
+        try {
+            auto item = viewer_grid
+                ? viewer_grid->find_inventory_item(user_id, item_id) : std::nullopt;
+            if (!scene.find(wearer_id)) outcome.refused = "wearer has no avatar here";
+            else if (!item) outcome.refused = "inventory item not found";
+            else if (item->asset_type != 6 || item->inventory_type != 6)
+                outcome.refused = "inventory item is not an object";
+            else {
+                // A plain Wear sends point 0 and leaves the choice to the
+                // region. indra keeps the point an item was last worn on in the
+                // low byte of its inventory flags.
+                if (outcome.point == 0)
+                    outcome.point = static_cast<std::uint8_t>(item->flags & 0xffU) &
+                                    attachment_point_mask;
+                if (outcome.point == 0) outcome.point = attachment_point_right_hand;
+                // Wearing replaces the point's occupant, and re-wearing an item
+                // already on moves it rather than doubling it. "Attach To >"
+                // sets ATTACHMENT_ADD to keep the rest.
+                std::vector<std::pair<homeworldz::scene::EntityId, std::string>> displaced;
+                for (const auto& [candidate_id, candidate] : scene.entities()) {
+                    if (candidate.attachment_point == 0 || candidate.parent_id != wearer_id)
+                        continue;
+                    if (candidate.attachment_item_id == item_id ||
+                        (!keep_others && candidate.attachment_point == outcome.point))
+                        displaced.emplace_back(candidate_id, candidate.attachment_item_id);
+                }
+                for (const auto& [displaced_id, displaced_item] : displaced) {
+                    static_cast<void>(remove_attachment_linkset(displaced_id, when));
+                    // Displaced means taken off, and the grid has to agree or
+                    // the next login rezzes back something the wearer replaced.
+                    if (viewer_grid && !displaced_item.empty() && displaced_item != item_id)
+                        static_cast<void>(viewer_grid->set_attachment_worn(
+                            user_id, displaced_item, 0, false));
+                }
+                const auto content = read_federated_asset(item->asset_id);
+                const auto linkset = homeworldz::asset::parse_linkset_asset(content);
+                if (!linkset) outcome.refused = "object asset did not parse";
+                else {
+                    const auto& asset = linkset->root;
+                    const auto* wearer_entity = scene.find(wearer_id);
+                    if (!wearer_entity) throw std::runtime_error("wearer entity");
+                    const auto root_id = scene.create(item->name, wearer_entity->position);
+                    entity_ids.push_back(root_id);
+                    auto* entity = scene.find(root_id);
+                    if (!entity) throw std::runtime_error("create attachment root");
+                    entity->object_id = homeworldz::viewer::random_uuid();
+                    entity->owner_id = user_id;
+                    entity->creator_id = item->creator_id;
+                    apply_object_asset(*entity, asset);
+                    entity->description = item->description.empty()
+                        ? asset.description : item->description;
+                    entity->base_permissions = item->base_permissions;
+                    entity->owner_permissions = item->current_permissions;
+                    entity->everyone_permissions = item->everyone_permissions;
+                    entity->next_owner_permissions = item->next_permissions;
+                    entity->creation_date = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count());
+                    entity->parent_id = wearer_id;
+                    entity->attachment_point = outcome.point;
+                    entity->attachment_item_id = item_id;
+                    // A physical prim that is worn would be simulated while
+                    // parented to an avatar the physics world does not know as a
+                    // parent. Worn means carried.
+                    entity->physical = false;
+                    // Worn at the joint itself: the offset an object was last
+                    // taken off at is not stored anywhere yet, so there is
+                    // nothing truthful to restore.
+                    entity->local_position = {};
+                    entity->local_rotation = {};
+                    for (const auto& child_asset : linkset->children) {
+                        const auto child_id = scene.create(
+                            child_asset.name.empty() ? "Primitive" : child_asset.name);
+                        entity_ids.push_back(child_id);
+                        auto* child = scene.find(child_id);
+                        if (!child) throw std::runtime_error("create attachment child");
+                        child->object_id = homeworldz::viewer::random_uuid();
+                        child->owner_id = user_id;
+                        child->creator_id = child_asset.creator_id.empty()
+                            ? item->creator_id : child_asset.creator_id;
+                        apply_object_asset(*child, child_asset);
+                        child->description = child_asset.description;
+                        child->base_permissions =
+                            child_asset.base_permissions & item->base_permissions;
+                        child->owner_permissions =
+                            child_asset.owner_permissions & item->current_permissions;
+                        child->group_permissions = child_asset.group_permissions;
+                        child->everyone_permissions =
+                            child_asset.everyone_permissions & item->everyone_permissions;
+                        child->next_owner_permissions =
+                            child_asset.next_owner_permissions & item->next_permissions;
+                        child->creation_date = entity->creation_date;
+                        child->physical = false;
+                        // The child's parent is the root prim, not the avatar:
+                        // only the root carries the point, or a viewer would
+                        // draw every prim on the joint.
+                        child->parent_id = root_id;
+                        child->local_position = child_asset.local_position;
+                        child->local_rotation = child_asset.local_rotation;
+                        homeworldz::scene::update_linked_world_transform(*child, *entity);
+                    }
+                    outcome.worn = true;
+                    // The worn object stands in this region, so its closure must
+                    // be servable from here (ADR 0026).
+                    materialize_asset_closure({{item->asset_id, 6}}, "attach");
+                }
+            }
+        } catch (const std::exception& error) {
+            for (auto entity = entity_ids.rbegin(); entity != entity_ids.rend(); ++entity)
+                scene.remove(*entity);
+            entity_ids.clear();
+            outcome.worn = false;
+            outcome.refused = error.what();
+        }
+        outcome.prims = entity_ids.size();
+        if (outcome.worn) {
+            for (const auto entity_id : entity_ids)
+                if (const auto* entity = scene.find(entity_id))
+                    broadcast_object_update(*entity, when);
+            outcome.recorded = !record || (viewer_grid && viewer_grid->set_attachment_worn(
+                user_id, item_id, outcome.point, true));
+        }
+        return outcome;
+    };
+    // An arriving avatar rezzes back what the grid says it is wearing. This is
+    // the whole point of recording it: attachments are region-local, and the
+    // region someone returns to is usually not the one they left.
+    //
+    // A grid that cannot answer leaves the avatar as it is. An empty wardrobe
+    // and an unanswered question look identical afterwards, and only one of
+    // them is a reason to arrive wearing nothing.
+    const auto restore_attachments = [&](const std::string& user_id,
+                                         homeworldz::scene::EntityId wearer_id,
+                                         std::chrono::steady_clock::time_point when) {
+        if (!viewer_grid) return;
+        const auto worn = viewer_grid->worn_attachments(user_id);
+        if (!worn) {
+            std::cout << "{\"level\":\"warn\",\"message\":\"worn attachments unavailable\",\"userId\":"
+                      << homeworldz::api::json_string(user_id) << "}" << std::endl;
+            return;
+        }
+        if (worn->empty()) return;
+        std::size_t restored = 0;
+        for (const auto& item : *worn) {
+            // keep_others: the grid's list may legitimately hold two items on
+            // one point, and rezzing the second must not evict the first.
+            // record=false: this list is the record.
+            const auto outcome = wear_attachment(user_id, wearer_id, item.item_id,
+                                                 item.attachment_point, true, false, when);
+            if (outcome.worn) {
+                ++restored;
+                continue;
+            }
+            std::cout << "{\"level\":\"warn\",\"message\":\"worn attachment not restored\",\"userId\":"
+                      << homeworldz::api::json_string(user_id) << ",\"itemId\":"
+                      << homeworldz::api::json_string(item.item_id) << ",\"attachmentPoint\":"
+                      << static_cast<unsigned>(item.attachment_point) << ",\"reason\":"
+                      << homeworldz::api::json_string(outcome.refused) << "}" << std::endl;
+        }
+        std::cout << "{\"level\":" << (restored == worn->size() ? "\"info\"" : "\"warn\"")
+                  << ",\"message\":\"worn attachments restored\",\"userId\":"
+                  << homeworldz::api::json_string(user_id) << ",\"restored\":" << restored
+                  << ",\"worn\":" << worn->size() << "}" << std::endl;
+    };
     // Restore enabled task scripts after a Region restart. VM state is not yet
     // persisted, so each restored script starts fresh and re-runs state_entry;
     // this is enough to re-establish SCRIPTED / HANDLE_TOUCH advertising and live
@@ -2686,6 +2923,8 @@ int main(int argc, char* argv[]) {
                 static_cast<std::uint32_t>(departing->second.entity_id)};
             const auto kill = homeworldz::viewer::encode_kill_object(kill_ids);
             const auto kill_now = std::chrono::steady_clock::now();
+            // What this avatar was wearing goes with it.
+            static_cast<void>(remove_avatar_attachments(departing->second.entity_id, kill_now));
             std::size_t kill_recipients = 0;
             for (const auto& [recipient_endpoint, recipient] : avatars) {
                 static_cast<void>(recipient);
@@ -8212,6 +8451,7 @@ int main(int argc, char* argv[]) {
                                 }
                                 if (viewer_grid && registration)
                                     static_cast<void>(viewer_grid->update_presence(name, registration->region_id()));
+                                restore_attachments(name, entity, now);
                             }
                             const auto& live_avatar = avatars.at(endpoint);
                             auto& animations = avatar_animations[endpoint];
@@ -10092,6 +10332,78 @@ int main(int argc, char* argv[]) {
                                       << homeworldz::api::json_string(item_id) << ",\"objectId\":"
                                       << homeworldz::api::json_string(object_id) << "}" << std::endl;
                         }
+                        // Attachments: wearing (Low 395) and taking off (Low 113).
+                        // A worn object is deliberately kept out of physics and
+                        // out of the region snapshot — it belongs to the avatar,
+                        // and both of those would outlive the avatar it hangs on.
+                        const auto worn = homeworldz::viewer::decode_rez_single_attachment_from_inv(
+                            packet->payload);
+                        if (worn && worn->agent_id == identity->agent_id &&
+                            worn->session_id == identity->session_id) {
+                            const auto wearer = avatars.find(endpoint);
+                            const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
+                            const auto item_id = homeworldz::viewer::format_uuid(worn->item_id);
+                            const auto outcome = wearer == avatars.end()
+                                ? WearOutcome{false, false, 0, 0, "wearer has no avatar here"}
+                                : wear_attachment(
+                                      user_id, wearer->second.entity_id, item_id,
+                                      worn->attachment_point,
+                                      (worn->attachment_point & homeworldz::viewer::attachment_add) != 0,
+                                      true, now);
+                            std::cout << "{\"level\":"
+                                      << (outcome.worn && outcome.recorded ? "\"info\"" : "\"warn\"")
+                                      << ",\"message\":\"attachment "
+                                      << (outcome.worn ? "worn" : "rejected") << "\",\"itemId\":"
+                                      << homeworldz::api::json_string(item_id)
+                                      << ",\"attachmentPoint\":" << static_cast<unsigned>(outcome.point)
+                                      << ",\"requestedPoint\":"
+                                      << static_cast<unsigned>(worn->attachment_point)
+                                      << ",\"prims\":" << outcome.prims
+                                      // Worn but unrecorded is worn until the next
+                                      // login and then gone, which is worth saying
+                                      // at the moment it happens.
+                                      << ",\"recorded\":" << (outcome.recorded ? "true" : "false");
+                            if (!outcome.worn)
+                                std::cout << ",\"reason\":" << homeworldz::api::json_string(outcome.refused);
+                            std::cout << "}" << std::endl;
+                        }
+                        const auto detach = homeworldz::viewer::decode_object_detach(packet->payload);
+                        if (detach && detach->agent_id == identity->agent_id &&
+                            detach->session_id == identity->session_id) {
+                            const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
+                            std::size_t detached = 0;
+                            std::size_t forgotten = 0;
+                            for (const auto local_id : detach->local_ids) {
+                                const auto* selected = scene.find(local_id);
+                                if (!selected) continue;
+                                // The viewer may name any prim of a worn linkset; the
+                                // root is the one carrying the point.
+                                const auto root_id = selected->attachment_point != 0
+                                    ? static_cast<homeworldz::scene::EntityId>(local_id)
+                                    : selected->parent_id;
+                                const auto* root = scene.find(root_id);
+                                if (!root || root->attachment_point == 0 || root->owner_id != user_id)
+                                    continue;
+                                const auto detached_item = root->attachment_item_id;
+                                if (remove_attachment_linkset(root_id, now).empty()) continue;
+                                ++detached;
+                                // Taking off has to reach the grid, or the item comes
+                                // back at the next login and taking it off looks like
+                                // it did not work.
+                                if (viewer_grid && !detached_item.empty() &&
+                                    viewer_grid->set_attachment_worn(user_id, detached_item, 0, false))
+                                    ++forgotten;
+                            }
+                            // The inventory item was never removed by wearing, so
+                            // taking off needs no inventory write to keep the item.
+                            std::cout << "{\"level\":" << (detached == detach->local_ids.size() &&
+                                                           forgotten == detached
+                                              ? "\"info\"" : "\"warn\"")
+                                      << ",\"message\":\"attachment detach processed\",\"detached\":"
+                                      << detached << ",\"forgotten\":" << forgotten
+                                      << ",\"requested\":" << detach->local_ids.size()
+                                      << "}" << std::endl;
+                        }
                         const auto update = homeworldz::viewer::decode_agent_update(packet->payload);
                         const auto avatar = avatars.find(endpoint);
                         if (update && avatar != avatars.end() && update->agent_id == identity->agent_id &&
@@ -10335,6 +10647,10 @@ int main(int argc, char* argv[]) {
                     if (viewer_grid && registration)
                         static_cast<void>(viewer_grid->update_presence(
                             inbound.user_id, registration->region_id()));
+                    // Before the initial scene below, so what this avatar is
+                    // wearing is part of that scene rather than an update
+                    // arriving after the client has drawn everything.
+                    restore_attachments(inbound.user_id, entity, now);
                     spawned_reply(live);
                     // The arrival greeting, matching the viewer path: private
                     // to this session, {user} resolved to the display name

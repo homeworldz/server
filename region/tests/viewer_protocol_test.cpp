@@ -1676,6 +1676,24 @@ int main() {
         detach[36] = std::byte{9};
         if (homeworldz::viewer::decode_object_detach(detach)) return 36;
     }
+    {
+        // The State byte carries the attachment point with its nibbles swapped.
+        // The check is against the viewer's own expression, written out here, and
+        // not against what this region happens to produce.
+        const auto viewer_reads = [](std::uint8_t state) {
+            return static_cast<std::uint8_t>(((state & 0xf0U) >> 4) | ((state & 0x0fU) << 4));
+        };
+        // Right hand: the point a plain Wear falls back to.
+        if (homeworldz::viewer::attachment_state(5) != 0x50) return 37;
+        // Points run past 15, so the swap has to carry both nibbles: a byte-wide
+        // shift would lose every HUD point and every Bento point above chest.
+        if (homeworldz::viewer::attachment_state(31) != 0xf1) return 38;
+        for (std::uint8_t point = 0; point < 0x80; ++point)
+            if (viewer_reads(homeworldz::viewer::attachment_state(point)) != point) return 39;
+        // Zero means "not an attachment" and must stay zero, or every ordinary
+        // prim in the region claims to be worn on point 0.
+        if (homeworldz::viewer::attachment_state(0) != 0) return 40;
+    }
 
     return 0;
 }

@@ -238,6 +238,14 @@ struct InventoryItem {
     int sale_price{};
 };
 
+// One worn item, as the grid records it: the inventory item and the point. The
+// object asset is resolved through inventory at attach time rather than stored,
+// so a worn item that changed comes back as it is now.
+struct WornAttachment {
+    std::string item_id;
+    std::uint8_t attachment_point{};
+};
+
 struct TaskInventoryTransferRequest {
     std::string id;
     std::string user_id;
@@ -414,6 +422,13 @@ public:
     std::optional<HomeLocation> home_location(std::string_view user_id);
     bool set_gesture_active(std::string_view user_id, std::string_view item_id,
                             std::string_view asset_id, bool active);
+    // What a user is wearing, so an avatar arriving here rezzes back what it
+    // had on wherever it was last. nullopt is a grid that could not answer,
+    // which is not the same as an empty list: arriving with nothing on is a
+    // fact, and failing to ask is not a reason to strip someone.
+    std::optional<std::vector<WornAttachment>> worn_attachments(std::string_view user_id);
+    bool set_attachment_worn(std::string_view user_id, std::string_view item_id,
+                             std::uint8_t attachment_point, bool worn);
     // validate_region_ticket asks the grid to resolve a client's region
     // ticket for this region; nullopt is any refusal.
     std::optional<TicketIdentity> validate_region_ticket(std::string_view region_id,

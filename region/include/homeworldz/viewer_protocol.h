@@ -294,6 +294,20 @@ std::optional<RezSingleAttachmentFromInv> decode_rez_single_attachment_from_inv(
     std::span<const std::byte> payload);
 std::optional<ObjectDetach> decode_object_detach(std::span<const std::byte> payload);
 
+// ATTACHMENT_ADD: the viewer sets this bit on the requested point to mean "add
+// to this point, keeping what is already there" rather than "replace". It is
+// not part of the point and must be stripped before packing.
+inline constexpr std::uint8_t attachment_add = 0x80;
+
+// The State byte of an attachment carries its point with the nibbles swapped,
+// so the region packs it the same way the viewer unpacks it. A nibble swap is
+// its own inverse, which is why one function serves both directions:
+// indra's ATTACHMENT_ID_FROM_STATE(state) is ((state & 0xf0) >> 4) |
+// ((state & 0x0f) << 4), and this is that expression.
+inline constexpr std::uint8_t attachment_state(std::uint8_t point) {
+    return static_cast<std::uint8_t>(((point & 0xf0U) >> 4) | ((point & 0x0fU) << 4));
+}
+
 struct RezObject : AgentMessage {
     Uuid group_id{};
     Uuid from_task_id{};
@@ -938,8 +952,8 @@ struct StaticObject {
     // ObjectUpdate's State byte. Zero for ordinary prims; for an attachment it
     // carries the attachment point, which is how a viewer knows to draw the
     // object on its parent avatar rather than floating at the avatar's origin.
-    // The point occupies the low nibble and the high nibble together, packed as
-    // the viewer's ATTACHMENT_ADD-free form: point | (point >> 4).
+    // The point is nibble-swapped into this byte — see attachment_state below,
+    // which is the inverse of the viewer's ATTACHMENT_ID_FROM_STATE.
     std::uint8_t state{};
     Uuid id{};
     Uuid owner_id{};

@@ -520,6 +520,14 @@ std::string snapshot_json(const scene::Scene& scene) {
         static_cast<void>(id);
         const auto* root = entity.parent_id == 0 ? nullptr : scene.find(entity.parent_id);
         if (entity.temporary || (root && root->temporary)) continue;
+        // An attachment belongs to an avatar, not to the region. Its parent is
+        // a scene entity that exists only while its owner is logged in, and a
+        // worn linkset is two levels deep — child prim, worn root, avatar —
+        // which load_snapshot rejects as a nested link. Storing one therefore
+        // does not leave an orphan prim behind: it makes the whole snapshot
+        // unloadable, and the region comes back empty. What a wearer has on is
+        // restored by re-attaching on arrival, not by the snapshot.
+        if (entity.attachment_point != 0 || (root && root->attachment_point != 0)) continue;
         entities.push_back(&entity);
     }
     std::sort(entities.begin(), entities.end(), [](const auto* left, const auto* right) {

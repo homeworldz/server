@@ -97,6 +97,27 @@ public:
     std::vector<Request> requests;
 };
 
+// Answers one canned response to everything and records what was asked, for
+// endpoints whose interesting part is the body they parse rather than the
+// sequence they take part in.
+class CannedTransport final : public homeworldz::grid::Transport {
+public:
+    CannedTransport(int status, std::string body)
+        : status_(status), body_(std::move(body)) {}
+
+    homeworldz::grid::HttpResponse send(std::string_view method, std::string_view path,
+                                        std::string_view body) override {
+        requests.push_back({std::string(method), std::string(path), std::string(body)});
+        return {status_, body_};
+    }
+
+    std::vector<Request> requests;
+
+private:
+    int status_;
+    std::string body_;
+};
+
 // Answers every request the way the grid refuses a protocol mismatch, so the
 // refusal message's path to the log can be proven.
 class RefusingTransport final : public homeworldz::grid::Transport {
@@ -453,5 +474,64 @@ int main() {
         transport->requests.back().body.find(R"("flying":true)") == std::string::npos) return 1;
     if (!client.clear_presence(session->agent_id) || !client.revoke_viewer_session(session->session_id) ||
         transport->requests.back().path != "/api/v1/sessions/" + session->session_id) return 1;
+
+    // Worn attachments. The list an arriving avatar is rezzed from, so what it
+    // refuses matters as much as what it parses.
+    const std::string worn_user = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    {
+        auto worn_transport = std::make_shared<CannedTransport>(200,
+            R"([{"itemId":"11111111-1111-4111-8111-111111111111","attachmentPoint":5},)"
+            R"({"itemId":"22222222-2222-4222-8222-222222222222","attachmentPoint":31}])");
+        homeworldz::grid::Client worn_client(worn_transport);
+        const auto worn = worn_client.worn_attachments(worn_user);
+        if (!worn || worn->size() != 2) return 1;
+        if ((*worn)[0].item_id != "11111111-1111-4111-8111-111111111111" ||
+            (*worn)[0].attachment_point != 5 ||
+            (*worn)[1].attachment_point != 31) return 1;
+        if (worn_transport->requests.back().method != "GET" ||
+            worn_transport->requests.back().path != "/api/v1/attachments/" + worn_user) return 1;
+    }
+    {
+        // Wearing nothing is a fact and must parse as an empty list. If it came
+        // back as nullopt an arrival would log "grid could not answer" every
+        // time anyone with an empty wardrobe arrived.
+        auto empty_transport = std::make_shared<CannedTransport>(200, "[]");
+        homeworldz::grid::Client empty_client(empty_transport);
+        const auto worn = empty_client.worn_attachments(worn_user);
+        if (!worn || !worn->empty()) return 1;
+    }
+    {
+        // A grid that cannot answer is not an empty wardrobe. Arrival treats
+        // these differently: one strips nothing, the other would be taken as
+        // "you are wearing nothing" and leave the avatar bare.
+        auto refusing = std::make_shared<CannedTransport>(503,
+            R"({"code":"attachment_store_unavailable","message":"attachment storage is unavailable"})");
+        homeworldz::grid::Client refusing_client(refusing);
+        if (refusing_client.worn_attachments(worn_user)) return 1;
+    }
+    {
+        // Point 0 means "wherever the item says" — a question, not a place. A
+        // row carrying one cannot be acted on, so the whole answer is refused
+        // rather than one item being rezzed somewhere invented.
+        auto unresolved = std::make_shared<CannedTransport>(200,
+            R"([{"itemId":"11111111-1111-4111-8111-111111111111","attachmentPoint":0}])");
+        homeworldz::grid::Client unresolved_client(unresolved);
+        if (unresolved_client.worn_attachments(worn_user)) return 1;
+        auto nameless = std::make_shared<CannedTransport>(200, R"([{"attachmentPoint":5}])");
+        homeworldz::grid::Client nameless_client(nameless);
+        if (nameless_client.worn_attachments(worn_user)) return 1;
+    }
+    {
+        auto writes = std::make_shared<CannedTransport>(204, std::string{});
+        homeworldz::grid::Client write_client(writes);
+        if (!write_client.set_attachment_worn(worn_user, "11111111-1111-4111-8111-111111111111", 5, true))
+            return 1;
+        if (writes->requests.back().method != "PUT" ||
+            writes->requests.back().path != "/api/v1/attachments/" + worn_user ||
+            writes->requests.back().body.find(R"("attachmentPoint":5)") == std::string::npos ||
+            writes->requests.back().body.find(R"("worn":true)") == std::string::npos) return 1;
+        if (!write_client.set_attachment_worn(worn_user, "11111111-1111-4111-8111-111111111111", 0, false) ||
+            writes->requests.back().body.find(R"("worn":false)") == std::string::npos) return 1;
+    }
     return 0;
 }

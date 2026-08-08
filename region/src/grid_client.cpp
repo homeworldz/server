@@ -1258,6 +1258,60 @@ std::optional<TicketIdentity> Client::validate_region_ticket(std::string_view re
     return identity;
 }
 
+std::optional<std::vector<WornAttachment>> Client::worn_attachments(std::string_view user_id) {
+    const auto response = transport_->send(
+        "GET", "/api/v1/attachments/" + std::string(user_id), {});
+    if (response.status_code != 200) return std::nullopt;
+    std::vector<WornAttachment> result;
+    const auto& body = response.body;
+    std::size_t position = body.find('[');
+    if (position == std::string::npos) return std::nullopt;
+    ++position;
+    while (position < body.size()) {
+        while (position < body.size() && (body[position] == ' ' || body[position] == ',')) ++position;
+        if (position < body.size() && body[position] == ']') return result;
+        if (position >= body.size() || body[position] != '{') return std::nullopt;
+        const auto start = position;
+        std::size_t depth = 0;
+        bool quoted = false;
+        bool escaped = false;
+        for (; position < body.size(); ++position) {
+            const auto character = body[position];
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (character == '\\') escaped = true;
+                else if (character == '"') quoted = false;
+                continue;
+            }
+            if (character == '"') quoted = true;
+            else if (character == '{') ++depth;
+            else if (character == '}' && --depth == 0) { ++position; break; }
+        }
+        if (depth != 0) return std::nullopt;
+        const auto element = std::string_view(body).substr(start, position - start);
+        WornAttachment worn;
+        worn.item_id = json_field(element, "itemId");
+        const auto point = json_int(element, "attachmentPoint");
+        // A row without a usable point is a row this region cannot act on, and
+        // rezzing it somewhere arbitrary is worse than reporting it: refuse the
+        // whole answer rather than silently wear one thing in the wrong place.
+        if (worn.item_id.empty() || !point || *point < 1 || *point > 127) return std::nullopt;
+        worn.attachment_point = static_cast<std::uint8_t>(*point);
+        result.push_back(std::move(worn));
+    }
+    return std::nullopt;
+}
+
+bool Client::set_attachment_worn(std::string_view user_id, std::string_view item_id,
+                                 std::uint8_t attachment_point, bool worn) {
+    const auto body = "{\"itemId\":" + api::json_string(item_id) +
+                      ",\"attachmentPoint\":" + std::to_string(attachment_point) +
+                      ",\"worn\":" + (worn ? "true" : "false") + '}';
+    const auto status = transport_->send(
+        "PUT", "/api/v1/attachments/" + std::string(user_id), body).status_code;
+    return status == 200 || status == 204;
+}
+
 bool Client::set_gesture_active(std::string_view user_id, std::string_view item_id,
                                 std::string_view asset_id, bool active) {
     const auto body = "{\"itemId\":" + api::json_string(item_id) +

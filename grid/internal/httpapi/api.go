@@ -15,6 +15,7 @@ import (
 
 	"github.com/homeworldz/server/grid/internal/arrival"
 	"github.com/homeworldz/server/grid/internal/assetmeta"
+	"github.com/homeworldz/server/grid/internal/attachments"
 	"github.com/homeworldz/server/grid/internal/durability"
 	"github.com/homeworldz/server/grid/internal/estate"
 	"github.com/homeworldz/server/grid/internal/gestures"
@@ -64,6 +65,7 @@ type API struct {
 	taskTransfers  tasktransfer.Store
 	locations      locations.Store
 	gestures       gestures.Store
+	attachments    attachments.Store
 	estates        estate.Store
 	welcomePoints  []arrival.Point
 	ticketVerifier *webtoken.Signer
@@ -112,6 +114,7 @@ type Options struct {
 	TaskTransfers     tasktransfer.Store
 	Locations         locations.Store
 	Gestures          gestures.Store
+	Attachments       attachments.Store
 	Estates           estate.Store
 	// Welcome is the ordered new-arrival list ([grid] welcome_locations),
 	// shared with the client's world entry: where a viewer login lands when
@@ -139,7 +142,7 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 		provisioned:  options.Provisioned, terrainHTTP: options.TerrainHTTPClient,
 		terrainCache: newTerrainTileCache(), layerCache: newTerrainLayerCache(), transits: options.Transits,
 		taskTransfers: options.TaskTransfers, locations: options.Locations,
-		gestures: options.Gestures, estates: options.Estates,
+		gestures: options.Gestures, attachments: options.Attachments, estates: options.Estates,
 		welcomePoints: options.Welcome, ticketVerifier: options.TicketVerifier,
 		welcomeText: options.WelcomeMessage}
 	if a.publicURL == "" {
@@ -188,6 +191,7 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 	mux.HandleFunc("/api/v1/presence/", a.presenceByUser)
 	mux.HandleFunc("/api/v1/locations/", a.locationByUser)
 	mux.HandleFunc("/api/v1/gestures/", a.gesturesByUser)
+	mux.HandleFunc("/api/v1/attachments/", a.attachmentsByUser)
 	mux.HandleFunc("/api/v1/inventory/", a.inventoryByUser)
 	mux.HandleFunc("/api/v1/assets", a.assetsRoot)
 	mux.HandleFunc("/api/v1/assets/", a.assetByID)

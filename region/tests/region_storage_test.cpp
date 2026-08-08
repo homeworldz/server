@@ -294,6 +294,38 @@ int main() {
             }
             if (!corruption_detected) return 1;
 
+            // An attachment is not the region's to keep. Removing the filter that
+            // excludes one makes this block fail at load_snapshot, not at the
+            // find calls below: a worn linkset is two levels deep — child prim,
+            // worn root, avatar — and the loader rejects nested links, so a
+            // stored attachment costs the entire scene, not one stray prim.
+            {
+                homeworldz::scene::Scene worn_scene;
+                const auto ground = worn_scene.create("ground prim", {10, 11, 12});
+                const auto wearer = worn_scene.create("wearer", {20, 21, 22});
+                const auto attachment = worn_scene.create("worn root", {20, 21, 22});
+                auto* worn_root = worn_scene.find(attachment);
+                if (worn_root == nullptr) return 1;
+                worn_root->object_id = "dddddddd-1111-4111-8111-dddddddddddd";
+                worn_root->parent_id = wearer;
+                worn_root->attachment_point = 5;
+                worn_root->attachment_item_id = "eeeeeeee-1111-4111-8111-eeeeeeeeeeee";
+                const auto worn_child = worn_scene.create("worn child", {20, 21, 22});
+                auto* child = worn_scene.find(worn_child);
+                if (child == nullptr) return 1;
+                child->parent_id = attachment;
+                homeworldz::storage::RegionStorage worn_storage(path / "worn");
+                worn_storage.save_snapshot(worn_scene);
+                homeworldz::scene::Scene restored_worn;
+                if (!worn_storage.load_snapshot(restored_worn)) return 1;
+                if (restored_worn.find(ground) == nullptr) return 1;
+                // The child carries no point of its own — it is excluded because
+                // the root it hangs from is worn, which is the case that would
+                // otherwise leave half a linkset behind.
+                if (restored_worn.find(attachment) != nullptr ||
+                    restored_worn.find(worn_child) != nullptr) return 1;
+            }
+
             // Parcel persistence round-trip: a divided region with an access entry.
             if (storage.load_parcels()) return 1; // none stored yet
             homeworldz::parcel::ParcelSet set(256, "aaaa0000-0000-4000-8000-000000000001",

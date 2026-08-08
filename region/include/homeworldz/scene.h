@@ -116,6 +116,16 @@ struct Entity {
     // parametric prim.
     std::string sculpt_id;
     std::uint8_t sculpt_type{};
+    // Worn on an avatar. `attachment_point` is the viewer's point number with
+    // ATTACHMENT_ADD already stripped; zero means this entity is not an
+    // attachment, which is the only test any caller should make. When it is
+    // set, `parent_id` is the wearer's avatar entity and `local_position` /
+    // `local_rotation` are the offset from the attachment joint.
+    std::uint8_t attachment_point{};
+    // The inventory item being worn, on the root prim only. Detach reports it
+    // back to the viewer, and it is how a second Wear of the same item is
+    // recognised as a re-wear rather than a second copy.
+    std::string attachment_item_id;
 };
 
 struct RayIntersection {
