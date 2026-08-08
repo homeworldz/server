@@ -815,6 +815,38 @@ const std::vector<std::byte>& default_prim_texture_entry() {
     return entry;
 }
 
+// What an *uploaded model* wears when it brought no textures of its own.
+//
+// A newly rezzed prim is plywood, which is right: it is the Second Life
+// convention, it is unmistakably a placeholder, and a creator who rezzes a box
+// expects it. An uploaded model is a different thing. Its creator made geometry
+// and is looking at whether the geometry arrived, and plywood's loud grain reads
+// as a texture that went wrong rather than as one that was never there - it
+// obscures the surface being inspected and invites the question "why is my model
+// wood?". Blank shows the shape.
+//
+// IMG_WHITE rather than a null id: the viewer names this UUID as a real asset
+// ("dataserver" in indra_constants.cpp), and this grid serves it - checked, not
+// assumed, because plywood is also a dataserver asset and renders here largely
+// because viewers cache it from Second Life. A texture that resolves only for
+// people who have been to another grid is not a default.
+const std::vector<std::byte>& blank_prim_texture_entry() {
+    static const auto entry = [] {
+        const auto blank = homeworldz::viewer::parse_uuid("5748decc-f629-461c-9a36-a35a221fe21f");
+        if (!blank) throw std::logic_error("blank texture UUID is invalid");
+        return homeworldz::viewer::default_texture_entry(*blank);
+    }();
+    return entry;
+}
+
+// The same texture as a bare id, for the per-face default of a model that
+// textured some faces and not others.
+homeworldz::viewer::Uuid blank_texture_id() {
+    static const auto id =
+        homeworldz::viewer::parse_uuid("5748decc-f629-461c-9a36-a35a221fe21f").value();
+    return id;
+}
+
 void apply_extra_physics(
     homeworldz::scene::Entity& entity, const homeworldz::viewer::ObjectFlagUpdate& update) {
     entity.physics_shape_type = std::min<std::uint8_t>(update.physics_shape_type, 0x02);
@@ -3840,7 +3872,7 @@ int main(int argc, char* argv[]) {
                                     // asking for one of these gets not-yet,
                                     // which is the same contract mesh has.
                                     if (texture_assets.empty()) {
-                                        wrapper.texture_entry = default_prim_texture_entry();
+                                        wrapper.texture_entry = blank_prim_texture_entry();
                                     } else {
                                         std::vector<homeworldz::mesh_model::Face> faces;
                                         std::vector<std::optional<homeworldz::viewer::Uuid>> images;
@@ -3848,11 +3880,9 @@ int main(int argc, char* argv[]) {
                                             images.push_back(homeworldz::viewer::parse_uuid(asset));
                                         for (const auto index : extracted.face_textures)
                                             faces.push_back({index, {1.0f, 1.0f, 1.0f, 1.0f}});
-                                        const auto plywood = homeworldz::viewer::parse_uuid(
-                                            "89556747-24cb-43ed-920b-47caed15465f").value();
                                         wrapper.texture_entry =
                                             homeworldz::mesh_model::instance_texture_entry(
-                                                plywood, faces, images);
+                                                blank_texture_id(), faces, images);
                                     }
                                     wrapper.scale.x = std::clamp(bounds.extent[0], 0.01f, 64.0f);
                                     wrapper.scale.y = std::clamp(bounds.extent[1], 0.01f, 64.0f);
@@ -4872,8 +4902,11 @@ int main(int argc, char* argv[]) {
                                             static_cast<void>(viewer_grid->create_inventory_item(
                                                 authorized_agent_id, texture_item));
                                         }
-                                        const auto plywood = homeworldz::viewer::parse_uuid(
-                                            "89556747-24cb-43ed-920b-47caed15465f").value();
+                                        // Faces the model did not texture. Blank rather than
+                                        // plywood, for the same reason as the session upload
+                                        // path: a creator inspecting an uploaded model reads
+                                        // wood grain as a texture that went wrong.
+                                        const auto untextured = blank_texture_id();
                                         const auto entity_for =
                                             [&](const homeworldz::mesh_model::Instance& instance) {
                                             homeworldz::scene::Entity entity;
@@ -4892,7 +4925,7 @@ int main(int argc, char* argv[]) {
                                             entity.scale.z = std::clamp(instance.scale[2], 0.001f, 64.0f);
                                             entity.texture_entry =
                                                 homeworldz::mesh_model::instance_texture_entry(
-                                                    plywood, instance.faces, textures);
+                                                    untextured, instance.faces, textures);
                                             return entity;
                                         };
                                         const auto& root_instance = resources.instances.front();
