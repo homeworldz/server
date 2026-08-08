@@ -894,6 +894,10 @@ std::optional<homeworldz::viewer::StaticObject> static_object_from_entity(
     // A worn prim is drawn on its wearer's attachment joint only if the State
     // byte says which joint. Parenting alone puts it at the avatar's origin.
     object.state = homeworldz::viewer::attachment_state(entity.attachment_point);
+    // And which item it is, or the viewer cannot tell two worn objects apart.
+    if (entity.attachment_point != 0)
+        if (const auto worn_item = homeworldz::viewer::parse_uuid(entity.attachment_item_id))
+            object.attachment_item_id = *worn_item;
     object.id = *object_id;
     object.owner_id = *owner_id;
     const bool is_owner = entity.owner_id == recipient_id;

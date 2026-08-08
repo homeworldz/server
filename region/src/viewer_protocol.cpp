@@ -3080,8 +3080,17 @@ std::vector<std::byte> encode_static_object_update(std::uint64_t region_handle, 
     append_le_u16(output, object.profile_begin);
     append_le_u16(output, object.profile_end);
     append_le_u16(output, object.profile_hollow);
+    // NameValue. One line, "Name TYPE CLASS SENDTO Value", newline terminated,
+    // exactly as llnamevalue.cpp parses it.
+    std::vector<std::byte> name_values;
+    if (object.attachment_item_id != Uuid{}) {
+        const auto line = "AttachItemID STRING RW SV " +
+                          format_uuid(object.attachment_item_id) + "\n";
+        name_values.reserve(line.size());
+        for (const char character : line) name_values.push_back(static_cast<std::byte>(character));
+    }
     if (!append_binary(output, object.texture_entry, 2) || !append_binary(output, {}, 1) ||
-        !append_binary(output, {}, 2)) return {}; // texture, animation, name/value
+        !append_binary(output, name_values, 2)) return {}; // texture, animation, name/value
     const std::array<std::byte, 1> prim_count{std::byte{1}};
     if (!append_binary(output, prim_count, 2) || !append_binary(output, {}, 1)) return {}; // data, text
     output.insert(output.end(), 4, std::byte{}); // text color

@@ -1000,6 +1000,13 @@ struct StaticObject {
     // The point is nibble-swapped into this byte — see attachment_state below,
     // which is the inverse of the viewer's ATTACHMENT_ID_FROM_STATE.
     std::uint8_t state{};
+    // The inventory item a worn object came from, sent as the NameValue
+    // "AttachItemID". Not decoration: the viewer identifies attachments by it,
+    // and every attachment carrying the same (null) id is read as the same item
+    // attached twice — LLViewerJointAttachment::addObject then detaches the
+    // previous one, so each new attachment silently replaced the last one
+    // (in-world, 2026-08-08). Zero for anything not worn.
+    Uuid attachment_item_id{};
     Uuid id{};
     Uuid owner_id{};
     std::uint32_t update_flags{};

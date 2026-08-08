@@ -1760,6 +1760,33 @@ int main() {
         if (homeworldz::viewer::decode_detach_attachment_into_inv(wrong_id)) return 52;
     }
     {
+        // An attachment's ObjectUpdate has to carry AttachItemID, because that
+        // is how the viewer tells two worn objects apart. Without it both read
+        // as the same item and it detaches the older one — every Add replaced
+        // instead of adding until this went in.
+        homeworldz::viewer::StaticObject worn_object;
+        worn_object.local_id = 42;
+        worn_object.id = *homeworldz::viewer::parse_uuid(
+            "af46ed87-9727-423a-bbf2-f2d81a451816");
+        worn_object.owner_id = *homeworldz::viewer::parse_uuid(
+            "efa3f54c-9be7-47c1-b6f3-197d778f32b3");
+        worn_object.state = homeworldz::viewer::attachment_state(5);
+        worn_object.attachment_item_id = *homeworldz::viewer::parse_uuid(
+            "ad369719-9832-4128-ab07-d75d70322a41");
+        const auto encoded = homeworldz::viewer::encode_static_object_update(1, worn_object);
+        const std::string wire(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+        if (wire.find("AttachItemID STRING RW SV ad369719-9832-4128-ab07-d75d70322a41\n") ==
+            std::string::npos) return 53;
+        // An ordinary prim carries no NameValue at all: a null AttachItemID on
+        // something not worn is the collision this fixes, spelled differently.
+        homeworldz::viewer::StaticObject ground_object = worn_object;
+        ground_object.state = 0;
+        ground_object.attachment_item_id = {};
+        const auto plain = homeworldz::viewer::encode_static_object_update(1, ground_object);
+        const std::string plain_wire(reinterpret_cast<const char*>(plain.data()), plain.size());
+        if (plain_wire.find("AttachItemID") != std::string::npos) return 54;
+    }
+    {
         // The State byte carries the attachment point with its nibbles swapped.
         // The check is against the viewer's own expression, written out here, and
         // not against what this region happens to produce.
