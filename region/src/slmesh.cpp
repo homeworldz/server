@@ -461,6 +461,7 @@ std::optional<Level> decode_level(std::span<const std::byte> packed) {
         Bounds3 bounds;
         std::array<float, 2> texcoord_low{}, texcoord_high{1.0f, 1.0f};
         std::span<const std::byte> positions, normals, texcoords, triangles;
+        std::span<const std::byte> weights;
         for (std::uint32_t entry = 0; entry < *entries; ++entry) {
             const auto name = reader.key();
             if (!name) return std::nullopt;
@@ -484,12 +485,13 @@ std::optional<Level> decode_level(std::span<const std::byte> packed) {
                 }
                 if (!reader.expect('}')) return std::nullopt;
             } else if (*name == "Position" || *name == "Normal" || *name == "TexCoord0" ||
-                       *name == "TriangleList") {
+                       *name == "TriangleList" || *name == "Weights") {
                 const auto payload = reader.binary();
                 if (!payload) return std::nullopt;
                 if (*name == "Position") positions = *payload;
                 else if (*name == "Normal") normals = *payload;
                 else if (*name == "TexCoord0") texcoords = *payload;
+                else if (*name == "Weights") weights = *payload;
                 else triangles = *payload;
             } else if (!reader.skip()) {
                 return std::nullopt;
@@ -523,6 +525,32 @@ std::optional<Level> decode_level(std::span<const std::byte> packed) {
                     value[axis] = dequantize(read_u16_le(texcoords, vertex * 4 + axis * 2),
                                              texcoord_low[axis], texcoord_high[axis]);
                 submesh.texcoords.push_back(value);
+            }
+        }
+        // Per-vertex skin weights, in the format encode writes: a run of
+        // (u8 joint, u16 weight) per vertex, terminated by 0xff when the vertex
+        // uses fewer than four. Read back because nothing else could verify the
+        // weights survived - the round-trip test previously searched the
+        // serialized bytes for the string "Weights", which sits inside a
+        // zlib-compressed block and was found only when deflate happened to
+        // leave it intact.
+        if (!weights.empty()) {
+            std::size_t at = 0;
+            for (std::size_t vertex = 0; vertex < vertex_count; ++vertex) {
+                std::vector<Influence> bound;
+                while (bound.size() < 4) {
+                    if (at >= weights.size()) return std::nullopt;
+                    const auto joint = static_cast<std::uint8_t>(weights[at]);
+                    if (joint == 0xff) {
+                        ++at;
+                        break;
+                    }
+                    if (at + 2 >= weights.size()) return std::nullopt;
+                    const auto scaled = read_u16_le(weights, at + 1);
+                    bound.push_back({joint, static_cast<float>(scaled) / 65535.0F});
+                    at += 3;
+                }
+                submesh.influences.push_back(std::move(bound));
             }
         }
         for (std::size_t position = 0; position + 1 < triangles.size(); position += 2)

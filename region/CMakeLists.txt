@@ -123,14 +123,23 @@ add_executable(homeworldz-session-protocol-tests tests/session_protocol_test.cpp
 target_link_libraries(homeworldz-session-protocol-tests PRIVATE homeworldz-region-core)
 add_executable(homeworldz-mesh-acceptance-tests tests/mesh_acceptance_test.cpp)
 target_link_libraries(homeworldz-mesh-acceptance-tests PRIVATE homeworldz-region-core)
+add_test(NAME region-mesh-acceptance COMMAND homeworldz-mesh-acceptance-tests)
 add_executable(homeworldz-mesh-diag src/mesh_diag_main.cpp)
 target_link_libraries(homeworldz-mesh-diag PRIVATE homeworldz-region-core)
 add_executable(homeworldz-avatar-joints-tests tests/avatar_joints_test.cpp)
 target_link_libraries(homeworldz-avatar-joints-tests PRIVATE homeworldz-region-core)
+# Every test executable in this file needs an add_test beside it. Three did not
+# (slmesh, mesh-convert, mesh-acceptance): compiled on every build and never run,
+# so the suite reported "37/37 passed" while the mesh gate's own tests sat
+# unexecuted - one of them failing since rigged acceptance was turned on
+# 2026-08-08 and reported green three times. Building a test is not running it,
+# and a binary nobody invokes fails silently for as long as nobody looks.
 add_executable(homeworldz-slmesh-tests tests/slmesh_test.cpp)
 target_link_libraries(homeworldz-slmesh-tests PRIVATE homeworldz-region-core)
+add_test(NAME region-slmesh COMMAND homeworldz-slmesh-tests)
 add_executable(homeworldz-mesh-convert-tests tests/mesh_convert_test.cpp)
 target_link_libraries(homeworldz-mesh-convert-tests PRIVATE homeworldz-region-core)
+add_test(NAME region-mesh-convert COMMAND homeworldz-mesh-convert-tests)
 add_executable(homeworldz-gltf-from-slmesh-tests tests/gltf_from_slmesh_test.cpp)
 target_link_libraries(homeworldz-gltf-from-slmesh-tests PRIVATE homeworldz-region-core)
 add_executable(homeworldz-rig-check-tests tests/rig_check_test.cpp)

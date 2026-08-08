@@ -1,5 +1,7 @@
 #include "homeworldz/mesh_convert.h"
 
+#include "homeworldz/axes.h"
+
 #include "homeworldz/avatar_joints.h"
 #include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/slmesh.h"
@@ -43,74 +45,6 @@ struct Face {
     bool any_missing_normals{};
     bool any_missing_texcoords{};
 };
-
-// glTF is +Y up with X lateral; a Homeworldz region is +Z up with X forward and
-// Y lateral. The two directions of this pipeline apply this map and its inverse,
-// so an asset authored to the glTF convention stands upright *and faces forward*
-// in-world, and a derived glTF is conformant for every tool that reads it
-// (ADR 0033 "Coordinates"). Applied after node transforms, which are expressed
-// in the source's own frame.
-//
-// **Corrected 2026-08-08, from `(x, -z, y)`.** A Y-up to Z-up conversion has two
-// degrees of freedom - which axis becomes up, and where the lateral axis goes -
-// and the old map chose only the first. It stood a model upright and left its
-// lateral axis where it found it, which is a 90 degree yaw about the new up
-// axis. Both maps are right-handed and both satisfy every word the ADR wrote,
-// because the ADR only ever argued about "upright".
-//
-// It survived because nothing ingested had a canonical facing to contradict it.
-// The fixture that fixed the *previous* axis bug was a flat triangle, chosen
-// because a cube matches every rotation - and a flat triangle can fail on up but
-// not on yaw, so the same blindness recurred one degree of freedom later. The
-// reference Bento body is the first asset with a facing the skeleton defines,
-// and it put every joint exactly 90 degrees out (client core, 2026-08-08).
-//
-// Canonical assets are stored as uploaded and never rewritten, so this changes
-// derived renditions only; bumping `generator` re-queues them.
-void to_region_axes(std::array<float, 3>& value) {
-    const float x = value[0], y = value[1], z = value[2];
-    value[0] = z;
-    value[1] = x;
-    value[2] = y;
-}
-
-// `to_region_axes` as a matrix, and its inverse. Column-major, as glTF stores
-// matrices: column c is where the map sends that basis vector.
-constexpr std::array<float, 16> region_from_gltf{
-    0, 1, 0, 0,  0, 0, 1, 0,  1, 0, 0, 0,  0, 0, 0, 1};
-constexpr std::array<float, 16> gltf_from_region{
-    0, 0, 1, 0,  1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 0, 1};
-
-std::array<float, 16> multiply(const std::array<float, 16>& lhs,
-                               const std::array<float, 16>& rhs) {
-    std::array<float, 16> result{};
-    for (int column = 0; column < 4; ++column)
-        for (int row = 0; row < 4; ++row) {
-            float sum = 0.0f;
-            for (int k = 0; k < 4; ++k) sum += lhs[k * 4 + row] * rhs[column * 4 + k];
-            result[column * 4 + row] = sum;
-        }
-    return result;
-}
-
-// An inverse bind matrix maps world space into a joint's local space, so an
-// axis change on the world it reads has to be undone on the joint space it
-// writes: the map is a **conjugation**, not an application.
-//
-// Applying `to_region_axes` to the matrix's translation alone is the tempting
-// shorthand and is wrong in a way that hides. It puts every joint in the right
-// *place* with its local frame still in glTF orientation, so the body measures
-// correctly at rest and rotates about the wrong axes the moment a joint moves -
-// which is the same half-applied frame change as the yaw above, one level down,
-// and no static check can see it.
-//
-// Until 2026-08-08 the matrices got no map at all while vertices got one, so a
-// rigged body would have drawn correctly at rest and deformed wrongly on the
-// first animation. Nothing caught it because rigged mesh has never been
-// accepted; this lands with the flag that accepts it.
-std::array<float, 16> to_region_axes_matrix(const std::array<float, 16>& inverse_bind) {
-    return multiply(multiply(region_from_gltf, inverse_bind), gltf_from_region);
-}
 
 void transform_point(const float matrix[16], std::array<float, 3>& point) {
     const float x = point[0], y = point[1], z = point[2];

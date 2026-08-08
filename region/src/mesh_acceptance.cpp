@@ -1,10 +1,13 @@
 #include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/avatar_joints.h"
+#include "homeworldz/axes.h"
+#include "homeworldz/rig_check.h"
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <vector>
 #include <string_view>
@@ -217,6 +220,93 @@ Acceptance validate_glb(std::span<const std::byte> content) {
     }
     if (!rigged_accepted && data->skins_count != 0)
         return refuse("rigged mesh is not accepted yet (ADR 0033 M4); upload the static mesh");
+    // Does the skeleton these names describe actually stand where Bento rests
+    // it? Nothing above can tell: a joint bound to the wrong target, given that
+    // target's inverse bind matrix, produces a correct-looking bind pose,
+    // because the same wrong choice writes the matrices that would expose it.
+    // So the bind positions are compared against the rest pose, with sign,
+    // before the matrices absorb the difference (rig_check.h).
+    //
+    // Runs last of the rig checks deliberately. A name that does not resolve, a
+    // mesh over the joint budget, or a fifth influence are all more specific
+    // diagnoses, and a creator is better served by "joint \"root\" is not a
+    // joint of this skeleton" than by a list of joints in the wrong place -
+    // which is what a body rigged to another skeleton produces once every name
+    // has been forced to resolve.
+    for (cgltf_size skin_index = 0; skin_index < data->skins_count; ++skin_index) {
+        const auto& skin = data->skins[skin_index];
+        // Only joints a vertex actually moves. A skin declares every armature
+        // bone whatever the mesh touches, and an unused joint's bind matrix is
+        // whatever the exporter happened to write - the reference body has two
+        // sitting 11 mm from the rest pose, moving nothing. Checking the
+        // declared list refuses that body for joints it does not use, which is
+        // the same declared-versus-used error the budget check above exists to
+        // avoid, made one field over.
+        std::vector<bool> moved(skin.joints_count, false);
+        for (cgltf_size node_index = 0; node_index < data->nodes_count; ++node_index) {
+            const auto& node = data->nodes[node_index];
+            if (node.mesh == nullptr || node.skin != &skin) continue;
+            for (cgltf_size primitive_index = 0; primitive_index < node.mesh->primitives_count;
+                 ++primitive_index) {
+                const auto& primitive = node.mesh->primitives[primitive_index];
+                const cgltf_accessor* joints = nullptr;
+                const cgltf_accessor* weights = nullptr;
+                for (cgltf_size attribute = 0; attribute < primitive.attributes_count;
+                     ++attribute) {
+                    const auto& value = primitive.attributes[attribute];
+                    if (value.type == cgltf_attribute_type_joints && value.index == 0)
+                        joints = value.data;
+                    if (value.type == cgltf_attribute_type_weights && value.index == 0)
+                        weights = value.data;
+                }
+                if (joints == nullptr || weights == nullptr) continue;
+                for (cgltf_size vertex = 0; vertex < joints->count; ++vertex) {
+                    cgltf_uint slots[4] = {};
+                    float amounts[4] = {};
+                    if (!cgltf_accessor_read_uint(joints, vertex, slots, 4) ||
+                        !cgltf_accessor_read_float(weights, vertex, amounts, 4))
+                        return refuse("a joint or weight accessor is unreadable");
+                    for (int slot = 0; slot < 4; ++slot)
+                        if (amounts[slot] > 0.0F && slots[slot] < moved.size())
+                            moved[slots[slot]] = true;
+                }
+            }
+        }
+        std::vector<std::string> names;
+        std::vector<std::array<float, 16>> inverse_bind;
+        names.reserve(skin.joints_count);
+        inverse_bind.reserve(skin.joints_count);
+        for (cgltf_size joint_index = 0; joint_index < skin.joints_count; ++joint_index) {
+            if (!moved[joint_index]) continue;
+            const auto* node = skin.joints[joint_index];
+            const std::string_view name =
+                node != nullptr && node->name != nullptr ? node->name : "";
+            names.emplace_back(canonical_joint(name));
+            std::array<float, 16> matrix{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+            if (skin.inverse_bind_matrices != nullptr &&
+                !cgltf_accessor_read_float(skin.inverse_bind_matrices, joint_index,
+                                           matrix.data(), 16))
+                return refuse("an inverse bind matrix is unreadable");
+            // Conjugated into region axes, exactly as the converter will store
+            // it, so the gate measures what would be written rather than what
+            // arrived.
+            inverse_bind.push_back(to_region_axes_matrix(matrix));
+        }
+        const auto finding = check_rig(names, inverse_bind);
+        if (finding.outcome == RigOutcome::Disagrees)
+            return refuse("a skin's joints do not stand where the " +
+                          std::string(rigged_skeleton) + " skeleton rests them: " +
+                          std::to_string(finding.disagreed) + " of " +
+                          std::to_string(finding.joints.size()) + " disagree, worst " +
+                          finding.worst_joint + " by " +
+                          std::to_string(static_cast<int>(finding.worst_distance_m * 1000.0F)) +
+                          " mm");
+        // RigOutcome::Unproven is accepted (mesh_acceptance.h): a body weighted
+        // only to positionally-coincident joints is unproven rather than wrong,
+        // and refusing on a measurement that could not discriminate would turn a
+        // limitation of the check into a rejection of the creator's work.
+    }
+
 
     // A morph target at zero costs nothing: the base geometry is the intended
     // default and is what the converter emits. A non-zero default weight means

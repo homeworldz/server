@@ -5,6 +5,8 @@
 
 #include "homeworldz/mesh_convert.h"
 
+#include "homeworldz/axes.h"
+
 #include "homeworldz/slmesh.h"
 
 #include <array>
@@ -28,15 +30,6 @@ std::string number(float value) {
     return std::string(buffer.data(), end);
 }
 
-// The inverse of mesh_convert's to_region_axes: a region is +Z up and glTF is
-// +Y up, so what leaves here is conformant glTF that any tool reads upright
-// (ADR 0033 "Coordinates").
-void to_gltf_axes(std::array<float, 3>& value) {
-    const float x = value[0], y = value[1], z = value[2];
-    value[0] = y;
-    value[1] = z;
-    value[2] = x;
-}
 
 void append_u32(std::vector<std::byte>& out, std::uint32_t value) {
     for (int shift = 0; shift < 32; shift += 8)

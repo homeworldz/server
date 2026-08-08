@@ -144,10 +144,16 @@ int main() {
     const auto rigged = glb(std::string(rig_head) +
         R"(,"nodes":[{"mesh":0},{"name":"mPelvis"}],"skins":[{"joints":[1]}]})",
         triangle_bin());
-    const auto refused_rigged = validate_glb(rigged);
-    if (refused_rigged.accepted ||
-        refused_rigged.reason.find("rigged") == std::string::npos)
-        return 7;
+    // Accepted since 2026-08-08: rigged mesh is no longer refused outright, and
+    // this skin's single joint is a real Bento name that no vertex moves, so
+    // there is nothing left to object to.
+    //
+    // This assertion previously required a refusal and was correct until the
+    // flag flipped. It then failed on every build for a day without anyone
+    // seeing it, because this executable had no add_test and ctest never ran it
+    // - which is why the CMakeLists now carries a note about that.
+    const auto rigged_result = validate_glb(rigged);
+    if (!rigged_result.accepted) return 7;
 
     // A joint that is not on the skeleton is refused by name. Whoever hears
     // this may be several tools away from the file, so the reason identifies
@@ -166,10 +172,11 @@ int main() {
     const auto aliased = glb(std::string(rig_head) +
         R"(,"nodes":[{"mesh":0},{"name":"hip"}],"skins":[{"joints":[1]}]})",
         triangle_bin());
-    const auto refused_alias = validate_glb(aliased);
-    if (refused_alias.accepted ||
-        refused_alias.reason.find("rigged") == std::string::npos)
-        return 10;
+    // Accepted, since rigged mesh is no longer refused outright: the point that
+    // survives is that `hip` resolves rather than being rejected as an unknown
+    // joint, which is what the published alias compatibility promises.
+    const auto alias_result = validate_glb(aliased);
+    if (!alias_result.accepted) return 10;
 
     // An unnamed joint cannot be resolved at all, so it is refused before the
     // name check has a name to report.
@@ -182,18 +189,34 @@ int main() {
 
     // A fifth influence arrives as JOINTS_1: glTF numbers joint and weight sets
     // four to a set, so any index above zero exceeds the limit by definition.
+    // Sized so every accessor is readable. The original fixture pointed a
+    // 48-byte VEC4 float accessor at a 36-byte view, so validation refused it as
+    // unreadable before ever reaching the influence check — the assertion below
+    // passed on the wrong refusal, and nobody saw it because this executable was
+    // never registered with ctest.
+    std::vector<std::uint8_t> influence_bin(108, 0);
+    {
+        const float positions[9] = {0, 0, 0, 1, 0, 0, 1, 1, 0};
+        std::memcpy(influence_bin.data(), positions, sizeof positions);
+        const std::uint16_t joints[12] = {};
+        std::memcpy(influence_bin.data() + 36, joints, sizeof joints);
+        float weights[12] = {};
+        for (int vertex = 0; vertex < 3; ++vertex) weights[vertex * 4] = 1.0F;
+        std::memcpy(influence_bin.data() + 60, weights, sizeof weights);
+    }
     const auto five_influences = glb(
-        R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":36}],)"
+        R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":108}],)"
         R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)"
-        R"({"buffer":0,"byteOffset":0,"byteLength":24}],)"
+        R"({"buffer":0,"byteOffset":36,"byteLength":24},)"
+        R"({"buffer":0,"byteOffset":60,"byteLength":48}],)"
         R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
         R"("min":[0,0,0],"max":[1,1,0]},)"
         R"({"bufferView":1,"componentType":5123,"count":3,"type":"VEC4"},)"
-        R"({"bufferView":0,"componentType":5126,"count":3,"type":"VEC4"}],)"
+        R"({"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"}],)"
         R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,)"
         R"("WEIGHTS_0":2,"JOINTS_1":1,"WEIGHTS_1":2}}]}],)"
-        R"("nodes":[{"mesh":0},{"name":"mPelvis"}],"skins":[{"joints":[1]}],)"
-        R"("scenes":[{"nodes":[0]}],"scene":0})", triangle_bin());
+        R"("nodes":[{"mesh":0,"skin":0},{"name":"mPelvis"}],"skins":[{"joints":[1]}],)"
+        R"("scenes":[{"nodes":[0]}],"scene":0})", influence_bin);
     const auto refused_influences = validate_glb(five_influences);
     if (refused_influences.accepted ||
         refused_influences.reason.find("influences") == std::string::npos)
@@ -219,11 +242,68 @@ int main() {
         // re-rig at a target half the real size.
         policy.find("\"skeletonJoints\":159") == std::string::npos ||
         policy.find("\"maxJointsPerMesh\":110") == std::string::npos ||
-        policy.find("\"forwardLooking\":[\"maxRigInfluences\",\"skeleton\","
-                    "\"skeletonJoints\",\"maxJointsPerMesh\"]") == std::string::npos ||
+        // Empty since rigged acceptance was turned on 2026-08-08: the four rig
+        // keys left forwardLooking together, because the array is one ternary on
+        // rigged_accepted rather than four independent entries. A client reading
+        // it stops hedging on those limits the moment they are enforced.
+        policy.find("\"forwardLooking\":[]") == std::string::npos ||
         policy.find("\"draco\":false") == std::string::npos ||
-        policy.find("\"rigged\":false") == std::string::npos ||
+        policy.find("\"rigged\":true") == std::string::npos ||
         policy.find("KHR_texture_transform") == std::string::npos)
         return 8;
+    // The geometric check, and the distinction that decides whether it is
+    // usable. Both files below carry identity inverse bind matrices, which put
+    // every joint at the origin - nowhere near where the skeleton rests
+    // mPelvis - so the only difference between them is whether a vertex moves
+    // that joint.
+    {
+        // positions (36) + joints (24) + weights-one (48) + weights-zero (48)
+        std::vector<std::uint8_t> bin(156, 0);
+        const float positions[9] = {0, 0, 0, 1, 0, 0, 1, 1, 0};
+        std::memcpy(bin.data(), positions, sizeof positions);
+        const std::uint16_t joints[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        std::memcpy(bin.data() + 36, joints, sizeof joints);
+        float weights_one[12] = {};
+        for (int vertex = 0; vertex < 3; ++vertex) weights_one[vertex * 4] = 1.0F;
+        std::memcpy(bin.data() + 60, weights_one, sizeof weights_one);
+        // bytes 108..155 stay zero: the same joint, moving nothing.
+
+        const auto skinned = [&](int weights_view) {
+            return glb(
+                R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":156}],)"
+                R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)"
+                R"({"buffer":0,"byteOffset":36,"byteLength":24},)"
+                R"({"buffer":0,"byteOffset":60,"byteLength":48},)"
+                R"({"buffer":0,"byteOffset":108,"byteLength":48}],)"
+                R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
+                R"("min":[0,0,0],"max":[1,1,0]},)"
+                R"({"bufferView":1,"componentType":5123,"count":3,"type":"VEC4"},)"
+                R"({"bufferView":)" + std::to_string(weights_view) +
+                R"(,"componentType":5126,"count":3,"type":"VEC4"}],)"
+                R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,)"
+                R"("WEIGHTS_0":2}}]}],)"
+                R"("nodes":[{"mesh":0,"skin":0},{"name":"mPelvis"}],)"
+                R"("skins":[{"joints":[1]}],)"
+                R"("scenes":[{"nodes":[0]}],"scene":0})", bin);
+        };
+
+        // Moved, and in the wrong place: refused, naming the skeleton.
+        const auto misplaced = validate_glb(skinned(2));
+        if (misplaced.accepted ||
+            misplaced.reason.find("do not stand where") == std::string::npos)
+            return 22;
+
+        // Declared but moved by nothing: skipped, and the file is accepted.
+        //
+        // This is the regression that matters. A skin declares every armature
+        // bone whatever the mesh touches, and an unused joint's bind matrix is
+        // whatever the exporter wrote - the Second Life reference body has two
+        // sitting 11 mm out, moving nothing. Checking the declared list refused
+        // that body for joints it does not use, which is the same
+        // declared-versus-used error the per-mesh budget exists to avoid, made
+        // one field over and caught only because a real body was to hand.
+        if (!validate_glb(skinned(3)).accepted) return 23;
+    }
+
     return 0;
 }

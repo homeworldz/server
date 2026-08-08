@@ -4,8 +4,10 @@
 
 #include <array>
 #include <string_view>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -69,37 +71,48 @@ int main() {
     if (conversion.faces != 1 || conversion.high_triangles != 2) return 2;
 
     // The wrapper prim's scale comes from the declared world bounds, in region
-    // axes: the source quad lies in glTF's XY plane (its thin axis is glTF Z),
-    // and a region is Z-up, so in-world it is thin in Y and stands 1 metre
-    // tall. Getting this wrong lays every upright model on its side, and a
-    // square quad cannot show it - only the thin axis can (client core's
-    // cube-proves-size / triangle-proves-orientation lesson, 2026-07-30).
+    // axes. The source quad lies in glTF's XY plane, so its thin axis is glTF Z,
+    // and it is translated +10 along glTF X. Under `(x, y, z)_glTF ->
+    // (z, x, y)_region` that lands thin in region X, offset along region Y, and
+    // one metre tall in region Z. A square quad cannot show any of this; only
+    // the thin axis can (the cube-proves-size / triangle-proves-orientation
+    // lesson, 2026-07-30).
+    //
+    // **This assertion discriminates the yaw, and it is the reason to run it.**
+    // It was written against the old `(x, -z, y)` map and disagreed the moment
+    // that map was corrected on 2026-08-08 — but this executable had no
+    // add_test, so it had never been run and said nothing. The one fixture in
+    // the tree that could have caught the axis fault was sitting unexecuted
+    // while the fault shipped and was found by measuring a skeleton instead.
     const auto bounds = homeworldz::mesh::declared_world_bounds(glb(json, bin));
-    if (!bounds.ok || std::fabs(bounds.center[0] - 10.5f) > 0.001f ||
-        std::fabs(bounds.extent[0] - 1.0f) > 0.001f ||
+    if (!bounds.ok || std::fabs(bounds.center[1] - 10.5f) > 0.001f ||
+        std::fabs(bounds.extent[1] - 1.0f) > 0.001f ||
         std::fabs(bounds.extent[2] - 1.0f) > 0.001f)
         return 10;
-    if (bounds.extent[1] > 0.01f) return 10;  // thin axis is region Y
+    if (bounds.extent[0] > 0.01f) return 10;  // thin axis is region X (forward)
 
     // The output is a well-formed type-49 asset whose geometry is normalized
     // by those same bounds — the unit domain the prim scale stretches back to
     // authored size. The far corner lands at (+0.5, +0.5) in the two axes the
-    // quad spans, which after the axis map are region X and Z.
+    // quad spans, which after the `(z, x, y)` axis map are region Y and Z — the
+    // quad's own plane is glTF XY, and glTF Z, its thin axis, becomes region X.
     const auto parsed = homeworldz::slmesh::parse(conversion.sl_mesh);
     if (!parsed || parsed->high.size() != 1) return 3;
     const auto& face = parsed->high.front();
     if (face.positions.size() != 4 || face.indices.size() != 6) return 4;
     bool found_corner = false;
     for (const auto& position : face.positions) {
-        if (std::fabs(position[0]) > 0.501f || std::fabs(position[2]) > 0.501f) return 5;
-        if (std::fabs(position[0] - 0.5f) < 0.001f && std::fabs(position[2] - 0.5f) < 0.001f)
+        if (std::fabs(position[1]) > 0.501f || std::fabs(position[2]) > 0.501f) return 5;
+        if (std::fabs(position[1] - 0.5f) < 0.001f && std::fabs(position[2] - 0.5f) < 0.001f)
             found_corner = true;
     }
     if (!found_corner) return 5;
 
-    // The source has no normals, so the converter computed them: a quad lying
-    // in glTF's XY plane faces glTF +Z, which in region axes is -Y.
-    if (face.normals.size() != 4 || std::fabs(std::fabs(face.normals[0][1]) - 1.0f) > 0.01f)
+    // The source has no normals, so the converter computed them: a quad lying in
+    // glTF's XY plane faces glTF +Z, which under `(z, x, y)` is region X — the
+    // forward axis. This is the same fact as the thin-extent assertion above,
+    // read off a different quantity, and it moved for the same reason.
+    if (face.normals.size() != 4 || std::fabs(std::fabs(face.normals[0][0]) - 1.0f) > 0.01f)
         return 11;
     // No texcoords in the source either, so the converter synthesized them,
     // and they vary per vertex — constant UVs are what NaN a viewer's
@@ -243,15 +256,22 @@ int main() {
             R"("scenes":[{"nodes":[0]}],"scene":0})";
         const auto rigged = homeworldz::mesh::convert_glb(glb(rigged_json, bin));
         if (!rigged.ok) return 30;
-        const std::string_view blob(reinterpret_cast<const char*>(rigged.sl_mesh.data()),
-                                    rigged.sl_mesh.size());
-        // The joint table reached the asset under its canonical names, and the
-        // weights reached the level data.
-        if (blob.find("skin") == std::string_view::npos ||
-            blob.find("mPelvis") == std::string_view::npos ||
-            blob.find("mTorso") == std::string_view::npos ||
-            blob.find("Weights") == std::string_view::npos)
-            return 31;
+        // Read the asset back rather than searching its bytes. The skin block is
+        // zlib-compressed like every other block, so looking for "mPelvis" in
+        // the blob tests whether deflate happened to leave that string
+        // uncompressed — it passed for a while by exactly that luck, and would
+        // have gone on passing had the joint table been empty.
+        const auto parsed_rig = homeworldz::slmesh::parse(rigged.sl_mesh);
+        // One code per condition: four conditions behind one exit status is how
+        // an earlier failure in this tree got attributed to the wrong assertion.
+        if (!parsed_rig) return 40;
+        if (!parsed_rig->skin) return 41;
+        const auto& joints = parsed_rig->skin->joints;
+        if (std::find(joints.begin(), joints.end(), "mPelvis") == joints.end()) return 42;
+        if (std::find(joints.begin(), joints.end(), "mTorso") == joints.end()) return 43;
+        // And the weights reached the level data, not just the joint table.
+        if (parsed_rig->high.empty()) return 44;
+        if (parsed_rig->high.front().influences.empty()) return 45;
 
         // An alias resolves to its canonical joint rather than being carried
         // through: what a viewer resolves and what the asset says should not
@@ -262,11 +282,20 @@ int main() {
                              R"({"name":"hip"})");
         const auto aliased = homeworldz::mesh::convert_glb(glb(aliased_json, bin));
         if (!aliased.ok) return 32;
-        const std::string_view aliased_blob(
-            reinterpret_cast<const char*>(aliased.sl_mesh.data()), aliased.sl_mesh.size());
-        if (aliased_blob.find("mPelvis") == std::string_view::npos ||
-            aliased_blob.find("\"hip\"") != std::string_view::npos)
-            return 33;
+        // Parsed, not searched. This assertion used to scan the serialized bytes
+        // for "mPelvis", which sits inside a zlib-compressed block: it passed
+        // only while that block happened to be stored uncompressed, and has been
+        // failing silently since compression was fixed - unseen because this
+        // executable had no add_test.
+        const auto parsed_alias = homeworldz::slmesh::parse(aliased.sl_mesh);
+        if (!parsed_alias || !parsed_alias->skin) return 46;
+        const auto& alias_joints = parsed_alias->skin->joints;
+        if (std::find(alias_joints.begin(), alias_joints.end(), "mPelvis") == alias_joints.end())
+            return 47;
+        // The alias is resolved on the way in, so the canonical name is what the
+        // asset carries and "hip" appears nowhere in it.
+        if (std::find(alias_joints.begin(), alias_joints.end(), "hip") != alias_joints.end())
+            return 48;
 
         // A joint from another skeleton is refused by name, not silently
         // dropped or mapped to something nearby.
