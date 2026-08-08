@@ -3344,6 +3344,16 @@ int main(int argc, char* argv[]) {
                             homeworldz::http::request_header_value(request, "Authorization");
                         constexpr std::string_view bearer = "Bearer ";
                         std::optional<homeworldz::grid::TicketIdentity> requester;
+                        // A ticket that could not be *checked* is not a ticket that was
+                        // rejected. Validation is a round trip to the grid, so an
+                        // unreachable grid and a bad credential both left this unset and
+                        // both answered 401 - and the two want opposite things from the
+                        // person holding it. Bad credential means sign in again; could
+                        // not validate means wait. Telling someone to re-authenticate
+                        // during an outage produces a second failure that looks like a
+                        // password problem, at the moment the grid can least answer it
+                        // (client core, 2026-08-08).
+                        bool ticket_unverifiable = false;
                         if (response.method == "GET" && authorization.starts_with(bearer) &&
                             viewer_grid && registration) {
                             try {
@@ -3354,6 +3364,7 @@ int main(int argc, char* argv[]) {
                                 requester = ticket_client.validate_region_ticket(
                                     provisioned_region_id, authorization.substr(bearer.size()));
                             } catch (const std::exception&) {
+                                ticket_unverifiable = true;
                             }
                         }
                         if (response.method != "GET") {
@@ -3361,6 +3372,13 @@ int main(int argc, char* argv[]) {
                                 request, 405, "application/json",
                                 homeworldz::api::to_json(homeworldz::api::Error{
                                     "method_not_allowed", "terrain requires GET"}));
+                        } else if (ticket_unverifiable) {
+                            response = homeworldz::http::response_for_content(
+                                request, 503, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "ticket_validation_unavailable",
+                                    "the ticket could not be validated because the grid did not "
+                                    "answer; retry rather than signing in again"}));
                         } else if (!requester) {
                             response = homeworldz::http::response_for_content(
                                 request, 401, "application/json",
@@ -3478,6 +3496,16 @@ int main(int argc, char* argv[]) {
                             homeworldz::http::request_header_value(request, "Authorization");
                         constexpr std::string_view bearer = "Bearer ";
                         std::optional<homeworldz::grid::TicketIdentity> requester;
+                        // A ticket that could not be *checked* is not a ticket that was
+                        // rejected. Validation is a round trip to the grid, so an
+                        // unreachable grid and a bad credential both left this unset and
+                        // both answered 401 - and the two want opposite things from the
+                        // person holding it. Bad credential means sign in again; could
+                        // not validate means wait. Telling someone to re-authenticate
+                        // during an outage produces a second failure that looks like a
+                        // password problem, at the moment the grid can least answer it
+                        // (client core, 2026-08-08).
+                        bool ticket_unverifiable = false;
                         if (response.method == "GET" && authorization.starts_with(bearer) &&
                             viewer_grid && registration) {
                             try {
@@ -3488,6 +3516,7 @@ int main(int argc, char* argv[]) {
                                 requester = ticket_client.validate_region_ticket(
                                     provisioned_region_id, authorization.substr(bearer.size()));
                             } catch (const std::exception&) {
+                                ticket_unverifiable = true;
                             }
                         }
                         if (response.method != "GET") {
@@ -3495,6 +3524,13 @@ int main(int argc, char* argv[]) {
                                 request, 405, "application/json",
                                 homeworldz::api::to_json(homeworldz::api::Error{
                                     "method_not_allowed", "asset fetch requires GET"}));
+                        } else if (ticket_unverifiable) {
+                            response = homeworldz::http::response_for_content(
+                                request, 503, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "ticket_validation_unavailable",
+                                    "the ticket could not be validated because the grid did not "
+                                    "answer; retry rather than signing in again"}));
                         } else if (!requester) {
                             response = homeworldz::http::response_for_content(
                                 request, 401, "application/json",
@@ -3653,6 +3689,16 @@ int main(int argc, char* argv[]) {
                             homeworldz::http::request_header_value(request, "Authorization");
                         constexpr std::string_view bearer = "Bearer ";
                         std::optional<homeworldz::grid::TicketIdentity> uploader;
+                        // A ticket that could not be *checked* is not a ticket that was
+                        // rejected. Validation is a round trip to the grid, so an
+                        // unreachable grid and a bad credential both left this unset and
+                        // both answered 401 - and the two want opposite things from the
+                        // person holding it. Bad credential means sign in again; could
+                        // not validate means wait. Telling someone to re-authenticate
+                        // during an outage produces a second failure that looks like a
+                        // password problem, at the moment the grid can least answer it
+                        // (client core, 2026-08-08).
+                        bool ticket_unverifiable = false;
                         if (response.method == "POST" && authorization.starts_with(bearer) &&
                             viewer_grid && registration) {
                             try {
@@ -3668,6 +3714,7 @@ int main(int argc, char* argv[]) {
                                 uploader = ticket_client.validate_region_ticket(
                                     provisioned_region_id, authorization.substr(bearer.size()));
                             } catch (const std::exception&) {
+                                ticket_unverifiable = true;
                             }
                         }
                         if (response.method != "POST") {
@@ -3675,6 +3722,13 @@ int main(int argc, char* argv[]) {
                                 request, 405, "application/json",
                                 homeworldz::api::to_json(homeworldz::api::Error{
                                     "method_not_allowed", "mesh upload requires POST"}));
+                        } else if (ticket_unverifiable) {
+                            response = homeworldz::http::response_for_content(
+                                request, 503, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "ticket_validation_unavailable",
+                                    "the ticket could not be validated because the grid did not "
+                                    "answer; retry rather than signing in again"}));
                         } else if (!uploader) {
                             response = homeworldz::http::response_for_content(
                                 request, 401, "application/json",
