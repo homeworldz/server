@@ -8,11 +8,10 @@
 #include <string_view>
 
 namespace homeworldz::mesh {
-namespace {
 
 // glTF matrices are column-major, so the translation is elements 12..14 and the
 // upper-left 3x3 reads down the columns.
-bool invert_affine(const std::array<float, 16>& m, std::array<float, 3>& translation) {
+bool bind_rest_position(const std::array<float, 16>& m, std::array<float, 3>& translation) {
     const double a = m[0], b = m[4], c = m[8];
     const double d = m[1], e = m[5], f = m[9];
     const double g = m[2], h = m[6], i = m[10];
@@ -36,6 +35,8 @@ bool invert_affine(const std::array<float, 16>& m, std::array<float, 3>& transla
     translation[2] = static_cast<float>(-(r20 * tx + r21 * ty + r22 * tz));
     return true;
 }
+
+namespace {
 
 const JointRest* rest_of(std::string_view name) {
     for (const auto& rest : joint_rest_positions)
@@ -81,7 +82,7 @@ RigFinding check_rig(const std::vector<std::string>& joints,
             continue;
         }
         std::array<float, 3> observed{};
-        if (!invert_affine(inverse_bind[index], observed)) {
+        if (!bind_rest_position(inverse_bind[index], observed)) {
             entry.verdict = JointVerdict::Unknown;
             ++finding.unknown;
             finding.joints.push_back(std::move(entry));

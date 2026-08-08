@@ -273,6 +273,58 @@ int main() {
         if (parsed_rig->high.empty()) return 44;
         if (parsed_rig->high.front().influences.empty()) return 45;
 
+        // Emitted inverse binds must be axis-aligned, because every joint in
+        // avatar_skeleton.xml is: rot="0 0 0" throughout. An exporter's bone
+        // orientations describe a skeleton the viewer does not have, and
+        // carrying them through rotates the geometry about foreign axes as soon
+        // as it is skinned — the reference body's whole arm chain came out a
+        // quarter turn off while measuring correctly, because a position falls
+        // out of the inversion whatever the rotation was.
+        //
+        // The fixture's matrices are identity, so this cannot catch a converter
+        // that merely passes them through; the rotated case below is what tests
+        // the discarding.
+        for (const auto& matrix : parsed_rig->skin->inverse_bind)
+            for (int row = 0; row < 3; ++row)
+                for (int column = 0; column < 3; ++column)
+                    if (std::fabs(matrix[column * 4 + row] - (row == column ? 1.0f : 0.0f)) > 1e-4f)
+                        return 50;
+
+        // A joint whose bind matrix carries a real rotation: a quarter turn,
+        // which is the shape the arm chain arrived in. The rotation must be
+        // discarded and the position it implies kept.
+        {
+            std::vector<std::uint8_t> turned_bin = bin;
+            // The second joint's inverse bind, at byte 108 + 64: a rotation of
+            // 90 degrees about x with a translation, column-major.
+            const float turned[16] = {1, 0, 0, 0,
+                                      0, 0, 1, 0,
+                                      0, -1, 0, 0,
+                                      0.25f, 0.5f, 0.75f, 1};
+            std::memcpy(turned_bin.data() + 108 + 64, turned, sizeof turned);
+            const auto rotated = homeworldz::mesh::convert_glb(glb(rigged_json, turned_bin));
+            if (!rotated.ok) return 51;
+            const auto parsed_rotated = homeworldz::slmesh::parse(rotated.sl_mesh);
+            if (!parsed_rotated || !parsed_rotated->skin) return 52;
+            const auto& matrices = parsed_rotated->skin->inverse_bind;
+            if (matrices.size() < 2) return 53;
+            for (const auto& matrix : matrices)
+                for (int row = 0; row < 3; ++row)
+                    for (int column = 0; column < 3; ++column)
+                        if (std::fabs(matrix[column * 4 + row] -
+                                      (row == column ? 1.0f : 0.0f)) > 1e-4f)
+                            return 54;
+            // And the joint still rests where the rotated matrix put it. The
+            // turned matrix implies a rest at -(R^-1 t) = (-0.25, -0.75, 0.5) in
+            // glTF, which on the region's axes ((x,y,z) <- (z,x,y)) is
+            // (0.5, -0.25, -0.75). The emitted matrix stores its negation.
+            const std::array<float, 3> rest{
+                -matrices[1][12], -matrices[1][13], -matrices[1][14]};
+            const std::array<float, 3> expected{0.5f, -0.25f, -0.75f};
+            for (int axis = 0; axis < 3; ++axis)
+                if (std::fabs(rest[axis] - expected[axis]) > 1e-3f) return 55;
+        }
+
         // bind_shape_matrix must carry the stored geometry back to the space the
         // inverse bind matrices are written in. Stored positions are normalized
         // to about half a unit; the joints are metres apart. Identity here skins

@@ -112,7 +112,14 @@ TextureExtraction extract_textures(std::span<const std::byte> glb);
 // a predecessor produced is a model facing the wrong way and reconverts. This is
 // what makes the correction free: canonical assets are stored as uploaded and
 // never rewritten, so nothing a creator sent is lost or has to be re-sent.
-inline constexpr const char* generator = "meshsmith/0.10";
+// 0.10 sets bind_shape_matrix, which was left identity: a worn rigged mesh is
+// not scaled by its prim, so nothing carried the unit-domain normalization back
+// out and the viewer skinned half-unit geometry with joints metres apart.
+// 0.11 emits axis-aligned inverse bind matrices. avatar_skeleton.xml gives
+// every joint rot="0 0 0", so an exporter's bone orientations describe a
+// skeleton the viewer does not have; carried through, they turned the reference
+// body's arm chain a quarter turn while every joint still measured correctly.
+inline constexpr const char* generator = "meshsmith/0.11";
 
 } // namespace homeworldz::mesh
 

@@ -4,6 +4,7 @@
 
 #include "homeworldz/avatar_joints.h"
 #include "homeworldz/mesh_acceptance.h"
+#include "homeworldz/rig_check.h"
 #include "homeworldz/slmesh.h"
 
 #include <cgltf.h>
@@ -329,7 +330,32 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                                            inverse_bind.data(), 16))
                 return fail("an inverse bind matrix is unreadable");
             built.joints.emplace_back(canonical);
-            built.inverse_bind.push_back(to_region_axes_matrix(inverse_bind));
+            // Every joint in avatar_skeleton.xml carries rot="0 0 0": the SL
+            // skeleton is translation only, and each joint's frame is the
+            // avatar's own axes. An exporter does not work that way — Blender
+            // gives each bone its own orientation, Y along the bone — so a
+            // faithfully converted inverse bind describes a skeleton the viewer
+            // does not have. It measures correctly (the position falls out of
+            // the inversion either way, which is why rig_check agreed) and
+            // rotates the geometry about foreign axes the moment it is skinned.
+            //
+            // The reference body showed it as a 90 degree permutation on the
+            // whole arm chain and a flip on the legs, with the head and neck —
+            // the joints the exporter happened to leave axis-aligned — correct
+            // (in-world, 2026-08-08).
+            //
+            // So the position is kept and the orientation discarded: for a body
+            // rigged to the standard skeleton, the bind transform of a joint is
+            // a translation to where that joint rests, and nothing else.
+            const auto mapped = to_region_axes_matrix(inverse_bind);
+            std::array<float, 3> rest{};
+            if (!bind_rest_position(mapped, rest))
+                return fail("an inverse bind matrix for joint \"" +
+                            std::string(canonical) + "\" cannot be inverted");
+            built.inverse_bind.push_back({1, 0, 0, 0,
+                                          0, 1, 0, 0,
+                                          0, 0, 1, 0,
+                                          -rest[0], -rest[1], -rest[2], 1});
         }
         joint_names = built.joints;
         skin = std::move(built);

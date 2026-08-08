@@ -48,6 +48,16 @@ inline constexpr float rig_match_tolerance_m = 0.005f;
 // discriminate and names the alternatives instead of guessing.
 inline constexpr float rig_coincidence_m = 0.0005f;
 
+// Where an inverse bind matrix says its joint rests: invert the affine and read
+// the translation. Shared rather than copied — the converter needs the same
+// answer the check does, and the axes note in axes.h records what the last
+// duplicated matrix helper cost.
+//
+// False for a singular basis: a degenerate bind matrix has no position to
+// recover, and saying so beats dividing by zero.
+bool bind_rest_position(const std::array<float, 16>& inverse_bind,
+                        std::array<float, 3>& rest);
+
 enum class JointVerdict {
     Agrees,          // within tolerance of the joint its name resolved to
     Disagrees,       // outside tolerance: the name and the position disagree
