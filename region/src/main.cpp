@@ -3735,6 +3735,113 @@ int main(int argc, char* argv[]) {
                                 encode_heightmap(*terrain_heightmap));
                         }
                     }
+                    // Re-bake a wearer who changed clothes without relogging.
+                    // An outfit change happens in inventory, on the grid, and
+                    // nothing about it reaches a region: a client that bakes
+                    // for itself simply sends a new AgentSetAppearance, and one
+                    // that does not has no way to say so. Until a session
+                    // client can ask for this over its own channel, this is the
+                    // way to ask — the grid, an operator, or a test.
+                    //
+                    // Arrival already re-reads the outfit, so a relog or a
+                    // crossing has never needed this; the gap is strictly the
+                    // middle of a session.
+                    static constexpr std::string_view refresh_prefix = "/appearance/refresh/";
+                    if (response.path.starts_with(refresh_prefix)) {
+                        const auto authorization =
+                            homeworldz::http::request_header_value(request, "Authorization");
+                        // In the path rather than the query: the parsed path
+                        // carries the query string with it, so a route matched
+                        // by equality never sees a request that has one.
+                        const auto requested_user = response.path.substr(refresh_prefix.size());
+                        if (response.method != "POST") {
+                            response = homeworldz::http::response_for_content(
+                                request, 405, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "method_not_allowed", "appearance refresh requires POST"}));
+                        } else if (service_token.empty() || authorization != "Bearer " + service_token) {
+                            response = homeworldz::http::response_for_content(
+                                request, 401, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "unauthorized", "a valid grid service token is required"}));
+                        } else if (!homeworldz::viewer::parse_uuid(requested_user)) {
+                            response = homeworldz::http::response_for_content(
+                                request, 400, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "invalid_user", "userId must be a UUID"}));
+                        } else {
+                            // The avatar is keyed by its circuit endpoint or its
+                            // session participant key, neither of which the
+                            // caller knows; the agent id inside the appearance
+                            // is what identifies it. A handful of avatars, so a
+                            // scan is the whole lookup.
+                            std::string key;
+                            homeworldz::viewer::AgentSetAppearance previous;
+                            for (const auto& [candidate, appearance] : avatar_appearances)
+                                if (homeworldz::viewer::format_uuid(appearance.agent_id) ==
+                                    requested_user) {
+                                    key = candidate;
+                                    previous = appearance;
+                                    break;
+                                }
+                            if (key.empty()) {
+                                // Not here is not an error: a grid telling every
+                                // region a wearer changed clothes is right to,
+                                // and all but one of them will say this.
+                                response = homeworldz::http::response_for_content(
+                                    request, 404, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "avatar_not_here", "that avatar is not on this region"}));
+                            } else if (const auto* bake = ensure_worn_outfit_bake(requested_user)) {
+                                homeworldz::viewer::AgentSetAppearance reseeded = previous;
+                                // A viewer ignores an appearance whose serial it
+                                // has already seen, so a re-bake that reuses the
+                                // old one is a re-bake nobody renders.
+                                reseeded.serial = previous.serial + 1;
+                                reseeded.texture_entry = bake->bake.texture_entry;
+                                reseeded.visual_params = bake->visual_params;
+                                reseeded.appearance_version = 1;
+                                avatar_appearances.insert_or_assign(key, reseeded);
+                                if (const auto geometry =
+                                        homeworldz::viewer::avatar_geometry(reseeded))
+                                    avatar_geometries[key] = *geometry;
+                                const auto encoded =
+                                    homeworldz::viewer::encode_avatar_appearance(
+                                        {reseeded.agent_id, reseeded.serial,
+                                         reseeded.texture_entry, reseeded.visual_params, {},
+                                         std::uint8_t{1}});
+                                // To everyone but the wearer, for the reason the
+                                // join seed has: a client that bakes for itself
+                                // must not be handed a server bake of its own.
+                                std::size_t told = 0;
+                                const auto sent_at = std::chrono::steady_clock::now();
+                                if (!encoded.empty())
+                                    for (const auto& [recipient_endpoint, recipient] : avatars) {
+                                        static_cast<void>(recipient);
+                                        if (recipient_endpoint == key) continue;
+                                        if (const auto outgoing = circuits.send(
+                                                recipient_endpoint, encoded, true, sent_at, true)) {
+                                            static_cast<void>(send_udp(
+                                                viewer_server, recipient_endpoint, *outgoing));
+                                            ++told;
+                                        }
+                                    }
+                                std::cout << "{\"level\":\"info\",\"message\":\"appearance refreshed\","
+                                             "\"userId\":" << homeworldz::api::json_string(requested_user)
+                                          << ",\"serial\":" << reseeded.serial << ",\"slots\":"
+                                          << bake->bake.assets.size() << ",\"told\":" << told
+                                          << "}" << std::endl;
+                                response = homeworldz::http::response_for_content(
+                                    request, 200, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Status{"refreshed"}));
+                            } else {
+                                response = homeworldz::http::response_for_content(
+                                    request, 503, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "bake_unavailable", "the outfit could not be baked"}));
+                            }
+                        }
+                    }
                     if (response.path == "/map/terrain-layers.json") {
                         // The companion to terrain.raw. A heightmap alone cannot
                         // be coloured: which of the four ground textures applies
