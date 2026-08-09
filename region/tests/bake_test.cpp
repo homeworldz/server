@@ -143,26 +143,6 @@ int main() {
                      "head -> TEX_HEAD_ALPHA");
     }
 
-    {
-        // A baked index off the wire is not a texture-entry face. Reading the
-        // texture entry at the raw baked index stored the head *bodypaint* as
-        // the head bake, handed it back as a cache hit, and made the viewer
-        // re-bake forever. Each of these would have been off by the same gap.
-        using homeworldz::viewer::baked_texture_index_from_wire;
-        ok &= expect(baked_texture_index_from_wire(0) == tx::kHeadBaked, "baked 0 -> TEX_HEAD_BAKED");
-        ok &= expect(baked_texture_index_from_wire(1) == tx::kUpperBaked, "baked 1 -> TEX_UPPER_BAKED");
-        ok &= expect(baked_texture_index_from_wire(2) == tx::kLowerBaked, "baked 2 -> TEX_LOWER_BAKED");
-        ok &= expect(baked_texture_index_from_wire(3) == tx::kEyesBaked, "baked 3 -> TEX_EYES_BAKED");
-        ok &= expect(baked_texture_index_from_wire(4) == tx::kSkirtBaked, "baked 4 -> TEX_SKIRT_BAKED");
-        ok &= expect(baked_texture_index_from_wire(5) == tx::kHairBaked, "baked 5 -> TEX_HAIR_BAKED");
-        // Not merely different numbers: none of them may be the identity, which
-        // is exactly what the defect relied on.
-        for (std::uint8_t baked = 0; baked <= 5; ++baked)
-            ok &= expect(baked_texture_index_from_wire(baked) != baked,
-                         "a baked index is never its own texture-entry face");
-        ok &= expect(!baked_texture_index_from_wire(6).has_value(), "BAKED_LEFT_ARM is not baked here");
-    }
-
     if (!ok) return 1;
     std::cerr << "bake outfit OK\n";
     return 0;

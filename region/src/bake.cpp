@@ -252,27 +252,6 @@ std::uint32_t baked_texture_index(BakeSlot slot) {
     return tex_index::kHeadBaked;
 }
 
-std::optional<std::uint32_t> baked_texture_index_from_wire(std::uint8_t baked_index) {
-    switch (baked_index) {
-        case 0:
-            return baked_texture_index(BakeSlot::Head);
-        case 1:
-            return baked_texture_index(BakeSlot::Upper);
-        case 2:
-            return baked_texture_index(BakeSlot::Lower);
-        case 3:
-            return baked_texture_index(BakeSlot::Eyes);
-        case 4:
-            return baked_texture_index(BakeSlot::Skirt);
-        case 5:
-            return baked_texture_index(BakeSlot::Hair);
-        default:
-            // BAKED_LEFT_ARM and the rest of the universal slots. A viewer that
-            // caches them is not wrong to ask; this build has nothing to say.
-            return std::nullopt;
-    }
-}
-
 std::optional<std::uint32_t> alpha_texture_index(BakeSlot slot) {
     switch (slot) {
         case BakeSlot::Head:

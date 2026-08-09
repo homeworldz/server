@@ -77,16 +77,6 @@ const std::vector<BakeSlotLayout>& bake_slot_layouts();
 // The avatar texture-entry index (TEX_*_BAKED) that receives a slot's result.
 std::uint32_t baked_texture_index(BakeSlot slot);
 
-// The texture-entry index named by a baked index off the wire, or nullopt for
-// one this build does not bake (the universal and aux slots, 6 and up).
-//
-// AgentSetAppearance's WearableData and AgentCachedTexture's queries both carry
-// an EBakedTextureIndex (0..5), which is a different number space from the
-// texture-entry face an id actually lives at: baked index 0 is the head bake,
-// but face 0 is the head *bodypaint*. Anything reading a texture entry with a
-// number off those messages has to come through here.
-std::optional<std::uint32_t> baked_texture_index_from_wire(std::uint8_t baked_index);
-
 // The Alpha wearable texture whose alpha channel masks a slot away, or nullopt
 // for the skirt, which indra gives no alpha channel.
 std::optional<std::uint32_t> alpha_texture_index(BakeSlot slot);

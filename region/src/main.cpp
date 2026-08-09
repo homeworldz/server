@@ -7964,31 +7964,21 @@ int main(int argc, char* argv[]) {
                                           << geometry->hip_offset << ",\"visualParams\":"
                                           << appearance->visual_params.size() << "}" << std::endl;
                             }
-                            // WearableData carries an EBakedTextureIndex (0..5),
-                            // not a texture-entry face, and indexing the texture
-                            // entry with it read the layer texture that happens
-                            // to share the number — head bodypaint for the head
-                            // bake, the shirt for the upper, the wearer's whole
-                            // texture-entry default when it had no overrides.
-                            // That id was then stored as the wearer's cached
-                            // bake and handed straight back on the next
-                            // AgentCachedTexture. The viewer, told its bake was
-                            // a texture that was not its bake, baked again — and
-                            // the reply to that fed the next round. It cost 114
-                            // uploads and 17.8 MB in ninety seconds before a
-                            // logout stopped it, and it is why a wearer with an
-                            // Alpha on never resolved past a cloud.
-                            //
-                            // The key stays the baked index, because that is what
-                            // the query asks with. Only the face read from the
-                            // texture entry changes.
+                            // WearableData.TextureIndex is a texture-entry face,
+                            // not an EBakedTextureIndex: the viewer converts with
+                            // bakedToLocalTextureIndex before sending
+                            // (llagentwearables.cpp, sendAgentCachedTextureRequest),
+                            // so what arrives is 8, 9, 10, 11, 19, 20 and it
+                            // indexes the texture entry directly. Confirmed
+                            // against the stored rows, which hold exactly those.
+                            // Converting it here instead cost a deploy: it made
+                            // every entry unrecognised and nothing was cached at
+                            // all.
                             std::size_t stored = 0;
                             for (const auto& entry : appearance->cache_entries) {
-                                const auto face = homeworldz::viewer::baked_texture_index_from_wire(
-                                    entry.texture_index);
-                                if (!face || *face >= appearance->texture_ids.size()) continue;
+                                if (entry.texture_index >= appearance->texture_ids.size()) continue;
                                 const auto asset_id = homeworldz::viewer::format_uuid(
-                                    appearance->texture_ids[*face]);
+                                    appearance->texture_ids[entry.texture_index]);
                                 if (!storage->find_asset(asset_id)) continue;
                                 storage->store_baked_texture(
                                     homeworldz::viewer::format_uuid(entry.cache_id),
