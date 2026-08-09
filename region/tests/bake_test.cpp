@@ -143,6 +143,58 @@ int main() {
                      "head -> TEX_HEAD_ALPHA");
     }
 
+    // The alpha above is an in-memory image. What a region actually masks with
+    // is IMG_INVISIBLE, and the region synthesizes it as a J2C at startup
+    // (main.cpp) rather than bundling one, so the mask only reaches the bake if
+    // that image survives the codec with its alpha channel intact. It is worth
+    // asserting separately: J2C alpha has been lost in this pipeline before,
+    // and the failure is silent — the bake fetches a mask, finds it opaque, and
+    // hides nothing while reporting success.
+    {
+        Image transparent = solid(32, {0, 0, 0, 0});
+        const auto encoded = homeworldz::image::encode_j2c(transparent);
+        ok &= expect(encoded.has_value() && !encoded->empty(),
+                     "the invisible texture encodes to J2C");
+        if (encoded && !encoded->empty()) {
+            const auto decoded = homeworldz::image::decode_j2c(*encoded);
+            ok &= expect(decoded.has_value(), "the invisible texture decodes again");
+            if (decoded) {
+                ok &= expect(decoded->channels == 4, "it keeps an alpha channel");
+                bool all_transparent = decoded->channels == 4;
+                for (std::size_t i = 0; all_transparent && i < decoded->pixel_count(); ++i)
+                    all_transparent = decoded->pixels[i * decoded->channels + 3] == 0;
+                ok &= expect(all_transparent, "every texel survives fully transparent");
+
+                // And drive the bake with it, at 32x32 against 64x64 skin, so
+                // the mask is resized on the way in exactly as a real one is.
+                const char* const kInvisible = "3a367d1c-bef1-6d43-7595-e88c1e3aadb3";
+                auto alpha_worn = worn;
+                alpha_worn.push_back(
+                    make_wearable(WearableType::Alpha, {{tx::kHeadAlpha, kInvisible}}));
+                auto invisible_fetch = [&](const homeworldz::viewer::Uuid& id)
+                    -> std::optional<Image> {
+                    const std::string s = format_uuid(id);
+                    if (s == kInvisible) return *decoded;
+                    if (s == kSkinHead) return solid(64, {200, 180, 160, 255});
+                    if (s == kSkinUpper) return solid(64, {200, 180, 160, 255});
+                    if (s == kSkinLower) return solid(64, {255, 0, 0, 255});
+                    if (s == kPantsTex) return solid(64, {0, 0, 255, 255});
+                    return std::nullopt;
+                };
+                const auto masked = bake_outfit(alpha_worn, invisible_fetch);
+                ok &= expect(masked.count(BakeSlot::Head) == 1,
+                             "the head bakes with IMG_INVISIBLE worn");
+                if (masked.count(BakeSlot::Head)) {
+                    const Image& head = masked.at(BakeSlot::Head);
+                    bool hidden = true;
+                    for (std::size_t i = 0; hidden && i < head.pixel_count(); ++i)
+                        hidden = head.pixels[i * 4 + 3] == 0;
+                    ok &= expect(hidden, "a synthesized IMG_INVISIBLE hides the whole head bake");
+                }
+            }
+        }
+    }
+
     if (!ok) return 1;
     std::cerr << "bake outfit OK\n";
     return 0;

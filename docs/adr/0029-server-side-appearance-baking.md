@@ -176,3 +176,21 @@ with skin hands, reddish pants with skin feet — entirely from the server seed.
   the protocol, and a grid either serves every one of them or finds out which
   it missed from a symptom nowhere near the cause. Alpha wearables verified
   worn in Firestorm 2026-08-09.
+
+  What that verified is the **viewer's** path: the viewer composites its own
+  bake and the region serves and caches it. The **server** bake's alpha
+  masking is unit-tested (`region/tests/bake_test.cpp`) and, since the mask a
+  region actually applies is a J2C it synthesizes at startup rather than a
+  bundled file, the test now encodes that exact image, decodes it, asserts its
+  alpha survives the codec, and drives a bake with the result — undersized
+  against the skin, so the resize an in-world mask goes through is exercised
+  too. Both assertions fail when the multiply in `bake.cpp` is removed.
+
+  It is still **unproven in world**, and cannot be reached from a viewer at
+  all: the server bake only ever runs the fixed six-item default outfit
+  (`main.cpp`, `ensure_default_outfit_bake`), which contains no Alpha
+  wearable, and both callers — an appearance-less viewer and an arriving
+  session client — seed that one bake. Nothing masks server-side until the
+  region bakes the wearer's own Current Outfit. That is the gate on the
+  roadmap's "apply alpha layers in the server-side bake for session clients",
+  and it is the same per-user COF baking this ADR defers to *Later*.

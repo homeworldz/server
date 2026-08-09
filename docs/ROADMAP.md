@@ -31,13 +31,14 @@ client.
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
 | 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="86" aria-label="Phase 2 progress: 86%">86%</progress> | 86% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
-| 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="38" aria-label="Phase 4 progress: 38%">38%</progress> | 38% |
+| 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="42" aria-label="Phase 4 progress: 42%">42%</progress> | 42% |
 | 5. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="15" aria-label="Phase 5 progress: 15%">15%</progress> | 15% |
 | 6. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 6 progress: 6%">6%</progress> | 6% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="23" aria-label="Phase 7 progress: 23%">23%</progress> | 23% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="3" aria-label="Phase 8 progress: 3%">3%</progress> | 3% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="66" aria-label="Phase 9 progress: 66%">66%</progress> | 66% |
 | 10. Modern Client Support | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="8" aria-label="Phase 10 progress: 8%">8%</progress> | 8% |
+| 11. Economy and Marketplace | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="0" aria-label="Phase 11 progress: 0%">0%</progress> | 0% |
 
 ## Phase 1: Functional Single-region World
 
@@ -57,7 +58,7 @@ client.
 - [x] Bake avatar appearance **server-side**, so thin and headless clients rez correctly with no client-side baking; per-user COF baking for arbitrary outfits and SSB delivery to full viewers remain.
 - [x] Broadcast `KillObject` for a departing avatar through the one teardown point every removal path funnels into, so it stops lingering in other viewers' views.
 - [x] Support alpha layers for viewers, so a mesh body hides the default body.
-- [ ] Apply alpha layers in the server-side bake for session clients.
+- [ ] Apply alpha layers in the server-side bake for session clients. The masking is written and tested; it is gated on the region baking the wearer's own outfit, since the server bake runs only the fixed default one.
 
 ### Authoritative avatar movement
 
@@ -193,9 +194,9 @@ because re-keying an empty vault is free
 ## Phase 4: Mesh and Creator Platform
 
 What a creator needs before scripting matters: the content pipeline itself —
-mesh and its collision sources, uploads and validation, inventory breadth, and
-the economy boundary that decides whether creations can be sold. Scripting
-operates on this content, which is why it now follows rather than precedes it.
+mesh and its collision sources, uploads and validation, and inventory breadth.
+Scripting operates on this content, which is why it now follows rather than
+precedes it.
 
 ### Mesh pipeline
 
@@ -222,17 +223,6 @@ client family is served a derived rendition by a conversion worker.
 - [ ] Implement uploads, validation, dependencies, creator attribution, asset replication, and inventory creation for each supported asset type.
 - [x] Add viewer-authored wearable creation, editing, and named outfit saving beyond the initial default-avatar flow.
 - [ ] Provide bulk inventory, search, copy, transfer, export-policy, recovery, and large-inventory performance behavior.
-
-### Economy and marketplace boundary
-
-What a creator can sell and how the value moves. Whether a given grid runs an
-economy at all is deployment configuration rather than creator tooling, and
-lives with the operator's other settings in Phase 7.
-
-- [ ] Define whether credits remain display-only or become a transferable grid balance before implementing paid behavior.
-- [ ] If enabled, implement auditable balances, idempotent transactions, object sales, parcel payments, gifts, and refunds.
-- [ ] Treat external payment processing and marketplace integration as separate, explicitly approved security projects.
-- [ ] Record whether an asset may be sold, distinctly from whether it may be transferred.
 
 ## Phase 5: LSL Scripting
 
@@ -436,3 +426,14 @@ it builds against.
 - [ ] Extend the session's capability manifest as extensions ship, keeping per-region capabilities data the client adapts to rather than negotiates.
 - [ ] Add voice and modern presence surfaces appropriate to the new client.
 - [ ] Build creator tooling on the modern pipeline: visual scripting and a modern content workflow (ROADMAP2.md Phase 6).
+
+## Phase 11: Economy and Marketplace
+
+What a creator can sell and how the value moves. Whether a given grid runs an
+economy at all is deployment configuration rather than creator tooling, and
+lives with the operator's other settings in Phase 7.
+
+- [ ] Define whether credits remain display-only or become a transferable grid balance before implementing paid behavior.
+- [ ] If enabled, implement auditable balances, idempotent transactions, object sales, parcel payments, gifts, and refunds.
+- [ ] Treat external payment processing and marketplace integration as separate, explicitly approved security projects.
+- [ ] Record whether an asset may be sold, distinctly from whether it may be transferred.
