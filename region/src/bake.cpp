@@ -252,6 +252,27 @@ std::uint32_t baked_texture_index(BakeSlot slot) {
     return tex_index::kHeadBaked;
 }
 
+std::optional<std::uint32_t> baked_texture_index_from_wire(std::uint8_t baked_index) {
+    switch (baked_index) {
+        case 0:
+            return baked_texture_index(BakeSlot::Head);
+        case 1:
+            return baked_texture_index(BakeSlot::Upper);
+        case 2:
+            return baked_texture_index(BakeSlot::Lower);
+        case 3:
+            return baked_texture_index(BakeSlot::Eyes);
+        case 4:
+            return baked_texture_index(BakeSlot::Skirt);
+        case 5:
+            return baked_texture_index(BakeSlot::Hair);
+        default:
+            // BAKED_LEFT_ARM and the rest of the universal slots. A viewer that
+            // caches them is not wrong to ask; this build has nothing to say.
+            return std::nullopt;
+    }
+}
+
 std::optional<std::uint32_t> alpha_texture_index(BakeSlot slot) {
     switch (slot) {
         case BakeSlot::Head:
@@ -274,7 +295,8 @@ std::optional<std::uint32_t> alpha_texture_index(BakeSlot slot) {
 
 std::map<BakeSlot, image::Image> bake_outfit(const std::vector<Wearable>& worn,
                                              const TextureFetch& fetch,
-                                             const MaskFetch& mask_fetch) {
+                                             const MaskFetch& mask_fetch,
+                                             std::vector<Uuid>* unfetchable_masks) {
     // Merge worn textures by texture-entry index (later wearable wins), carrying
     // each source wearable's color tint and (for clothing) its combined alpha
     // mask so the layer is colored and shaped on composite.
@@ -333,7 +355,13 @@ std::map<BakeSlot, image::Image> bake_outfit(const std::vector<Wearable>& worn,
         // looks at it.
         if (const auto alpha_index = alpha_texture_index(layout.slot)) {
             if (const auto it = worn_textures.find(*alpha_index); it != worn_textures.end()) {
-                if (auto mask = fetch(it->second.id); mask && !mask->empty()) {
+                auto mask = fetch(it->second.id);
+                if (!mask || mask->empty()) {
+                    // Asked to hide a region and unable to: recorded, never
+                    // silently skipped.
+                    if (unfetchable_masks) unfetchable_masks->push_back(it->second.id);
+                }
+                if (mask && !mask->empty()) {
                     const auto sized = image::resize_nearest(
                         image::to_rgba(*mask), slot_image.width, slot_image.height);
                     const std::size_t count =

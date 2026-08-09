@@ -1969,9 +1969,19 @@ int main(int argc, char* argv[]) {
         // uses the baked textures directly instead of compositing locally.
         default_outfit_visual_params = homeworldz::viewer::build_visual_params(baked->worn, 1);
         default_outfit_bake = std::move(*baked);
+        // A mask the bake could not fetch means a body region the wearer asked
+        // to hide is still showing. The bake otherwise succeeds, so without
+        // this the only evidence is the avatar looking wrong to everyone but
+        // its owner.
+        for (const auto& mask : default_outfit_bake->unfetchable_masks)
+            std::cout << "{\"level\":\"warning\",\"message\":\"alpha mask could not be fetched, "
+                         "body region left showing\",\"textureId\":"
+                      << homeworldz::api::json_string(homeworldz::viewer::format_uuid(mask))
+                      << "}" << std::endl;
         std::cout << "{\"level\":\"info\",\"message\":\"server default-outfit bake ready\",\"slots\":"
                   << default_outfit_bake->assets.size() << ",\"visualParams\":"
-                  << default_outfit_visual_params.size() << "}" << std::endl;
+                  << default_outfit_visual_params.size() << ",\"unfetchableMasks\":"
+                  << default_outfit_bake->unfetchable_masks.size() << "}" << std::endl;
         return &*default_outfit_bake;
     };
 
@@ -7954,11 +7964,31 @@ int main(int argc, char* argv[]) {
                                           << geometry->hip_offset << ",\"visualParams\":"
                                           << appearance->visual_params.size() << "}" << std::endl;
                             }
+                            // WearableData carries an EBakedTextureIndex (0..5),
+                            // not a texture-entry face, and indexing the texture
+                            // entry with it read the layer texture that happens
+                            // to share the number — head bodypaint for the head
+                            // bake, the shirt for the upper, the wearer's whole
+                            // texture-entry default when it had no overrides.
+                            // That id was then stored as the wearer's cached
+                            // bake and handed straight back on the next
+                            // AgentCachedTexture. The viewer, told its bake was
+                            // a texture that was not its bake, baked again — and
+                            // the reply to that fed the next round. It cost 114
+                            // uploads and 17.8 MB in ninety seconds before a
+                            // logout stopped it, and it is why a wearer with an
+                            // Alpha on never resolved past a cloud.
+                            //
+                            // The key stays the baked index, because that is what
+                            // the query asks with. Only the face read from the
+                            // texture entry changes.
                             std::size_t stored = 0;
                             for (const auto& entry : appearance->cache_entries) {
-                                if (entry.texture_index >= appearance->texture_ids.size()) continue;
+                                const auto face = homeworldz::viewer::baked_texture_index_from_wire(
+                                    entry.texture_index);
+                                if (!face || *face >= appearance->texture_ids.size()) continue;
                                 const auto asset_id = homeworldz::viewer::format_uuid(
-                                    appearance->texture_ids[entry.texture_index]);
+                                    appearance->texture_ids[*face]);
                                 if (!storage->find_asset(asset_id)) continue;
                                 storage->store_baked_texture(
                                     homeworldz::viewer::format_uuid(entry.cache_id),
