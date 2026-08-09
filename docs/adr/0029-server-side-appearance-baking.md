@@ -154,5 +154,25 @@ with skin hands, reddish pants with skin feet — entirely from the server seed.
   baker works again, so testing the server bake alone needs the bot's baking
   disabled or a client that never bakes.
 - Only the default six-wearable outfit is exercised end-to-end. Stacked
-  clothing, tattoos/alpha wearables, jacket/glove/shoe masks, skin tone params,
-  and re-bake on outfit change remain future work.
+  clothing, tattoos, jacket/glove/shoe masks, skin tone params, and re-bake on
+  outfit change remain future work.
+- **A grid must serve `IMG_INVISIBLE`**
+  (`3a367d1c-bef1-6d43-7595-e88c1e3aadb3`). It is a viewer built-in named in
+  `indra_constants.cpp` as a "dataserver" asset, exactly like `IMG_WHITE`
+  (`5748decc…`), and this grid served the second and not the first. Checking a
+  box on an Alpha wearable sets that body region's alpha texture to it, and a
+  layerset compositing *fully* transparent is never uploaded at all — the
+  viewer sets the bake itself to `IMG_INVISIBLE`
+  (`llviewertexlayer.cpp`). Unserved, one absent asset produced three distinct
+  failures: the viewer marked its own bakes missing and rendered a **cloud**;
+  the server bake fetched the mask, got nothing, and hid nothing while
+  reporting success; and the wearable cache will not record a bake slot naming
+  an asset the region lacks, so every `AgentCachedTexture` missed and the
+  viewer **re-baked without end** (114 uploads, 17.8 MB in ninety seconds,
+  stopping only at logout). The region now synthesizes it at startup
+  (32×32 transparent J2C) so a deployment repairs itself.
+
+  The general rule this is an instance of: a viewer built-in UUID is part of
+  the protocol, and a grid either serves every one of them or finds out which
+  it missed from a symptom nowhere near the cause. Alpha wearables verified
+  worn in Firestorm 2026-08-09.
