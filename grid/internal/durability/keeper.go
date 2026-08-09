@@ -139,6 +139,8 @@ func (k *Keeper) EnsureDurable(ctx context.Context, assetID string, assetType in
 		blob, err := k.registry.Blob(ctx, current.id)
 		if errors.Is(err, assetmeta.ErrNotFound) {
 			if current.root {
+				k.logger.Warn("inventory commit refused: asset is not registered",
+					"assetId", current.id)
 				return ErrUnregistered
 			}
 			// External reference: recorded, never fatal (package comment).
@@ -233,13 +235,28 @@ func (k *Keeper) fetchIntoVault(ctx context.Context, assetID, blobID string) err
 	}
 	var lastErr error
 	for _, location := range locations {
+		started := time.Now()
 		if err := k.ingestFrom(ctx, location.Endpoint, assetID, blobID); err != nil {
+			// Named individually because the reasons differ in what they ask
+			// of an operator — a refused connection is a stale registration,
+			// a slow failure is a location that accepted the connection and
+			// then could not answer, which is the shape a region blocked on
+			// its own grid call makes.
+			k.logger.Warn("asset location did not serve its bytes",
+				"assetId", assetID, "endpoint", location.Endpoint,
+				"elapsedMs", time.Since(started).Milliseconds(), "error", err)
 			lastErr = err
 			continue
 		}
 		k.logger.Info("asset made durable", "assetId", assetID)
 		return nil
 	}
+	// The refusal itself is reported, not only the attempts: an inventory
+	// commit answered 409 with nothing in the log naming the asset costs a
+	// deploy to diagnose, and the three refusal codes mean entirely different
+	// things.
+	k.logger.Warn("asset could not be made durable",
+		"assetId", assetID, "locations", len(locations))
 	if lastErr != nil {
 		return fmt.Errorf("%w: %s", ErrUnfetchable, lastErr)
 	}
