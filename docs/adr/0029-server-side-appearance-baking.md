@@ -274,3 +274,25 @@ avatar was connected, and the log said so (`"told":0`).
 
 Nothing calls this automatically yet. The grid knows when a COF changes and
 which region a wearer is on, so the grid is where the caller belongs.
+
+### Who asks for the re-bake
+
+The grid does, because the grid is where an outfit changes. The check sits at
+the AIS capability's fork rather than in the handlers that mutate: the Current
+Outfit folder's version is read either side of the dispatch, and the store says
+whether it changed. Naming the handlers that can touch the COF — wearing,
+taking off, slamming a saved outfit, moving an item, deleting one — would leave
+any path added later quietly uncovered. Reads are excluded; a viewer reads far
+more than it wears.
+
+The call is best effort and must stay that way. The outfit is already changed
+and already durable when it runs, so a region that cannot be reached leaves the
+wearer in what was baked at arrival — where things stood before any of this
+existed. A failure is logged and never returned into the inventory operation
+that succeeded, and a wearer who is not logged in produces no call at all.
+
+Verified end to end on the cloud grid: an appearance-less client in Welcome, an
+`AIS DELETE` of the alpha's Current Outfit link answering 200, and the region
+logging a fresh bake with slot 10 moving `1.000000` to `0.000000` and
+`"appearance refreshed","serial":2`. Nothing was said by the grid, which is
+correct — it logs only what fails.
