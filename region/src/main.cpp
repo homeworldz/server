@@ -7919,8 +7919,21 @@ int main(int argc, char* argv[]) {
                             cached_texture->session_id == identity->session_id) {
                             std::size_t hits = 0;
                             for (auto& query : cached_texture->queries) {
+                                const auto queried_cache_id =
+                                    homeworldz::viewer::format_uuid(query.cache_id);
                                 const auto asset_id = storage->find_baked_texture(
-                                    homeworldz::viewer::format_uuid(query.cache_id), query.texture_index);
+                                    queried_cache_id, query.texture_index);
+                                // Diagnostic: which cache_id was asked for, and
+                                // whether anything was ever stored under it. A
+                                // miss here is either a hash the wearer has not
+                                // worn before or one the store refused to record;
+                                // the counts alone cannot tell those apart, and
+                                // that is the difference the bake loop turns on.
+                                std::cout << "{\"level\":\"info\",\"message\":\"wearable cache query\","
+                                             "\"cacheId\":" << homeworldz::api::json_string(queried_cache_id)
+                                          << ",\"textureIndex\":" << static_cast<int>(query.texture_index)
+                                          << ",\"hit\":" << (asset_id ? "true" : "false") << "}"
+                                          << std::endl;
                                 if (!asset_id) continue;
                                 if (const auto parsed = homeworldz::viewer::parse_uuid(*asset_id)) {
                                     query.texture_id = *parsed;
@@ -7976,14 +7989,34 @@ int main(int argc, char* argv[]) {
                             // all.
                             std::size_t stored = 0;
                             for (const auto& entry : appearance->cache_entries) {
-                                if (entry.texture_index >= appearance->texture_ids.size()) continue;
-                                const auto asset_id = homeworldz::viewer::format_uuid(
-                                    appearance->texture_ids[entry.texture_index]);
-                                if (!storage->find_asset(asset_id)) continue;
-                                storage->store_baked_texture(
-                                    homeworldz::viewer::format_uuid(entry.cache_id),
-                                    entry.texture_index, asset_id);
-                                ++stored;
+                                const auto entry_cache_id =
+                                    homeworldz::viewer::format_uuid(entry.cache_id);
+                                // Diagnostic: the cache_id being written, beside
+                                // the id the query asks with, and the outcome.
+                                // "assetMissing" is the one that matters — a bake
+                                // slot naming a texture this region does not hold
+                                // is skipped in silence, so the next query for
+                                // that hash misses and the viewer bakes again.
+                                const char* outcome = "stored";
+                                std::string asset_id;
+                                if (entry.texture_index >= appearance->texture_ids.size()) {
+                                    outcome = "indexOutOfRange";
+                                } else {
+                                    asset_id = homeworldz::viewer::format_uuid(
+                                        appearance->texture_ids[entry.texture_index]);
+                                    if (!storage->find_asset(asset_id)) {
+                                        outcome = "assetMissing";
+                                    } else {
+                                        storage->store_baked_texture(
+                                            entry_cache_id, entry.texture_index, asset_id);
+                                        ++stored;
+                                    }
+                                }
+                                std::cout << "{\"level\":\"info\",\"message\":\"wearable cache entry\","
+                                             "\"cacheId\":" << homeworldz::api::json_string(entry_cache_id)
+                                          << ",\"textureIndex\":" << static_cast<int>(entry.texture_index)
+                                          << ",\"assetId\":" << homeworldz::api::json_string(asset_id)
+                                          << ",\"outcome\":\"" << outcome << "\"}" << std::endl;
                             }
                             if (stored != 0)
                                 std::cout << "{\"level\":\"info\",\"message\":\"wearable cache updated\","
