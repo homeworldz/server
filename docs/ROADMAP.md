@@ -56,6 +56,8 @@ client.
 - [x] Synchronize nearby avatar presence, movement, appearance rebakes, and animation changes between concurrently connected viewers.
 - [x] Bake avatar appearance **server-side**, so thin and headless clients rez correctly with no client-side baking; per-user COF baking for arbitrary outfits and SSB delivery to full viewers remain.
 - [x] Broadcast `KillObject` for a departing avatar through the one teardown point every removal path funnels into, so it stops lingering in other viewers' views.
+- [x] Support alpha layers for viewers, so a mesh body hides the default body.
+- [ ] Apply alpha layers in the server-side bake for session clients.
 
 ### Authoritative avatar movement
 
