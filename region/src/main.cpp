@@ -1964,30 +1964,42 @@ int main(int argc, char* argv[]) {
         if (!input) return std::nullopt;
         return out;
     };
-    std::optional<homeworldz::viewer::OutfitBake> default_outfit_bake;
-    std::vector<std::uint8_t> default_outfit_visual_params;
-    bool default_outfit_bake_attempted = false;
-    const auto ensure_default_outfit_bake = [&]() -> const homeworldz::viewer::OutfitBake* {
-        if (default_outfit_bake) return &*default_outfit_bake;
-        if (default_outfit_bake_attempted) return nullptr;
-        default_outfit_bake_attempted = true;
-        static const char* const default_wearable_asset_ids[] = {
-            "66c41e39-38f9-f75a-024e-585989bfab73",  // Default Shape
-            "00000000-0000-1111-9999-000000000202",  // Default Skin
-            "d342e6c0-b9d2-11dc-95ff-0800200c9a66",  // Default Hair
-            "4bb6fa4d-1cd2-498a-a84c-95c1a0e745a7",  // Default Eyes
-            "00000000-38f9-1111-024e-222222111110",  // Default Shirt
-            "00000000-38f9-1111-024e-222222111120",  // Default Pants
-        };
+    // A bake belongs to an outfit, not to a wearer: two avatars in the same
+    // clothes composite to identical images, and the default outfit is just the
+    // outfit most of them are in. Keyed by the worn asset ids, sorted so the
+    // same outfit read in a different order is still the same outfit.
+    //
+    // A bake that failed is remembered as failed. It is the price of not
+    // re-fetching every wearable and texture of a broken outfit on each
+    // arrival; the cost is that a bake lost to an unreachable grid stays lost
+    // until this region restarts. Both halves of that are deliberate.
+    struct CachedOutfitBake {
+        homeworldz::viewer::OutfitBake bake;
+        std::vector<std::uint8_t> visual_params;
+    };
+    std::map<std::string, std::optional<CachedOutfitBake>> outfit_bakes;
+    const auto bake_outfit_of = [&](const std::vector<std::string>& wearable_asset_ids,
+                                    std::string_view what) -> const CachedOutfitBake* {
+        auto sorted = wearable_asset_ids;
+        std::sort(sorted.begin(), sorted.end());
+        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+        std::string key;
+        for (const auto& id : sorted) key += id + ',';
+        if (const auto found = outfit_bakes.find(key); found != outfit_bakes.end())
+            return found->second ? &*found->second : nullptr;
         std::vector<homeworldz::viewer::Uuid> wearable_ids;
-        for (const char* id : default_wearable_asset_ids)
+        // The order given is kept: it is the order the wearer's outfit lists,
+        // and compositing reads it.
+        for (const auto& id : wearable_asset_ids)
             if (const auto parsed = homeworldz::viewer::parse_uuid(id))
                 wearable_ids.push_back(*parsed);
         auto baked = homeworldz::viewer::bake_worn_outfit(
             wearable_ids, server_bake_default_face, fetch_asset_bytes, fetch_mask_bytes);
         if (!baked) {
-            std::cerr << "{\"level\":\"warning\",\"message\":\"server default-outfit bake failed\"}"
-                      << std::endl;
+            outfit_bakes.emplace(key, std::nullopt);
+            std::cerr << "{\"level\":\"warning\",\"message\":\"server outfit bake failed\",\"outfit\":"
+                      << homeworldz::api::json_string(what) << ",\"wearables\":"
+                      << wearable_ids.size() << "}" << std::endl;
             return nullptr;
         }
         const std::string system_creator = "00000000-0000-0000-0000-000000000000";
@@ -2006,24 +2018,98 @@ int main(int argc, char* argv[]) {
                           << homeworldz::api::json_string(error.what()) << "}" << std::endl;
             }
         }
+        CachedOutfitBake cached;
         // appearance_version 1 marks this as a server-side bake so the viewer
         // uses the baked textures directly instead of compositing locally.
-        default_outfit_visual_params = homeworldz::viewer::build_visual_params(baked->worn, 1);
-        default_outfit_bake = std::move(*baked);
+        cached.visual_params = homeworldz::viewer::build_visual_params(baked->worn, 1);
+        cached.bake = std::move(*baked);
         // A mask the bake could not fetch means a body region the wearer asked
         // to hide is still showing. The bake otherwise succeeds, so without
         // this the only evidence is the avatar looking wrong to everyone but
         // its owner.
-        for (const auto& mask : default_outfit_bake->unfetchable_masks)
+        for (const auto& mask : cached.bake.unfetchable_masks)
             std::cout << "{\"level\":\"warning\",\"message\":\"alpha mask could not be fetched, "
                          "body region left showing\",\"textureId\":"
                       << homeworldz::api::json_string(homeworldz::viewer::format_uuid(mask))
                       << "}" << std::endl;
-        std::cout << "{\"level\":\"info\",\"message\":\"server default-outfit bake ready\",\"slots\":"
-                  << default_outfit_bake->assets.size() << ",\"visualParams\":"
-                  << default_outfit_visual_params.size() << ",\"unfetchableMasks\":"
-                  << default_outfit_bake->unfetchable_masks.size() << "}" << std::endl;
-        return &*default_outfit_bake;
+        std::cout << "{\"level\":\"info\",\"message\":\"server outfit bake ready\",\"outfit\":"
+                  << homeworldz::api::json_string(what) << ",\"slots\":"
+                  << cached.bake.assets.size() << ",\"visualParams\":"
+                  << cached.visual_params.size() << ",\"unfetchableMasks\":"
+                  << cached.bake.unfetchable_masks.size() << "}" << std::endl;
+        return &*outfit_bakes.insert_or_assign(key, std::move(cached)).first->second;
+    };
+    const auto ensure_default_outfit_bake = [&]() -> const CachedOutfitBake* {
+        static const char* const default_wearable_asset_ids[] = {
+            "66c41e39-38f9-f75a-024e-585989bfab73",  // Default Shape
+            "00000000-0000-1111-9999-000000000202",  // Default Skin
+            "d342e6c0-b9d2-11dc-95ff-0800200c9a66",  // Default Hair
+            "4bb6fa4d-1cd2-498a-a84c-95c1a0e745a7",  // Default Eyes
+            "00000000-38f9-1111-024e-222222111110",  // Default Shirt
+            "00000000-38f9-1111-024e-222222111120",  // Default Pants
+        };
+        return bake_outfit_of({std::begin(default_wearable_asset_ids),
+                               std::end(default_wearable_asset_ids)}, "default");
+    };
+    // What the wearer actually has on, from the Current Outfit folder. This is
+    // the only path by which anything a wearer chose — an Alpha wearable over a
+    // mesh body, most of all — reaches a server-side bake: the default outfit
+    // is fixed and contains none of it.
+    //
+    // Clothing (asset type 5) and body parts (13) only. The COF also holds
+    // links to worn objects, and a bake has nothing to do with an attachment.
+    //
+    // Falls back to the default outfit, and says which of the two reasons it
+    // is: a grid that would not answer is not a wearer who owns nothing, and
+    // reading the first as the second is how an outfit silently disappears.
+    const auto ensure_worn_outfit_bake =
+        [&](std::string_view user_id) -> const CachedOutfitBake* {
+        if (!viewer_grid) return ensure_default_outfit_bake();
+        const auto current_outfit = viewer_grid->find_system_inventory_folder(user_id, 46);
+        if (!current_outfit) {
+            std::cerr << "{\"level\":\"warning\",\"message\":\"current outfit folder could not be "
+                         "read, wearing the default outfit\",\"userId\":"
+                      << homeworldz::api::json_string(user_id) << "}" << std::endl;
+            return ensure_default_outfit_bake();
+        }
+        const auto contents = viewer_grid->list_inventory_folder_items(user_id, *current_outfit);
+        if (!contents) {
+            std::cerr << "{\"level\":\"warning\",\"message\":\"current outfit could not be listed, "
+                         "wearing the default outfit\",\"userId\":"
+                      << homeworldz::api::json_string(user_id) << "}" << std::endl;
+            return ensure_default_outfit_bake();
+        }
+        std::vector<std::string> wearable_asset_ids;
+        std::size_t broken = 0;
+        for (const auto& entry : *contents) {
+            if (entry.asset_type != 5 && entry.asset_type != 13) {
+                // A link the grid could not resolve arrives with no asset and
+                // no type. Counted, because a wearer missing a garment is owed
+                // a reason that names the item.
+                if (entry.asset_id.empty()) {
+                    ++broken;
+                    std::cerr << "{\"level\":\"warning\",\"message\":\"worn item could not be "
+                                 "resolved and is not baked\",\"userId\":"
+                              << homeworldz::api::json_string(user_id) << ",\"itemId\":"
+                              << homeworldz::api::json_string(entry.item_id) << ",\"name\":"
+                              << homeworldz::api::json_string(entry.name) << "}" << std::endl;
+                }
+                continue;
+            }
+            wearable_asset_ids.push_back(entry.asset_id);
+        }
+        if (wearable_asset_ids.empty()) {
+            // An outfit of nothing wearable is not a bake. The grid links the
+            // default wearables into a new account's COF, so this is an empty
+            // folder or an outfit of attachments alone.
+            std::cout << "{\"level\":\"info\",\"message\":\"no wearables in the current outfit, "
+                         "wearing the default outfit\",\"userId\":"
+                      << homeworldz::api::json_string(user_id) << ",\"entries\":"
+                      << contents->size() << ",\"unresolved\":" << broken << "}" << std::endl;
+            return ensure_default_outfit_bake();
+        }
+        if (const auto* baked = bake_outfit_of(wearable_asset_ids, "worn")) return baked;
+        return ensure_default_outfit_bake();
     };
 
     homeworldz::simulation::FixedStepLoop simulation(scene);
@@ -8677,17 +8763,18 @@ int main(int argc, char* argv[]) {
                                     static_cast<void>(send_udp(viewer_server, endpoint, *outgoing));
                             }
                             // If this avatar has not supplied an appearance yet,
-                            // publish a server-side default-outfit bake so it
-                            // rezzes immediately even if its client never bakes.
-                            // A later AgentSetAppearance overrides this.
+                            // publish a server-side bake of what it is wearing
+                            // so it rezzes immediately even if its client never
+                            // bakes. A later AgentSetAppearance overrides this.
                             if (!avatar_appearances.contains(endpoint)) {
-                                if (const auto* bake = ensure_default_outfit_bake()) {
+                                if (const auto* bake = ensure_worn_outfit_bake(
+                                        homeworldz::viewer::format_uuid(identity->agent_id))) {
                                     homeworldz::viewer::AgentSetAppearance seeded;
                                     seeded.agent_id = identity->agent_id;
                                     seeded.session_id = identity->session_id;
                                     seeded.serial = 1;
-                                    seeded.texture_entry = bake->texture_entry;
-                                    seeded.visual_params = default_outfit_visual_params;
+                                    seeded.texture_entry = bake->bake.texture_entry;
+                                    seeded.visual_params = bake->visual_params;
                                     seeded.appearance_version = 1;
                                     avatar_appearances.insert_or_assign(endpoint, seeded);
                                     // LMV never sends AgentSetAppearance, so derive
@@ -8719,9 +8806,9 @@ int main(int argc, char* argv[]) {
                                     }
                                     const auto seeded_appearance =
                                         homeworldz::viewer::encode_avatar_appearance({
-                                            identity->agent_id, 1, bake->texture_entry,
-                                            default_outfit_visual_params, {}, std::uint8_t{1}});
-                                    // Send the default-outfit bake only to OTHER
+                                            identity->agent_id, 1, bake->bake.texture_entry,
+                                            bake->visual_params, {}, std::uint8_t{1}});
+                                    // Send the seeded bake only to OTHER
                                     // avatars, never back to the joiner: a real
                                     // baker (e.g. Firestorm) would otherwise apply
                                     // this server-side (v1) default to itself and
@@ -10817,19 +10904,21 @@ int main(int argc, char* argv[]) {
                                                    (*inbound.arrival)[2]} :
                         (persisted ? persisted->position : initial_spawn);
                     // A session client sends no appearance — texture-entry
-                    // blobs are a legacy shape it will never speak — so seed
-                    // the server-side default-outfit bake, exactly as an
+                    // blobs are a legacy shape it will never speak — so seed a
+                    // server-side bake of its Current Outfit, exactly as an
                     // appearance-less viewer gets. Without it viewers render
                     // a default-shaped body, and the physics capsule keeps
-                    // default dimensions (the bent-knee stance).
+                    // default dimensions (the bent-knee stance). This is also
+                    // the only way an alpha layer a session client wears has
+                    // any effect: it never composites a bake of its own.
                     const auto session_agent = homeworldz::viewer::parse_uuid(inbound.user_id);
                     if (session_agent && !avatar_appearances.contains(participant_key)) {
-                        if (const auto* bake = ensure_default_outfit_bake()) {
+                        if (const auto* bake = ensure_worn_outfit_bake(inbound.user_id)) {
                             homeworldz::viewer::AgentSetAppearance seeded;
                             seeded.agent_id = *session_agent;
                             seeded.serial = 1;
-                            seeded.texture_entry = bake->texture_entry;
-                            seeded.visual_params = default_outfit_visual_params;
+                            seeded.texture_entry = bake->bake.texture_entry;
+                            seeded.visual_params = bake->visual_params;
                             seeded.appearance_version = 1;
                             avatar_appearances.insert_or_assign(participant_key, seeded);
                             const auto geometry = homeworldz::viewer::avatar_geometry(seeded);
