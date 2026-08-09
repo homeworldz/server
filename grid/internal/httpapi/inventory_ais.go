@@ -77,6 +77,18 @@ func (a *API) inventoryAISCapability(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Everything past here mutates. Rather than name the handlers that can
+	// touch the Current Outfit — wearing, taking off, slamming a saved outfit,
+	// moving an item, deleting one — read the folder's version either side of
+	// the dispatch and let the store say whether it changed. A path added later
+	// is covered without anyone remembering to add it here, which is the whole
+	// reason the check sits at the fork rather than in the handlers.
+	outfitBefore := a.currentOutfitVersion(r.Context(), session.UserID)
+	defer func() {
+		if a.currentOutfitVersion(r.Context(), session.UserID) != outfitBefore {
+			a.notifyOutfitChanged(r.Context(), session.UserID)
+		}
+	}()
 	if len(parts) == 4 && parts[1] == "category" && validUUID(parts[2]) && parts[3] == "children" {
 		if r.Method != http.MethodDelete {
 			w.Header().Set("Allow", "GET, DELETE")

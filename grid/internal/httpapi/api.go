@@ -59,6 +59,8 @@ type API struct {
 	serviceToken   string
 	provisioned    provisioning.Store
 	terrainHTTP    *http.Client
+	// Outbound to regions, for telling one that a wearer changed clothes.
+	outfitHTTP     *http.Client
 	terrainCache   terrainTileCache
 	layerCache     terrainLayerCache
 	transits       transit.Store
@@ -110,6 +112,9 @@ type Options struct {
 	WorkerToken       string
 	Provisioned       provisioning.Store
 	TerrainHTTPClient *http.Client
+	// Outbound to regions for outfit-change notifications. Defaulted when nil;
+	// a test supplies its own to see what would have been sent.
+	OutfitHTTPClient  *http.Client
 	Transits          transit.Store
 	TaskTransfers     tasktransfer.Store
 	Locations         locations.Store
@@ -140,11 +145,15 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 		renditions: options.Renditions, workerToken: options.WorkerToken,
 		serviceToken: options.ServiceToken,
 		provisioned:  options.Provisioned, terrainHTTP: options.TerrainHTTPClient,
+		outfitHTTP:   options.OutfitHTTPClient,
 		terrainCache: newTerrainTileCache(), layerCache: newTerrainLayerCache(), transits: options.Transits,
 		taskTransfers: options.TaskTransfers, locations: options.Locations,
 		gestures: options.Gestures, attachments: options.Attachments, estates: options.Estates,
 		welcomePoints: options.Welcome, ticketVerifier: options.TicketVerifier,
 		welcomeText: options.WelcomeMessage}
+	if a.outfitHTTP == nil {
+		a.outfitHTTP = &http.Client{Timeout: 10 * time.Second}
+	}
 	if a.publicURL == "" {
 		a.publicURL = "http://127.0.0.1:42000"
 	}
