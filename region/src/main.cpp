@@ -1484,6 +1484,47 @@ int main(int argc, char* argv[]) {
             std::cout << "{\"level\":\"info\",\"message\":\"region assets imported\",\"count\":"
                       << imported_assets << "}" << std::endl;
         }
+        // IMG_INVISIBLE, the transparent counterpart of the IMG_WHITE above.
+        // Both are "dataserver" assets in indra_constants.cpp — ids a viewer
+        // names and expects a grid to serve — and only one of them was served.
+        //
+        // Checking a box on an Alpha wearable sets that body region's alpha
+        // texture to this id, and a layerset that composites *fully*
+        // transparent is never uploaded at all: the viewer sets the bake itself
+        // to IMG_INVISIBLE (llviewertexlayer.cpp). Unserved, all three of these
+        // followed. The viewer marked its own bakes missing and stayed a cloud.
+        // The server bake fetched the mask, got nothing, and hid nothing. And
+        // the wearable cache would not record a slot naming an asset this
+        // region does not hold, so every AgentCachedTexture missed and the
+        // viewer re-baked without end — 114 uploads and 17.8 MB in ninety
+        // seconds, measured.
+        //
+        // Synthesized rather than bundled: it is one fact (fully transparent),
+        // and a generated image is one nobody has to trust a binary for.
+        static constexpr std::string_view invisible_texture_id =
+            "3a367d1c-bef1-6d43-7595-e88c1e3aadb3";
+        if (!storage->find_asset(invisible_texture_id)) {
+            homeworldz::image::Image transparent;
+            transparent.width = 32;
+            transparent.height = 32;
+            transparent.channels = 4;
+            transparent.pixels.assign(transparent.expected_size(), std::uint8_t{0});
+            const auto encoded = homeworldz::image::encode_j2c(transparent);
+            if (!encoded || encoded->empty()) {
+                // Loud: without it every Alpha wearable on this region is
+                // inert, which looks like a wearable bug and is not one.
+                std::cerr << "{\"level\":\"error\",\"message\":\"invisible texture could not be "
+                             "encoded, alpha wearables will not mask\"}" << std::endl;
+            } else {
+                std::vector<std::byte> content(encoded->size());
+                std::memcpy(content.data(), encoded->data(), encoded->size());
+                storage->store_asset(std::string(invisible_texture_id),
+                                     std::string(system_creator_id), content);
+                std::cout << "{\"level\":\"info\",\"message\":\"invisible texture seeded\","
+                             "\"assetId\":\"" << invisible_texture_id << "\",\"bytes\":"
+                          << content.size() << "}" << std::endl;
+            }
+        }
         if (viewer_grid) {
             const auto assets = storage->list_assets();
             for (const auto& asset : assets) {
