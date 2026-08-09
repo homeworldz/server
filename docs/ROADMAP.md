@@ -60,6 +60,8 @@ client.
 - [x] Broadcast `KillObject` for a departing avatar through the one teardown point every removal path funnels into, so it stops lingering in other viewers' views.
 - [x] Support alpha layers for viewers, so a mesh body hides the default body.
 - [x] Apply alpha layers in the server-side bake, proven on a worn alpha: the masked region bakes fully transparent and no other slot moves.
+- [x] Re-bake a wearer who changed outfit mid-session, on request; arrival already re-reads the outfit.
+- [ ] Call that re-bake automatically when an outfit changes, rather than leaving it for a caller to ask.
 
 ### Authoritative avatar movement
 

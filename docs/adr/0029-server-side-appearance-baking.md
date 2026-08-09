@@ -247,3 +247,30 @@ than fixtures.
 Worth recording about the fixture: it was first written masking texture 21 and
 *named* for the head. 21 is `TEX_LOWER_ALPHA`; head is 23. The bake was right
 and the label was wrong, and the log is what said so.
+
+### Re-baking mid-session
+
+Arrival re-reads the outfit, so a relog or a region crossing has never needed a
+trigger — the gap was only the middle of a session. An outfit change happens in
+inventory, on the grid, and nothing about it reaches a region: a client that
+bakes for itself sends a new `AgentSetAppearance`, and one that does not has no
+way to say anything at all.
+
+`POST /appearance/refresh/<uuid>` (service token) re-reads the Current Outfit,
+re-bakes, replaces the seeded appearance, and tells the other avatars. The
+wearer is found by the agent id inside its own appearance, because a caller
+cannot know whether it is keyed by circuit endpoint or session participant. The
+serial is **incremented** — a viewer ignores an appearance whose serial it has
+already seen, so a re-bake that reused it would be one nobody rendered. An
+avatar that is not on this region answers 404 rather than an error: a grid
+telling every region that a wearer changed clothes is right to, and all but one
+will say exactly that.
+
+Verified live, mid-session: with the alpha worn the bake reported slot 10 at
+`1.000000` hidden; the COF link was removed and the endpoint called; the next
+bake reported slot 10 at `0.000000` with every other slot identical, and the
+serial went 1 → 2. The broadcast leg is **not** covered by that run — no other
+avatar was connected, and the log said so (`"told":0`).
+
+Nothing calls this automatically yet. The grid knows when a COF changes and
+which region a wearer is on, so the grid is where the caller belongs.
