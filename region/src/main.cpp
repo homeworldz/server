@@ -7782,9 +7782,21 @@ int main(int argc, char* argv[]) {
                                             reinterpret_cast<const std::byte*>(initial_content->data()),
                                             initial_content->size());
                                         const auto metadata = storage->store_asset(asset_id, user_id, content);
+                                        // Write-through (ADR 0026). Registering
+                                        // alone deadlocks the commit that
+                                        // follows: the grid's durability check
+                                        // fetches the bytes back from this
+                                        // region's own endpoint, and this
+                                        // thread — the one that would serve
+                                        // that fetch — is blocked inside
+                                        // create_inventory_item waiting for
+                                        // the answer. Nothing moves until the
+                                        // grid client's deadline expires and
+                                        // the commit is refused 409.
                                         if (!viewer_grid->register_asset(
                                                 metadata.viewer_id, metadata.creator_id, metadata.sha256,
-                                                metadata.size, region_public_endpoint, true))
+                                                metadata.size, region_public_endpoint, true) ||
+                                            !viewer_grid->store_vault_asset(metadata.viewer_id, content))
                                             asset_id.clear();
                                     } catch (const std::exception& error) {
                                         asset_id.clear();
@@ -8153,9 +8165,19 @@ int main(int argc, char* argv[]) {
                                         const auto metadata = storage->store_asset(
                                             asset_id, homeworldz::viewer::format_uuid(identity->agent_id),
                                             asset_upload->data);
-                                        success = !viewer_grid || viewer_grid->register_asset(
-                                            metadata.viewer_id, metadata.creator_id, metadata.sha256,
-                                            metadata.size, region_public_endpoint, true);
+                                        // Write-through (ADR 0026): a staged
+                                        // upload is committed by the
+                                        // CreateInventoryItem that follows it,
+                                        // and registering without vaulting
+                                        // deadlocks that commit against this
+                                        // thread — see the shipped-default
+                                        // seed above.
+                                        success = !viewer_grid ||
+                                            (viewer_grid->register_asset(
+                                                 metadata.viewer_id, metadata.creator_id, metadata.sha256,
+                                                 metadata.size, region_public_endpoint, true) &&
+                                             viewer_grid->store_vault_asset(metadata.viewer_id,
+                                                                            asset_upload->data));
                                         if (success) {
                                             pending_inventory_asset_uploads.insert_or_assign(
                                                 endpoint + '|' + transaction_id,
@@ -8234,9 +8256,18 @@ int main(int argc, char* argv[]) {
                                                 transfer.asset_id,
                                                 homeworldz::viewer::format_uuid(identity->agent_id),
                                                 transfer.data);
-                                            stored = !viewer_grid || viewer_grid->register_asset(
-                                                metadata.viewer_id, metadata.creator_id, metadata.sha256,
-                                                metadata.size, region_public_endpoint, true);
+                                            // Write-through (ADR 0026): the
+                                            // transferred bytes are staged for
+                                            // the same commit, and carry the
+                                            // same deadlock if they are only
+                                            // registered.
+                                            stored = !viewer_grid ||
+                                                (viewer_grid->register_asset(
+                                                     metadata.viewer_id, metadata.creator_id,
+                                                     metadata.sha256, metadata.size,
+                                                     region_public_endpoint, true) &&
+                                                 viewer_grid->store_vault_asset(metadata.viewer_id,
+                                                                                transfer.data));
                                             if (stored) {
                                                 pending_inventory_asset_uploads.insert_or_assign(
                                                     endpoint + '|' + transfer.transaction_id,
