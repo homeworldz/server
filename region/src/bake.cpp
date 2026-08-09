@@ -252,6 +252,26 @@ std::uint32_t baked_texture_index(BakeSlot slot) {
     return tex_index::kHeadBaked;
 }
 
+std::optional<std::uint32_t> alpha_texture_index(BakeSlot slot) {
+    switch (slot) {
+        case BakeSlot::Head:
+            return tex_index::kHeadAlpha;
+        case BakeSlot::Upper:
+            return tex_index::kUpperAlpha;
+        case BakeSlot::Lower:
+            return tex_index::kLowerAlpha;
+        case BakeSlot::Eyes:
+            return tex_index::kEyesAlpha;
+        case BakeSlot::Hair:
+            return tex_index::kHairAlpha;
+        case BakeSlot::Skirt:
+            // The Alpha wearable has no skirt channel; indra has no
+            // TEX_SKIRT_ALPHA. A skirt is removed by taking it off.
+            return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 std::map<BakeSlot, image::Image> bake_outfit(const std::vector<Wearable>& worn,
                                              const TextureFetch& fetch,
                                              const MaskFetch& mask_fetch) {
@@ -298,7 +318,37 @@ std::map<BakeSlot, image::Image> bake_outfit(const std::vector<Wearable>& worn,
         if (layers.empty()) continue;
         image::Image slot_image =
             image::composite_rgba(layout.resolution, layout.resolution, layers);
-        if (!slot_image.empty()) baked.emplace(layout.slot, std::move(slot_image));
+        if (slot_image.empty()) continue;
+        // The Alpha wearable, applied exactly as the viewer applies it: its
+        // texture's alpha channel multiplied into the baked alpha, with the
+        // colour channels untouched (lltexlayer.cpp renders mask layers with
+        // BT_MULT_ALPHA under a colour mask of alpha only). Where the mask is
+        // transparent the body region stops rendering, which is how a mesh body
+        // stops having the default one pushing through it.
+        //
+        // The alpha channel and not the luminance, even though a black-and-white
+        // mask is what a creator draws: matching the viewer matters more than
+        // being accommodating, or a bake done here and a bake done there differ
+        // and the difference shows up as a body that is fine until someone else
+        // looks at it.
+        if (const auto alpha_index = alpha_texture_index(layout.slot)) {
+            if (const auto it = worn_textures.find(*alpha_index); it != worn_textures.end()) {
+                if (auto mask = fetch(it->second.id); mask && !mask->empty()) {
+                    const auto sized = image::resize_nearest(
+                        image::to_rgba(*mask), slot_image.width, slot_image.height);
+                    const std::size_t count =
+                        static_cast<std::size_t>(slot_image.width) * slot_image.height;
+                    if (sized.pixels.size() == count * 4 && slot_image.pixels.size() == count * 4)
+                        for (std::size_t pixel = 0; pixel < count; ++pixel) {
+                            const std::uint32_t baked_alpha = slot_image.pixels[pixel * 4 + 3];
+                            const std::uint32_t mask_alpha = sized.pixels[pixel * 4 + 3];
+                            slot_image.pixels[pixel * 4 + 3] =
+                                static_cast<std::uint8_t>((baked_alpha * mask_alpha + 127) / 255);
+                        }
+                }
+            }
+        }
+        baked.emplace(layout.slot, std::move(slot_image));
     }
     return baked;
 }

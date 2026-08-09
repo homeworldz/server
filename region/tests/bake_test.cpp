@@ -103,6 +103,46 @@ int main() {
     ok &= expect(baked_texture_index(BakeSlot::Eyes) == tx::kEyesBaked,
                  "eyes -> TEX_EYES_BAKED");
 
+    // An Alpha wearable hides the body region it masks. This is what makes a
+    // mesh body wearable: the default body renders underneath one and pushes
+    // through wherever the two disagree, worst at the head.
+    {
+        const char* const kAlphaHead = "cccccccc-0000-0000-0000-000000000001";
+        auto alpha_worn = worn;
+        alpha_worn.push_back(make_wearable(WearableType::Alpha, {{tx::kHeadAlpha, kAlphaHead}}));
+        auto alpha_fetch = [&](const homeworldz::viewer::Uuid& id) -> std::optional<Image> {
+            const std::string s = format_uuid(id);
+            if (s == kAlphaHead) return solid(64, {0, 0, 0, 0});
+            if (s == kSkinHead) return solid(64, {200, 180, 160, 255});
+            if (s == kSkinUpper) return solid(64, {200, 180, 160, 255});
+            if (s == kSkinLower) return solid(64, {255, 0, 0, 255});
+            if (s == kPantsTex) return solid(64, {0, 0, 255, 255});
+            return std::nullopt;
+        };
+        const auto masked = bake_outfit(alpha_worn, alpha_fetch);
+        ok &= expect(masked.count(BakeSlot::Head) == 1, "head still bakes with an alpha worn");
+        if (masked.count(BakeSlot::Head)) {
+            const Image& head = masked.at(BakeSlot::Head);
+            // Transparent where the mask is transparent...
+            ok &= expect(head.pixels[3] == 0, "a transparent head alpha hides the head bake");
+            // ...and the colour beneath is untouched. The viewer masks alpha
+            // only (colour mask false,true); tinting the pixels black instead
+            // would look identical on a body that is fully hidden and wrong on
+            // every partial mask, which is what real alpha layers are.
+            ok &= expect(head.pixels[0] > 150, "masking leaves the colour channels alone");
+        }
+        // A region with no alpha texture is unaffected: the lower body still
+        // shows its pants.
+        if (masked.count(BakeSlot::Lower)) {
+            const Image& lower = masked.at(BakeSlot::Lower);
+            ok &= expect(lower.pixels[3] == 255, "an unmasked region stays opaque");
+        }
+        ok &= expect(!homeworldz::viewer::alpha_texture_index(BakeSlot::Skirt).has_value(),
+                     "the skirt has no alpha channel");
+        ok &= expect(homeworldz::viewer::alpha_texture_index(BakeSlot::Head) == tx::kHeadAlpha,
+                     "head -> TEX_HEAD_ALPHA");
+    }
+
     if (!ok) return 1;
     std::cerr << "bake outfit OK\n";
     return 0;

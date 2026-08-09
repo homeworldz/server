@@ -39,6 +39,14 @@ inline constexpr std::uint32_t kLowerUnderpants = 17;
 inline constexpr std::uint32_t kSkirt = 18;
 inline constexpr std::uint32_t kSkirtBaked = 19;
 inline constexpr std::uint32_t kHairBaked = 20;
+// The Alpha wearable's textures. Each one masks a body region away: what makes
+// a mesh body wearable at all, since the default body renders underneath it and
+// pushes through wherever the two disagree.
+inline constexpr std::uint32_t kLowerAlpha = 21;
+inline constexpr std::uint32_t kUpperAlpha = 22;
+inline constexpr std::uint32_t kHeadAlpha = 23;
+inline constexpr std::uint32_t kEyesAlpha = 24;
+inline constexpr std::uint32_t kHairAlpha = 25;
 inline constexpr std::uint32_t kHeadTattoo = 26;
 inline constexpr std::uint32_t kUpperTattoo = 27;
 inline constexpr std::uint32_t kLowerTattoo = 28;
@@ -68,6 +76,10 @@ const std::vector<BakeSlotLayout>& bake_slot_layouts();
 
 // The avatar texture-entry index (TEX_*_BAKED) that receives a slot's result.
 std::uint32_t baked_texture_index(BakeSlot slot);
+
+// The Alpha wearable texture whose alpha channel masks a slot away, or nullopt
+// for the skirt, which indra gives no alpha channel.
+std::optional<std::uint32_t> alpha_texture_index(BakeSlot slot);
 
 // Fetches the RGBA image for a texture UUID, or nullopt if unavailable.
 using TextureFetch = std::function<std::optional<image::Image>(const Uuid&)>;
