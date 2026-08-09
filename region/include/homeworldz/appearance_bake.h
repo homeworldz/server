@@ -23,6 +23,13 @@ struct OutfitBake {
         Uuid id;                       // content-derived viewer UUID for this bake
         std::uint8_t texture_index;    // TEX_*_BAKED index the bake occupies
         std::vector<std::byte> j2c;    // encoded JPEG2000 bytes to store
+        // Fraction of this slot's texels left fully transparent, 0..1. An alpha
+        // layer's whole purpose is to raise this, and a bake that fetched a
+        // mask and applied nothing reports success in every other respect —
+        // that is not hypothetical, it is what a missing IMG_INVISIBLE did.
+        // Measured on the composited image, so it describes the bake rather
+        // than the intent behind it.
+        double hidden_fraction{};
     };
     std::vector<BakedAsset> assets;
     std::vector<Wearable> worn;  // the parsed wearables (for visual-param assembly)

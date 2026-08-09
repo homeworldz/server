@@ -68,7 +68,15 @@ std::optional<OutfitBake> bake_worn_outfit(const std::vector<Uuid>& wearable_ass
         const Uuid id = content_uuid(j2c);
         const auto index = static_cast<std::uint8_t>(baked_texture_index(slot));
         result.faces[index] = id;
-        result.assets.push_back(OutfitBake::BakedAsset{id, index, std::move(j2c)});
+        double hidden = 0.0;
+        if (slot_image.channels == 4 && slot_image.pixel_count() != 0) {
+            std::size_t transparent = 0;
+            for (std::size_t pixel = 0; pixel < slot_image.pixel_count(); ++pixel)
+                if (slot_image.pixels[pixel * 4 + 3] == 0) ++transparent;
+            hidden = static_cast<double>(transparent) /
+                     static_cast<double>(slot_image.pixel_count());
+        }
+        result.assets.push_back(OutfitBake::BakedAsset{id, index, std::move(j2c), hidden});
     }
     if (result.assets.empty()) return std::nullopt;
 

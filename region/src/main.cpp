@@ -2032,11 +2032,20 @@ int main(int argc, char* argv[]) {
                          "body region left showing\",\"textureId\":"
                       << homeworldz::api::json_string(homeworldz::viewer::format_uuid(mask))
                       << "}" << std::endl;
+        // How much of each slot the bake left transparent, so an alpha layer
+        // that masked nothing is visible here rather than only on the avatar.
+        std::string hidden;
+        for (const auto& asset : cached.bake.assets) {
+            if (!hidden.empty()) hidden += ',';
+            hidden += '"' + std::to_string(asset.texture_index) + "\":" +
+                      std::to_string(asset.hidden_fraction);
+        }
         std::cout << "{\"level\":\"info\",\"message\":\"server outfit bake ready\",\"outfit\":"
                   << homeworldz::api::json_string(what) << ",\"slots\":"
                   << cached.bake.assets.size() << ",\"visualParams\":"
                   << cached.visual_params.size() << ",\"unfetchableMasks\":"
-                  << cached.bake.unfetchable_masks.size() << "}" << std::endl;
+                  << cached.bake.unfetchable_masks.size() << ",\"hiddenBySlot\":{"
+                  << hidden << "}}" << std::endl;
         return &*outfit_bakes.insert_or_assign(key, std::move(cached)).first->second;
     };
     const auto ensure_default_outfit_bake = [&]() -> const CachedOutfitBake* {
