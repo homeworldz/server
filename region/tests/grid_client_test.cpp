@@ -565,6 +565,57 @@ int main() {
         homeworldz::grid::Client nameless_client(nameless);
         if (nameless_client.worn_attachments(worn_user)) return 1;
     }
+    // Folder contents, which is how a bake learns what a wearer has on. Each
+    // Current Outfit entry is a link whose target carries the same field names
+    // it does, so the reading of a link is the thing worth asserting: an outer
+    // "assetId" naming an item and a nested one naming the wearable's asset.
+    {
+        auto outfit = std::make_shared<CannedTransport>(200,
+            R"([{"id":"aaaaaaaa-1111-4111-8111-111111111111","assetId":"bbbbbbbb-2222-4222-8222-222222222222",)"
+            R"("assetType":24,"name":"Shirt","linkedItem":{"id":"bbbbbbbb-2222-4222-8222-222222222222",)"
+            R"("assetId":"cccccccc-3333-4333-8333-333333333333","assetType":5,"name":"Shirt"}},)"
+            R"({"id":"dddddddd-4444-4444-8444-444444444444","assetId":"eeeeeeee-5555-4555-8555-555555555555",)"
+            R"("assetType":13,"name":"Shape"}])");
+        homeworldz::grid::Client outfit_client(outfit);
+        const auto contents = outfit_client.list_inventory_folder_items(worn_user, "ffffffff-6666-4666-8666-666666666666");
+        if (!contents || contents->size() != 2) return 1;
+        // The link's own identity, and the asset from one hop past it.
+        if ((*contents)[0].item_id != "aaaaaaaa-1111-4111-8111-111111111111" ||
+            (*contents)[0].asset_id != "cccccccc-3333-4333-8333-333333333333" ||
+            (*contents)[0].asset_type != 5 || (*contents)[0].name != "Shirt") return 1;
+        // An item sitting in the folder unlinked is itself.
+        if ((*contents)[1].asset_id != "eeeeeeee-5555-4555-8555-555555555555" ||
+            (*contents)[1].asset_type != 13) return 1;
+        if (outfit->requests.back().method != "GET" ||
+            outfit->requests.back().path !=
+                "/api/v1/inventory/" + worn_user + "/folders/ffffffff-6666-4666-8666-666666666666/items")
+            return 1;
+    }
+    {
+        // An empty outfit parses as an empty outfit; a grid that did not answer
+        // does not. Baking treats them differently — one is a naked avatar the
+        // wearer chose, the other is a bake that must not be published.
+        auto empty = std::make_shared<CannedTransport>(200, "[]");
+        homeworldz::grid::Client empty_client(empty);
+        const auto contents = empty_client.list_inventory_folder_items(worn_user, "ffffffff-6666-4666-8666-666666666666");
+        if (!contents || !contents->empty()) return 1;
+        auto missing = std::make_shared<CannedTransport>(404,
+            R"({"code":"inventory_folder_not_found","message":"inventory folder was not found"})");
+        homeworldz::grid::Client missing_client(missing);
+        if (missing_client.list_inventory_folder_items(worn_user, "ffffffff-6666-4666-8666-666666666666")) return 1;
+    }
+    {
+        // A link the grid could not resolve keeps its place with no asset, so a
+        // caller can say which item is broken. Dropping it would report an
+        // outfit that is short one garment as an outfit that is complete.
+        auto broken = std::make_shared<CannedTransport>(200,
+            R"([{"id":"aaaaaaaa-1111-4111-8111-111111111111","assetId":"bbbbbbbb-2222-4222-8222-222222222222",)"
+            R"("assetType":24,"name":"Gone"}])");
+        homeworldz::grid::Client broken_client(broken);
+        const auto contents = broken_client.list_inventory_folder_items(worn_user, "ffffffff-6666-4666-8666-666666666666");
+        if (!contents || contents->size() != 1) return 1;
+        if (!(*contents)[0].asset_id.empty() || (*contents)[0].item_id.empty()) return 1;
+    }
     {
         auto writes = std::make_shared<CannedTransport>(204, std::string{});
         homeworldz::grid::Client write_client(writes);

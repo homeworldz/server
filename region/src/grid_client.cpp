@@ -1287,6 +1287,67 @@ std::optional<TicketIdentity> Client::validate_region_ticket(std::string_view re
     return identity;
 }
 
+std::optional<std::vector<FolderEntry>> Client::list_inventory_folder_items(
+    std::string_view user_id, std::string_view folder_id) {
+    const auto response = transport_->send(
+        "GET", "/api/v1/inventory/" + std::string(user_id) + "/folders/" +
+                   std::string(folder_id) + "/items", {});
+    if (response.status_code != 200) return std::nullopt;
+    std::vector<FolderEntry> result;
+    const auto& body = response.body;
+    std::size_t position = body.find('[');
+    if (position == std::string::npos) return std::nullopt;
+    ++position;
+    while (position < body.size()) {
+        while (position < body.size() && (body[position] == ' ' || body[position] == ',')) ++position;
+        if (position < body.size() && body[position] == ']') return result;
+        if (position >= body.size() || body[position] != '{') return std::nullopt;
+        const auto start = position;
+        std::size_t depth = 0;
+        bool quoted = false;
+        bool escaped = false;
+        for (; position < body.size(); ++position) {
+            const auto character = body[position];
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (character == '\\') escaped = true;
+                else if (character == '"') quoted = false;
+                continue;
+            }
+            if (character == '"') quoted = true;
+            else if (character == '{') ++depth;
+            else if (character == '}' && --depth == 0) { ++position; break; }
+        }
+        if (depth != 0) return std::nullopt;
+        const auto element = std::string_view(body).substr(start, position - start);
+        // The resolved target is a nested object carrying the same field names
+        // as its link, so the two halves are separated before either is read.
+        // Scanning the whole element would answer "assetId" with whichever came
+        // first, which is a difference of one hop and the wrong asset entirely.
+        const auto nested = element.find("\"linkedItem\"");
+        const auto outer = element.substr(0, nested == std::string_view::npos ? element.size() : nested);
+        FolderEntry entry;
+        entry.item_id = json_field(outer, "id");
+        entry.name = json_field(outer, "name");
+        if (entry.item_id.empty()) return std::nullopt;
+        const auto outer_type = json_int(outer, "assetType");
+        if (!outer_type) return std::nullopt;
+        static constexpr int link_asset_type = 24;
+        if (*outer_type == link_asset_type) {
+            if (nested != std::string_view::npos) {
+                const auto target = element.substr(nested);
+                entry.asset_id = json_field(target, "assetId");
+                if (const auto type = json_int(target, "assetType")) entry.asset_type = *type;
+            }
+        } else {
+            entry.asset_id = json_field(outer, "assetId");
+            entry.asset_type = *outer_type;
+        }
+        result.push_back(std::move(entry));
+    }
+    return std::nullopt;
+}
+
 std::optional<std::vector<WornAttachment>> Client::worn_attachments(std::string_view user_id) {
     const auto response = transport_->send(
         "GET", "/api/v1/attachments/" + std::string(user_id), {});
