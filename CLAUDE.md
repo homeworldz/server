@@ -5,9 +5,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 This repo holds the Homeworldz server software: the **grid** server (Go,
-`grid/`), the **region** server (C++/Jolt, `region/`), the **script** VM (C++,
-`script/`), database migrations (`db/migrations/`), and the architecture
+`grid/`), the **region** server (C++/Jolt, `region/`), the **Falcon** script VM
+(C++, `falcon/`), database migrations (`db/migrations/`), and the architecture
 documentation and ADRs (`docs/`).
+
+`falcon/` is the script VM's source; `scripts/` is build and ops shell scripts.
+They were `script/` and `scripts/` until the near-collision cost a reader once
+too often. Inside `falcon/`, the CMake target is still `homeworldz-script` and
+the headers are still `homeworldz/script/…`: the subsystem is the script VM, and
+Falcon is what the language and its compiler are called.
 
 ## Sibling repos are independent
 
@@ -57,7 +63,7 @@ and building without `vcvars64.bat` fails to find the standard library:
 cmd /c "\"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat\" >nul && cmake --build build\vcpkg --target <target>"
 ```
 
-Test binaries land in `build/vcpkg/region/` and `build/vcpkg/script/` and are run
+Test binaries land in `build/vcpkg/region/` and `build/vcpkg/falcon/` and are run
 directly; exit code 0 is a pass. On the cloud box the region is built natively
 with `scripts/build-region.sh`, never cross-compiled from Windows.
 

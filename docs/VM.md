@@ -292,9 +292,9 @@ identifiers, to be aligned as it graduates:
 
 | Concept | Current identifier |
 | --- | --- |
-| module | `script/` (built standalone or via the top-level CMake) |
+| module | `falcon/` (built standalone or via the top-level CMake) |
 | namespace | `homeworldz::script` |
-| headers | `script/include/homeworldz/script/{bytecode,lexer,parser,ast,compiler,vm}.h` |
+| headers | `falcon/include/homeworldz/script/{bytecode,lexer,parser,ast,compiler,vm}.h` |
 | library / test | `homeworldz-script` / `homeworldz-script-poc-tests` (CTest `script-poc`) |
 | snapshot magic | `HWZS` |
 

@@ -43,5 +43,5 @@ if(TARGET openjp2)
 endif()
 
 enable_testing()
-add_subdirectory(script)
+add_subdirectory(falcon)
 add_subdirectory(region)
