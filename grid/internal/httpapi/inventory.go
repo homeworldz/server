@@ -55,7 +55,13 @@ func (a *API) inventoryByUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(suffix, "folders/") {
-		folderID := strings.TrimPrefix(suffix, "folders/")
+		folderPath := strings.TrimPrefix(suffix, "folders/")
+		if folderID, listSuffix, found := strings.Cut(folderPath, "/"); found && listSuffix == "items" &&
+			validUUID(folderID) {
+			a.inventoryFolderItemsByUser(w, r, userID, folderID)
+			return
+		}
+		folderID := folderPath
 		if !validUUID(folderID) || strings.Contains(folderID, "/") {
 			a.notFound(w, r)
 			return
@@ -252,6 +258,73 @@ func (a *API) inventoryItemByUser(w http.ResponseWriter, r *http.Request, userID
 	default:
 		writeJSON(w, http.StatusOK, item)
 	}
+}
+
+// One item of a folder's contents. A link (asset type 24) carries the id of
+// the item it names in its assetId and no asset of its own, so a caller that
+// only saw the link would have to fetch each target separately — and a region
+// fetching one at a time blocks its own HTTP thread on every hop. The target
+// travels with the link instead, resolved from the same read.
+type InventoryFolderItem struct {
+	inventory.Item
+	LinkedItem *inventory.Item `json:"linkedItem,omitempty"`
+}
+
+// The contents of one folder. This exists for the Current Outfit folder: a
+// region baking a wearer's appearance needs to know what that wearer has on,
+// which is the COF's links and what they point at.
+//
+// A folder that holds nothing answers 200 with an empty array. A folder that
+// does not exist answers 404 — the two are different facts, and a caller that
+// cannot tell them apart will read a mistyped id as a naked avatar.
+func (a *API) inventoryFolderItemsByUser(w http.ResponseWriter, r *http.Request, userID, folderID string) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, Error{Code: "method_not_allowed", Message: "only GET is supported"})
+		return
+	}
+	folders, err := a.inventory.ListFolders(r.Context(), userID)
+	if err != nil {
+		a.inventoryStoreError(w, r, "inventory folder could not be loaded", err)
+		return
+	}
+	found := false
+	for _, folder := range folders {
+		if folder.ID == folderID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, Error{Code: "inventory_folder_not_found", Message: "inventory folder was not found"})
+		return
+	}
+	items, err := a.inventory.ListItems(r.Context(), userID)
+	if err != nil {
+		a.inventoryStoreError(w, r, "inventory items could not be loaded", err)
+		return
+	}
+	byID := make(map[string]inventory.Item, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	contents := []InventoryFolderItem{}
+	for _, item := range items {
+		if item.FolderID != folderID {
+			continue
+		}
+		entry := InventoryFolderItem{Item: item}
+		// A link whose target is gone stays in the response as a link with
+		// nothing attached. Dropping it would hide a broken outfit from the
+		// only caller positioned to report one.
+		if item.AssetType == 24 {
+			if target, ok := byID[item.AssetID]; ok {
+				entry.LinkedItem = &target
+			}
+		}
+		contents = append(contents, entry)
+	}
+	writeJSON(w, http.StatusOK, contents)
 }
 
 func (a *API) inventoryFolderByUser(w http.ResponseWriter, r *http.Request, userID, folderID string) {

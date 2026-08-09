@@ -355,6 +355,63 @@ func TestInventoryFoldersEndpoint(t *testing.T) {
 	}
 }
 
+// A region baking a wearer's appearance reads the Current Outfit folder, and
+// what it finds there is links. The link carries the id of the item it names,
+// never the asset, so the endpoint has to resolve one hop or the region is left
+// making a grid call per worn item on the thread it serves HTTP from.
+func TestInventoryFolderItemsResolveLinksForTheCurrentOutfit(t *testing.T) {
+	const userID = "20000000-0000-4000-8000-000000000001"
+	const shirtItemID = "40000000-0000-4000-8000-000000000031"
+	const shirtAssetID = "50000000-0000-4000-8000-000000000031"
+	const linkItemID = "40000000-0000-4000-8000-000000000032"
+	store := &memoryInventoryStore{folders: make(map[string][]inventory.Folder)}
+	_, _ = store.EnsureSystemFolders(context.Background(), userID)
+	clothingID := inventory.SystemFolderID(userID, 5)
+	currentOutfitID := inventory.SystemFolderID(userID, 46)
+	if _, err := store.CreateItem(context.Background(), inventory.Item{
+		ID: shirtItemID, OwnerUserID: userID, CreatorUserID: userID, FolderID: clothingID,
+		AssetID: shirtAssetID, AssetType: 5, InventoryType: 18, Name: "Shirt",
+	}); err != nil {
+		t.Fatalf("create shirt: %v", err)
+	}
+	// The link's assetId is the item it names, and its own assetType is 24.
+	if _, err := store.CreateItem(context.Background(), inventory.Item{
+		ID: linkItemID, OwnerUserID: userID, CreatorUserID: userID, FolderID: currentOutfitID,
+		AssetID: shirtItemID, AssetType: 24, InventoryType: 18, Name: "Shirt",
+	}); err != nil {
+		t.Fatalf("create outfit link: %v", err)
+	}
+	handler := New(checker{}, "test", Options{ServiceToken: "secret", Inventory: store})
+
+	contents := requestRegion[[]InventoryFolderItem](t, handler, http.MethodGet,
+		"/api/v1/inventory/"+userID+"/folders/"+currentOutfitID+"/items", "", http.StatusOK)
+	if len(contents) != 1 {
+		t.Fatalf("current outfit contents = %#v", contents)
+	}
+	if contents[0].ID != linkItemID || contents[0].AssetType != 24 {
+		t.Fatalf("outfit entry is not the link: %#v", contents[0])
+	}
+	if contents[0].LinkedItem == nil {
+		t.Fatal("the link was not resolved; a region cannot bake what it cannot name")
+	}
+	if contents[0].LinkedItem.AssetID != shirtAssetID || contents[0].LinkedItem.AssetType != 5 {
+		t.Fatalf("resolved item = %#v", contents[0].LinkedItem)
+	}
+
+	// A folder that holds nothing is not a folder that is missing.
+	empty := requestRegion[[]InventoryFolderItem](t, handler, http.MethodGet,
+		"/api/v1/inventory/"+userID+"/folders/"+inventory.SystemFolderID(userID, 20)+"/items",
+		"", http.StatusOK)
+	if len(empty) != 0 {
+		t.Fatalf("empty folder contents = %#v", empty)
+	}
+	requestRegion[Error](t, handler, http.MethodGet,
+		"/api/v1/inventory/"+userID+"/folders/40000000-0000-4000-8000-0000000000ff/items",
+		"", http.StatusNotFound)
+	requestRegion[Error](t, handler, http.MethodPost,
+		"/api/v1/inventory/"+userID+"/folders/"+currentOutfitID+"/items", "", http.StatusMethodNotAllowed)
+}
+
 func TestCreateTextureInventoryItemEndpoint(t *testing.T) {
 	const userID = "20000000-0000-4000-8000-000000000001"
 	store := &memoryInventoryStore{folders: make(map[string][]inventory.Folder)}
