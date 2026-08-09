@@ -139,11 +139,22 @@ public:
             response.append(buffer, static_cast<std::size_t>(count));
         }
         close_grid_socket(connection);
+        // Nothing at all is a deadline, not a malformed answer, and the two
+        // must not report the same way. The grid answered one inventory commit
+        // in 20318 ms against this client's 20000 ms deadline: the region gave
+        // up 318 ms early, read an empty socket, and logged "invalid grid
+        // response" — so the 409 naming what could not be made durable was
+        // discarded, and a slow grid was indistinguishable from a broken one
+        // (2026-08-08).
+        if (response.empty())
+            throw std::runtime_error("no response from the grid within " +
+                                     std::to_string(grid_request_timeout_ms) + "ms");
         const auto first_space = response.find(' ');
         int status = 0;
         if (first_space == std::string::npos ||
             std::from_chars(response.data() + first_space + 1, response.data() + first_space + 4, status).ec != std::errc{}) {
-            throw std::runtime_error("invalid grid response");
+            throw std::runtime_error("unparseable grid response (" +
+                                     std::to_string(response.size()) + " bytes)");
         }
         const auto body_start = response.find("\r\n\r\n");
         return {status, body_start == std::string::npos ? std::string{} : response.substr(body_start + 4)};
