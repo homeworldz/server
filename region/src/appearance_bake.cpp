@@ -53,10 +53,13 @@ std::optional<OutfitBake> bake_worn_outfit(const std::vector<Uuid>& wearable_ass
         return image::decode_j2c(to_bytes_u8(*bytes));
     };
 
-    std::map<BakeSlot, image::Image> baked = bake_outfit(worn, texture_fetch, mask_fetch);
+    std::vector<Uuid> unfetchable_masks;
+    std::map<BakeSlot, image::Image> baked =
+        bake_outfit(worn, texture_fetch, mask_fetch, &unfetchable_masks);
     if (baked.empty()) return std::nullopt;
 
     OutfitBake result;
+    result.unfetchable_masks = std::move(unfetchable_masks);
     result.faces.fill(default_id);
     for (auto& [slot, slot_image] : baked) {
         auto encoded = image::encode_j2c(slot_image);

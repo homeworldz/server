@@ -26,6 +26,10 @@ struct OutfitBake {
     };
     std::vector<BakedAsset> assets;
     std::vector<Wearable> worn;  // the parsed wearables (for visual-param assembly)
+    // Alpha masks the bake was told to apply and could not fetch. A bake that
+    // hides nothing because its mask is missing still succeeds at everything
+    // else, so the fact has to travel with the result or it is lost.
+    std::vector<Uuid> unfetchable_masks;
 };
 
 // Fetches the raw bytes of an asset (wearable or texture) by UUID, or nullopt.
