@@ -2492,6 +2492,12 @@ int main(int argc, char* argv[]) {
     std::unordered_map<std::string, LiveAvatar> avatars;
     std::unordered_map<std::string, homeworldz::viewer::AvatarGeometry> avatar_geometries;
     std::unordered_map<std::string, homeworldz::viewer::AgentSetAppearance> avatar_appearances;
+    // Which of those appearances this region produced, rather than received.
+    // Only these may be re-baked: substituting a server bake into a real
+    // baker's appearance stream is the mistake ADR 0029 records, and an outfit
+    // change now arrives unprompted from the grid, so the guard belongs here
+    // and not in the caller's good manners.
+    std::unordered_set<std::string> server_seeded_appearances;
     std::unordered_map<std::string, std::vector<homeworldz::viewer::AvatarAnimationEntry>> avatar_animations;
     std::unordered_map<std::string, std::int32_t> next_animation_sequences;
     std::unordered_map<std::string, homeworldz::viewer::MovementAnimation> movement_animations;
@@ -2810,6 +2816,7 @@ int main(int argc, char* argv[]) {
             known.erase(entity_id);
         }
         avatar_appearances.erase(participant_key);
+        server_seeded_appearances.erase(participant_key);
         avatar_geometries.erase(participant_key);
         avatar_animations.erase(participant_key);
         next_animation_sequences.erase(participant_key);
@@ -3131,6 +3138,7 @@ int main(int argc, char* argv[]) {
         avatars.erase(endpoint);
         avatar_geometries.erase(endpoint);
         avatar_appearances.erase(endpoint);
+        server_seeded_appearances.erase(endpoint);
         avatar_animations.erase(endpoint);
         next_animation_sequences.erase(endpoint);
         movement_animations.erase(endpoint);
@@ -3792,6 +3800,20 @@ int main(int argc, char* argv[]) {
                                     request, 404, "application/json",
                                     homeworldz::api::to_json(homeworldz::api::Error{
                                         "avatar_not_here", "that avatar is not on this region"}));
+                            } else if (!server_seeded_appearances.contains(key)) {
+                                // The wearer composites its own bake, so it has
+                                // already applied this change and will send the
+                                // result itself. Re-baking here would replace a
+                                // real baker's appearance with the server's and
+                                // broadcast that to everyone else — the avatar
+                                // would look wrong to every viewer but its own.
+                                std::cout << "{\"level\":\"info\",\"message\":\"outfit change left to the "
+                                             "wearer's own baking\",\"userId\":"
+                                          << homeworldz::api::json_string(requested_user) << "}"
+                                          << std::endl;
+                                response = homeworldz::http::response_for_content(
+                                    request, 200, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Status{"client_bakes"}));
                             } else if (const auto* bake = ensure_worn_outfit_bake(requested_user)) {
                                 homeworldz::viewer::AgentSetAppearance reseeded = previous;
                                 // A viewer ignores an appearance whose serial it
@@ -8186,6 +8208,9 @@ int main(int argc, char* argv[]) {
                         if (appearance && appearance->agent_id == identity->agent_id &&
                             appearance->session_id == identity->session_id) {
                             avatar_appearances.insert_or_assign(endpoint, *appearance);
+                            // Its own bake from here on. A client that composites
+                            // for itself must never be handed a server bake back.
+                            server_seeded_appearances.erase(endpoint);
                             if (const auto geometry = homeworldz::viewer::avatar_geometry(*appearance)) {
                                 avatar_geometries[endpoint] = *geometry;
                                 if (const auto live = avatars.find(endpoint); live != avatars.end()) {
@@ -8893,6 +8918,7 @@ int main(int argc, char* argv[]) {
                                     seeded.visual_params = bake->visual_params;
                                     seeded.appearance_version = 1;
                                     avatar_appearances.insert_or_assign(endpoint, seeded);
+                                    server_seeded_appearances.insert(endpoint);
                                     // LMV never sends AgentSetAppearance, so derive
                                     // the avatar's body geometry from the seeded
                                     // default shape too, or its physics capsule
@@ -11037,6 +11063,7 @@ int main(int argc, char* argv[]) {
                             seeded.visual_params = bake->visual_params;
                             seeded.appearance_version = 1;
                             avatar_appearances.insert_or_assign(participant_key, seeded);
+                            server_seeded_appearances.insert(participant_key);
                             const auto geometry = homeworldz::viewer::avatar_geometry(seeded);
                             if (geometry) avatar_geometries[participant_key] = *geometry;
                             std::cout << "{\"level\":\"info\",\"message\":\"session avatar appearance seeded\""
