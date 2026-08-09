@@ -8825,9 +8825,9 @@ int main(int argc, char* argv[]) {
                                                 static_cast<void>(send_udp(
                                                     viewer_server, recipient_endpoint, *outgoing));
                                         }
-                                    std::cout << "{\"level\":\"info\",\"message\":\"server default "
-                                                 "appearance seeded on join\"}"
-                                              << std::endl;
+                                    std::cout << "{\"level\":\"info\",\"message\":\"server "
+                                                 "appearance seeded on join\",\"slots\":"
+                                              << bake->bake.assets.size() << "}" << std::endl;
                                 }
                             }
                             const auto terrain_patches_per_axis = terrain_width / 16;
