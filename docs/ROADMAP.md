@@ -59,7 +59,7 @@ client.
 - [x] Bake the wearer's own Current Outfit rather than one fixed outfit, cached per outfit.
 - [x] Broadcast `KillObject` for a departing avatar through the one teardown point every removal path funnels into, so it stops lingering in other viewers' views.
 - [x] Support alpha layers for viewers, so a mesh body hides the default body.
-- [ ] Apply alpha layers in the server-side bake for session clients. Written, tested, and now reachable — the bake reads the wearer's outfit — but no client that skips its own baking has yet worn one, so it stays open until that is seen.
+- [x] Apply alpha layers in the server-side bake, proven on a worn alpha: the masked region bakes fully transparent and no other slot moves.
 
 ### Authoritative avatar movement
 

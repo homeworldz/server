@@ -188,9 +188,8 @@ with skin hands, reddish pants with skin feet — entirely from the server seed.
 
   It was **unreachable** until the bake read a real outfit: it only ever ran
   the fixed six-item default list, which holds no Alpha wearable. That is
-  fixed — see *Per-outfit baking* below — and alpha masking is now on the path
-  a wearer's own clothes take. It remains **unproven in world**, because
-  proving it needs a client that skips its own baking to wear one.
+  fixed — see *Per-outfit baking* below — and the server bake is now proven on
+  a worn alpha too (same section).
 
 ## Per-outfit baking (2026-08-09)
 
@@ -222,5 +221,29 @@ joining Welcome produced `system-folders/46` 200 in 5 ms, the folder listing
 default. Two grid calls, six milliseconds, on the path that carries the
 thread-blocking hazard.
 
-What is still not shown is an alpha *in* such a bake: this bot's outfit has no
-Alpha wearable, and a viewer that bakes for itself never takes this path.
+### The alpha proof
+
+A bake now measures the fraction of each slot it left fully transparent, on the
+composited image rather than from the wearables it was given. That number is
+the one piece of evidence the IMG_INVISIBLE failure lacked: the bake fetched a
+mask, applied nothing, and reported success in every other respect.
+
+An Alpha wearable masking `TEX_LOWER_ALPHA` (21) was put in a test account's
+Current Outfit — a real asset the region serves, a real item, a real COF link —
+and an appearance-less client joined. The bake reported
+
+```
+"outfit":"worn","slots":5,"unfetchableMasks":0,
+"hiddenBySlot":{"8":0.010872,"9":0.000000,"10":1.000000,"11":0.851013,"20":0.125210}
+```
+
+Slot 10 is `TEX_LOWER_BAKED`: the masked region came out **entirely
+transparent**, while head, upper, eyes and hair were untouched (the eyes and
+hair figures are their own texture's transparency, unchanged by any mask). That
+is the whole chain — COF listing, wearable parse, IMG_INVISIBLE fetched from the
+region store, the alpha multiply, J2C encode — exercised on real assets rather
+than fixtures.
+
+Worth recording about the fixture: it was first written masking texture 21 and
+*named* for the head. 21 is `TEX_LOWER_ALPHA`; head is 23. The bake was right
+and the label was wrong, and the log is what said so.
