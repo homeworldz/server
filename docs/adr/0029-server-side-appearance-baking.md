@@ -186,11 +186,41 @@ with skin hands, reddish pants with skin feet — entirely from the server seed.
   against the skin, so the resize an in-world mask goes through is exercised
   too. Both assertions fail when the multiply in `bake.cpp` is removed.
 
-  It is still **unproven in world**, and cannot be reached from a viewer at
-  all: the server bake only ever runs the fixed six-item default outfit
-  (`main.cpp`, `ensure_default_outfit_bake`), which contains no Alpha
-  wearable, and both callers — an appearance-less viewer and an arriving
-  session client — seed that one bake. Nothing masks server-side until the
-  region bakes the wearer's own Current Outfit. That is the gate on the
-  roadmap's "apply alpha layers in the server-side bake for session clients",
-  and it is the same per-user COF baking this ADR defers to *Later*.
+  It was **unreachable** until the bake read a real outfit: it only ever ran
+  the fixed six-item default list, which holds no Alpha wearable. That is
+  fixed — see *Per-outfit baking* below — and alpha masking is now on the path
+  a wearer's own clothes take. It remains **unproven in world**, because
+  proving it needs a client that skips its own baking to wear one.
+
+## Per-outfit baking (2026-08-09)
+
+The bake is keyed by the outfit, not owned by the default. Two avatars in the
+same clothes composite to identical images, and the default outfit is simply
+the outfit most of them are in — it is one entry in that cache rather than a
+special case. The key is the worn asset ids sorted and deduplicated; the bake
+is handed the order the outfit listed, which compositing reads.
+
+`ensure_worn_outfit_bake` resolves the Current Outfit folder (system type 46)
+through the grid, lists it, and keeps clothing (asset type 5) and body parts
+(13). Worn objects live in that folder too, and an attachment has nothing to
+do with a bake. Listing needs a route that did not exist: server-to-server,
+nothing could read a folder. `GET /api/v1/inventory/{user}/folders/{id}/items`
+answers it and resolves each link's target in the same read, because a COF
+holds links (asset type 24) whose `assetId` names an *item*, and the region
+makes these calls on the thread it serves HTTP from.
+
+Every failure falls back to the default outfit and says which failure it was.
+A wearer who owns nothing and a grid that did not answer produce the same naked
+avatar and are not the same fact. A failed bake is remembered as failed, so a
+broken outfit is not re-fetched in full on every arrival; the cost is that one
+lost to a transient grid failure stays lost until the region restarts.
+
+Verified live on the cloud grid the day it shipped: an appearance-less bot
+joining Welcome produced `system-folders/46` 200 in 5 ms, the folder listing
+200 in 1 ms, and `"server outfit bake ready","outfit":"worn","slots":5,
+"visualParams":253,"unfetchableMasks":0` — the wearer's own outfit, not the
+default. Two grid calls, six milliseconds, on the path that carries the
+thread-blocking hazard.
+
+What is still not shown is an alpha *in* such a bake: this bot's outfit has no
+Alpha wearable, and a viewer that bakes for itself never takes this path.

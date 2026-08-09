@@ -55,10 +55,11 @@ client.
 - [x] Provide default body parts, clothing, Current Outfit links, legacy avatar baking, and persistent appearance across relogs.
 - [x] Provide a read-only system Library with default avatar and terrain content.
 - [x] Synchronize nearby avatar presence, movement, appearance rebakes, and animation changes between concurrently connected viewers.
-- [x] Bake avatar appearance **server-side**, so thin and headless clients rez correctly with no client-side baking; per-user COF baking for arbitrary outfits and SSB delivery to full viewers remain.
+- [x] Bake avatar appearance **server-side**, so thin and headless clients rez correctly with no client-side baking; SSB delivery to full viewers remains.
+- [x] Bake the wearer's own Current Outfit rather than one fixed outfit, cached per outfit.
 - [x] Broadcast `KillObject` for a departing avatar through the one teardown point every removal path funnels into, so it stops lingering in other viewers' views.
 - [x] Support alpha layers for viewers, so a mesh body hides the default body.
-- [ ] Apply alpha layers in the server-side bake for session clients. The masking is written and tested; it is gated on the region baking the wearer's own outfit, since the server bake runs only the fixed default one.
+- [ ] Apply alpha layers in the server-side bake for session clients. Written, tested, and now reachable — the bake reads the wearer's outfit — but no client that skips its own baking has yet worn one, so it stays open until that is seen.
 
 ### Authoritative avatar movement
 
