@@ -396,9 +396,17 @@ client family is served a derived rendition by a grid-side conversion worker.
   the first animation. **Attachments ship as of 2026-08-08** — wearing, taking
   off, and worn state kept on the grid so it survives a relog into a different
   region — though objects wear at the joint, since the offset an object was
-  taken off at is not stored yet. Remaining: **Firestorm verification of a worn
-  body**, body wearables, and **wiring the geometric check into the upload
-  path** — it runs in the diagnostic tool today, so uploads are still accepted on
+  taken off at is not stored yet. **A worn body was verified in Firestorm the
+  same day** and took two further corrections, neither visible to the geometric
+  check: `bind_shape_matrix` was left identity, so a mesh normalized to the unit
+  domain was skinned by joints metres apart; and inverse bind matrices carried
+  the exporter's bone orientations, while every joint in `avatar_skeleton.xml`
+  has `rot="0 0 0"`. The second turned the arm chain a quarter turn while every
+  joint still measured within 0.75 mm of the skeleton — a position falls out of
+  an inverted bind matrix whatever its rotation, so the check agreed throughout.
+  Remaining: body wearables (alpha layers, so the default body stops showing
+  through a mesh body), textures on rigged meshes, and **wiring the geometric
+  check into the upload path** — it runs in the diagnostic tool today, so uploads are still accepted on
   names, joint counts and influence sets alone. A rig it cannot discriminate is
   accepted (decided 2026-08-08, provisional). `maxRigInfluences` is enforced and
   no ordinary export can trip it: glTF carries four influences per joint set by
