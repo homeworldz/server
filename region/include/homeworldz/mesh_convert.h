@@ -126,7 +126,15 @@ TextureExtraction extract_textures(std::span<const std::byte> glb);
 // a body keeps its own proportions rather than taking Linden's. Bumping this is
 // what re-queues them — nothing in the grid sweeps on its own, and the worker's
 // --regenerate startup pass is the only caller of the endpoint that does.
-inline constexpr const char* generator = "meshsmith/0.12";
+// 0.13 writes joint position overrides only where a rig disagrees with the
+// skeleton. 0.12 wrote one per joint for every rigged mesh, so a
+// Linden-proportioned body carried a table restating the positions it already
+// had — and overrides are applied per joint across every mesh a wearer has on,
+// making that body one more competitor to set them. Every rendition 0.12
+// produced for an agreeing rig therefore differs from what this produces and
+// reconverts, which is what returns such content to the bytes it had before
+// overrides existed.
+inline constexpr const char* generator = "meshsmith/0.13";
 
 } // namespace homeworldz::mesh
 
