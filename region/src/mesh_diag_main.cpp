@@ -72,6 +72,24 @@ int main(int argc, char** argv) {
             continue;
         }
         if (!parsed->skin) continue;
+        // Joint position overrides, which are what let a body keep its own
+        // proportions instead of taking Linden's. Reported because their
+        // absence is invisible otherwise — the asset parses, renders and
+        // animates either way, and only the shape is wrong.
+        //
+        // The count matters as much as the presence: Firestorm ignores *every*
+        // override unless there is exactly one per joint
+        // (llvoavatar.cpp, addAttachmentOverridesForObject), so a partial table
+        // is silently no table at all.
+        const auto overrides = parsed->skin->alternate_inverse_bind.size();
+        std::cout << "  overrides: ";
+        if (overrides == 0)
+            std::cout << "none - this body will take the skeleton's own proportions\n";
+        else if (overrides != parsed->skin->joints.size())
+            std::cout << overrides << " for " << parsed->skin->joints.size()
+                      << " joints - MISMATCHED, so a viewer discards all of them\n";
+        else
+            std::cout << overrides << ", one per joint\n";
         std::cout << "  skin: " << parsed->skin->joints.size() << " joint(s):";
         for (std::size_t at = 0; at < parsed->skin->joints.size(); ++at) {
             if (at == 12) {
