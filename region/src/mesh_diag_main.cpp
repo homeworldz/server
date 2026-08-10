@@ -12,12 +12,14 @@
 #include "homeworldz/rig_check.h"
 #include "homeworldz/slmesh.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <string>
 #include <vector>
 
 int main(int argc, char** argv) {
@@ -172,8 +174,9 @@ int main(int argc, char** argv) {
                 bool known = true;
                 for (auto name = std::string_view(parsed->skin->joints[at]); !name.empty();
                      name = homeworldz::mesh::joint_parent(name)) {
-                    const auto found = std::find(parsed->skin->joints.begin(),
-                                                 parsed->skin->joints.end(), name);
+                    const auto found = std::find_if(
+                        parsed->skin->joints.begin(), parsed->skin->joints.end(),
+                        [name](const std::string& candidate) { return candidate == name; });
                     if (found != parsed->skin->joints.end()) {
                         const auto& m = parsed->skin->alternate_inverse_bind[
                             static_cast<std::size_t>(found - parsed->skin->joints.begin())];
