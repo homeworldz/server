@@ -20,6 +20,15 @@
 
 namespace homeworldz::mesh {
 
+bool is_avatar_body_mesh(std::string_view mesh_name) {
+    if (mesh_name.starts_with("CC_Base_") || mesh_name.starts_with("CC_Game_")) return true;
+    // Face details Character Creator names on their own. Matched by prefix
+    // because the trailing part is a variant ("Eyelash_Up", "Eyelash_Down").
+    for (const auto* prefix : {"Eyebrow", "Eyelash", "Tearline", "Eye_Occlusion"})
+        if (mesh_name.starts_with(prefix)) return true;
+    return false;
+}
+
 std::string source_folder_name(std::string_view file_name) {
     const auto slash = file_name.find_last_of("/\\");
     if (slash != std::string_view::npos) file_name.remove_prefix(slash + 1);
@@ -325,6 +334,26 @@ struct PublishQueue::State {
                                                            *objects, source_folder_name(job.name),
                                                            -1))
                             throw std::runtime_error("could not create a folder for the parts");
+                        // Body and outfit apart, because they are changed at
+                        // different rates — the point of importing a body with
+                        // its hidden faces intact is to put a different outfit
+                        // on it later, and that is hard to do when both arrived
+                        // as one list of fourteen.
+                        //
+                        // Made only when something will go in them: a source
+                        // that is all body or all clothing should not grow an
+                        // empty folder next to the full one.
+                        std::string body_folder, outfit_folder;
+                        for (const auto& mesh : imported.meshes) {
+                            auto& wanted =
+                                is_avatar_body_mesh(mesh.name) ? body_folder : outfit_folder;
+                            if (!wanted.empty()) continue;
+                            wanted = viewer::random_uuid();
+                            if (!grid->create_inventory_folder(
+                                    job.creator_user_id, wanted, parts_folder,
+                                    is_avatar_body_mesh(mesh.name) ? "Body" : "Outfit", -1))
+                                throw std::runtime_error("could not create a folder for the parts");
+                        }
                         result.textures = imported.textures_embedded;
                         result.opacity_composited = imported.opacity_composited;
                         result.influences_pruned = imported.influences_pruned;
@@ -354,10 +383,10 @@ struct PublishQueue::State {
                             // A part that fails takes the whole import with it
                             // rather than leaving a creator half a body with no
                             // way to tell which half.
-                            result.parts.push_back(publish_glb(mesh.glb, mesh.name,
-                                                               job.creator_user_id, *storage,
-                                                               *grid, region_public_endpoint,
-                                                               parts_folder));
+                            result.parts.push_back(publish_glb(
+                                mesh.glb, mesh.name, job.creator_user_id, *storage, *grid,
+                                region_public_endpoint,
+                                is_avatar_body_mesh(mesh.name) ? body_folder : outfit_folder));
                         }
                         break;
                     }

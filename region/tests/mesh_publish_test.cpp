@@ -144,6 +144,31 @@ int main() {
         if (source_folder_name(std::string(400, 'x') + ".fbx").size() != 255) return 24;
     }
 
+    // Which imported meshes are the avatar and which are worn over it. Taken
+    // from the corpus rather than invented: these are the names Character
+    // Creator actually exported for Kevin, Gibro and Ariana.
+    {
+        using homeworldz::mesh::is_avatar_body_mesh;
+        for (const auto* body : {"CC_Base_Body", "CC_Base_Eye", "CC_Base_Teeth",
+                                 "CC_Base_Tongue", "CC_Base_TearLine", "CC_Base_EyeOcclusion",
+                                 "CC_Game_Body", "Eyebrow", "Eyelash_Up", "Eyelash_Down"})
+            if (!is_avatar_body_mesh(body)) return 25;
+        // Clothing, and the accessories that come with it.
+        for (const auto* outfit : {"Slim_Jeans", "Basic_T_shirts", "Sport_sneakers", "Boots",
+                                   "Belt", "Apron", "Pants", "Glasses"})
+            if (is_avatar_body_mesh(outfit)) return 26;
+        // Hair and facial hair are outfit on purpose: they are worn, swapped
+        // and removed the way clothing is, whatever they are made of.
+        for (const auto* hair : {"Classic_short", "Mustache_Sparse", "Sideburns_Stubble",
+                                 "Soul_Patch_Sparse", "Male_Brow_2"})
+            if (is_avatar_body_mesh(hair)) return 27;
+        // A name that merely contains a body prefix is not one: the test is
+        // what the mesh starts with, or a jacket called "Eyebrow Bomber"
+        // would file itself as a face.
+        if (is_avatar_body_mesh("Retro CC_Base_Jacket")) return 28;
+        if (is_avatar_body_mesh("")) return 29;
+    }
+
     // A plain publish must still report as one, so the two are actually
     // distinguished rather than both defaulting to whatever the enum's first
     // value happens to be.

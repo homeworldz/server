@@ -67,6 +67,20 @@ struct PublishedMesh {
 // (".Fbx" and ".fbx" both occur in one corpus).
 std::string source_folder_name(std::string_view file_name);
 
+// Whether an imported mesh is part of the avatar itself rather than something
+// worn over it. The two go to different folders, because they are changed at
+// different rates: a body is imported once and an outfit is swapped.
+//
+// Character Creator names the avatar's own meshes `CC_Base_*` and leaves the
+// rest named by whoever authored them — "Slim_Jeans", "Classic_short",
+// "Boots" — so the prefix carries the distinction and a name list would not.
+// The face details it names separately (brows, lashes) are the exception and
+// are listed, because they belong to the face rather than to an outfit.
+//
+// Hair and facial hair deliberately count as outfit: they are separately
+// wearable and separately changed, which is the distinction this draws.
+bool is_avatar_body_mesh(std::string_view mesh_name);
+
 // `folder_id` places the resulting object item; empty means the owner's Objects
 // folder, which is where a single upload belongs. An import passes a folder of
 // its own, because one source file yields one asset per mesh and a fifteen-part
