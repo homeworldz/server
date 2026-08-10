@@ -11,6 +11,8 @@
 #include "homeworldz/rig_check.h"
 #include "homeworldz/slmesh.h"
 
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <iostream>
