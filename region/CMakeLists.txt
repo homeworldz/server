@@ -38,6 +38,7 @@ target_sources(homeworldz-region-core PRIVATE src/llsd_binary.cpp)
 target_sources(homeworldz-region-core PRIVATE src/render_material.cpp)
 target_sources(homeworldz-region-core PRIVATE src/texture_entry.cpp)
 target_sources(homeworldz-region-core PRIVATE src/mesh_model_upload.cpp)
+target_sources(homeworldz-region-core PRIVATE src/mesh_publish.cpp)
 # FBX import (ADR 0035). ufbx is vendored rather than packaged, so this adds a
 # translation unit and no dependency the cloud box has to be prepared for.
 target_sources(homeworldz-region-core PRIVATE src/fbx_import.cpp)

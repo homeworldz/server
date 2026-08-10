@@ -5,6 +5,10 @@ build/
 vcpkg_installed/
 out/
 var/
+# A region run's asset cache, keyed by viewer UUID. Every entry is a copy of
+# something already committed under assets/region/, so it carries no provenance
+# of its own and losing it costs one refetch.
+linden/
 config/*.ini
 config/regions.json
 *.user
