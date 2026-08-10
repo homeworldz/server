@@ -180,7 +180,21 @@ Acceptance validate_glb(std::span<const std::byte> content, Origin origin) {
             // distinction decides whether the position check below can say
             // anything: see where `retargeted` is read.
             if (canonical_joint(name).empty() && !retarget_joint(name).empty()) retargeted = true;
-            if (retarget_joint(name).empty()) {
+            // The converter folds a joint it cannot place into the nearest
+            // ancestor it can, so the gate has to do the same or it refuses
+            // content the pipeline handles. Character Creator rigs an accessory
+            // to a bone named after itself — an earring binds
+            // `Earring_Flower_0` — and the converter puts it on the head; a gate
+            // that had not walked the tree turned that into a refused upload.
+            bool placeable = !retarget_joint(name).empty();
+            if (!placeable)
+                for (const cgltf_node* up = node->parent; up != nullptr; up = up->parent)
+                    if (up->name != nullptr && !retarget_joint(up->name).empty()) {
+                        placeable = true;
+                        retargeted = true;
+                        break;
+                    }
+            if (!placeable) {
                 if (origin == Origin::Upload)
                     return refuse("a skin binds joint \"" + std::string(name) +
                                   "\", which is not a joint of the " +
