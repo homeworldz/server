@@ -119,6 +119,31 @@ int main() {
         if (results.front().error.empty()) return 15;
     }
 
+    // The name an import's parts folder takes. The creator recognises the file
+    // they exported, so the name is theirs minus what they did not choose.
+    {
+        using homeworldz::mesh::source_folder_name;
+        // The case Character Creator actually produces, capital extension and
+        // a leading underscore the creator typed on purpose.
+        if (source_folder_name("_HD Ariana.Fbx") != "_HD Ariana") return 16;
+        if (source_folder_name("kevin.fbx") != "kevin") return 17;
+        // A client that sends a path sends its own separators, either kind.
+        if (source_folder_name("C:\\models\\CC4 Kevin.Fbx") != "CC4 Kevin") return 18;
+        if (source_folder_name("models/Gibro.fbx") != "Gibro") return 19;
+        // Dots inside the name belong to the name; only the last is an
+        // extension. A name that is *only* an extension keeps it, because
+        // ".fbx" is a stranger folder name than the alternative of nothing.
+        if (source_folder_name("Aaron v1.2.fbx") != "Aaron v1.2") return 20;
+        if (source_folder_name(".fbx") != ".fbx") return 21;
+        // No name at all still has to produce a folder, since the parts have
+        // to land somewhere the wearer can find them.
+        if (source_folder_name("") != "Imported") return 22;
+        if (source_folder_name("models/") != "Imported") return 23;
+        // Inventory names are bounded, and an over-long one must be cut rather
+        // than refused: the import has already stored its source by this point.
+        if (source_folder_name(std::string(400, 'x') + ".fbx").size() != 255) return 24;
+    }
+
     // A plain publish must still report as one, so the two are actually
     // distinguished rather than both defaulting to whatever the enum's first
     // value happens to be.

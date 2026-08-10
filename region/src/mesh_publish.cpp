@@ -20,6 +20,17 @@
 
 namespace homeworldz::mesh {
 
+std::string source_folder_name(std::string_view file_name) {
+    const auto slash = file_name.find_last_of("/\\");
+    if (slash != std::string_view::npos) file_name.remove_prefix(slash + 1);
+    const auto dot = file_name.find_last_of('.');
+    if (dot != std::string_view::npos && dot > 0) file_name = file_name.substr(0, dot);
+    std::string name{file_name};
+    if (name.empty()) name = "Imported";
+    if (name.size() > 255) name.resize(255);
+    return name;
+}
+
 const std::vector<std::byte>& blank_prim_texture_entry() {
     static const auto entry = [] {
         const auto blank = viewer::parse_uuid("5748decc-f629-461c-9a36-a35a221fe21f");
@@ -38,7 +49,8 @@ viewer::Uuid blank_texture_id() {
 PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
                           const std::string& creator_user_id,
                           storage::RegionStorage& storage, grid::Client& grid,
-                          const std::string& region_public_endpoint) {
+                          const std::string& region_public_endpoint,
+                          std::string_view folder_id) {
     if (name.empty()) name = "Mesh";
     if (name.size() > 255) name.resize(255);
 
@@ -130,13 +142,17 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
     if (!grid.store_vault_asset(object_stored.viewer_id, wrapped_bytes))
         throw std::runtime_error("object vault write-through failed");
 
-    const auto folder = grid.find_system_inventory_folder(creator_user_id, 6);
-    if (!folder) throw std::runtime_error("objects folder unavailable");
+    std::string destination{folder_id};
+    if (destination.empty()) {
+        const auto folder = grid.find_system_inventory_folder(creator_user_id, 6);
+        if (!folder) throw std::runtime_error("objects folder unavailable");
+        destination = *folder;
+    }
     grid::InventoryItem item;
     item.item_id = viewer::random_uuid();
     item.creator_id = creator_user_id;
     item.owner_id = creator_user_id;
-    item.folder_id = *folder;
+    item.folder_id = destination;
     item.asset_id = object_stored.viewer_id;
     item.asset_type = 6;
     item.inventory_type = 6;
@@ -292,6 +308,23 @@ struct PublishQueue::State {
                         result.source_asset_id = job.source_asset_id;
                         const auto imported = gltf_from_fbx(job.glb);
                         if (!imported.ok) throw std::runtime_error(imported.error);
+                        // A folder named after the source, holding its parts. A
+                        // character imports as one asset per mesh, and fifteen
+                        // items landing loose in Objects gives the wearer no
+                        // sign which fifteen belong to each other.
+                        //
+                        // Failing here costs nothing but the retry: the source
+                        // is already in the vault by the time an import runs
+                        // (Kind::StoreSource precedes it), so refusing is
+                        // better than quietly scattering the parts.
+                        const auto objects =
+                            grid->find_system_inventory_folder(job.creator_user_id, 6);
+                        if (!objects) throw std::runtime_error("objects folder unavailable");
+                        const auto parts_folder = viewer::random_uuid();
+                        if (!grid->create_inventory_folder(job.creator_user_id, parts_folder,
+                                                           *objects, source_folder_name(job.name),
+                                                           -1))
+                            throw std::runtime_error("could not create a folder for the parts");
                         result.textures = imported.textures_embedded;
                         result.opacity_composited = imported.opacity_composited;
                         result.influences_pruned = imported.influences_pruned;
@@ -323,7 +356,8 @@ struct PublishQueue::State {
                             // way to tell which half.
                             result.parts.push_back(publish_glb(mesh.glb, mesh.name,
                                                                job.creator_user_id, *storage,
-                                                               *grid, region_public_endpoint));
+                                                               *grid, region_public_endpoint,
+                                                               parts_folder));
                         }
                         break;
                     }

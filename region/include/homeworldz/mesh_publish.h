@@ -60,10 +60,23 @@ struct PublishedMesh {
 // `glb` must already have passed the acceptance gate: this stores and registers
 // rather than validates, and handing it unvalidated bytes is how the gate gets
 // bypassed.
+// The folder an import's parts go into, named after the file they came from.
+// The creator named the export and will look for that name, so the only things
+// removed are what they did not choose: any directory the client sent, and the
+// extension, whose case varies between Character Creator's own exporters
+// (".Fbx" and ".fbx" both occur in one corpus).
+std::string source_folder_name(std::string_view file_name);
+
+// `folder_id` places the resulting object item; empty means the owner's Objects
+// folder, which is where a single upload belongs. An import passes a folder of
+// its own, because one source file yields one asset per mesh and a fifteen-part
+// character otherwise arrives as fifteen loose items with no sign they belong
+// together.
 PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
                           const std::string& creator_user_id,
                           storage::RegionStorage& storage, grid::Client& grid,
-                          const std::string& region_public_endpoint);
+                          const std::string& region_public_endpoint,
+                          std::string_view folder_id = {});
 
 // Publishing, moved off the region's loop.
 //
