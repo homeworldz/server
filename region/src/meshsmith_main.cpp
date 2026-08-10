@@ -207,6 +207,21 @@ int main(int argc, char** argv) {
                 // this worker cannot make on its own and an API it does not
                 // have. Refused by name rather than by silently importing the
                 // first mesh and losing the rest.
+                //
+                // **Nothing reaches this branch today.** The region imports
+                // source files on its own publish worker and requests no
+                // rendition of them, so no job of this shape is ever queued. It
+                // is kept because it is the natural home for a glTF view of a
+                // stored source, should something want one.
+                //
+                // Two things to know before wiring it to anything. A
+                // single-mesh source produces a rendition roughly the size of
+                // the whole upload — up to 128 MiB — against a rendition store
+                // that caps at 64 (grid/internal/renditions/store.go), so that
+                // constant has to move first. And a multi-mesh source cannot be
+                // served this way at all, for the reason stated above; that is
+                // a property of the rendition model, not a gap to be filled in
+                // here.
                 const auto conversion = homeworldz::mesh::gltf_from_fbx(content);
                 if (!conversion.ok) {
                     give_up(conversion.error);

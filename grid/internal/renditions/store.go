@@ -59,6 +59,31 @@ var validKinds = map[string]bool{
 // mesh or one image, and an import splits a source file into one asset per mesh
 // before anything is derived from it. A rendition approaching a whole
 // character's upload is still the converter bug this was guarding against.
+//
+// That is safe by a chain of bounds rather than by habit, and the middle one is
+// what holds it up:
+//
+//	source upload      128 MiB   this package's MaxBlobSize, and the region's
+//	                             max_source_bytes pre-limit
+//	an imported part    32 MiB   max_glb_bytes, enforced on every part by
+//	                             validate_glb(..., Origin::Import)
+//	an embedded image    8 MiB   max_image_bytes
+//
+// Nothing a rendition can derive from exceeds 32 MiB, and renditions are
+// smaller than their source by construction: an sl-mesh carries geometry only,
+// its textures having become assets of their own, and a texture rendition
+// derives from one image. The largest part measured on a fully dressed CC5
+// character was 20.1 MiB of GLB, most of it texture bytes that its type-49 does
+// not carry.
+//
+// **The one case that would break this is currently unreachable, and whoever
+// makes it reachable needs to raise this number.** meshsmith can convert an FBX
+// straight to a `gltf` rendition, which for a single-mesh source produces one
+// rendition roughly the size of the whole upload — up to the full 128 MiB. That
+// branch has no caller: the region imports source files on its own publish
+// worker and requests no rendition of them, because an import yields one asset
+// per mesh and a rendition is one blob per (asset, kind). If that path is ever
+// wired to something, this constant is the thing it will hit.
 const MaxRenditionSize = 64 << 20
 
 // maxAttempts parks a job that keeps failing instead of burning a worker on
