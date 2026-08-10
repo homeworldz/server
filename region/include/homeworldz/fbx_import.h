@@ -86,12 +86,16 @@ struct FbxImport {
     // right.
     std::size_t influences_pruned{};
 
-    // Texture bindings the FBX declared that glTF has no place for — Character
-    // Creator's separate opacity map above all, which glTF expresses only as
-    // the alpha channel of the base colour and would need the two images
-    // composited to carry across. Counted and reported rather than dropped in
-    // silence, because the result is a lash or a tearline that renders as an
-    // opaque slab and looks like a bug in something else.
+    // Materials whose separate opacity map was composited into the alpha
+    // channel of their base colour, which is the only way glTF carries opacity.
+    // These are the surfaces that would otherwise render as opaque slabs:
+    // eyelashes, tearlines, eye occlusion.
+    std::size_t opacity_composited{};
+
+    // Texture bindings the FBX declared that glTF has no place for — metalness
+    // and roughness maps above all, which the gate's material model does not
+    // carry. Counted and reported rather than dropped in silence, so a material
+    // that looks wrong in-world can be told apart from one that arrived wrong.
     std::size_t bindings_dropped{};
 };
 

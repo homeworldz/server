@@ -3,6 +3,7 @@
 
 #include "homeworldz/fbx_import.h"
 
+#include "homeworldz/image.h"
 #include "homeworldz/mesh_convert.h"
 
 #include "fbx_load.h"
@@ -62,6 +63,58 @@ const char* sniff_image(const ufbx_blob& content) {
     if (content.size >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff)
         return "image/jpeg";
     return nullptr;
+}
+
+std::vector<std::uint8_t> to_u8(const ufbx_blob& blob) {
+    const auto* bytes = static_cast<const std::uint8_t*>(blob.data);
+    return std::vector<std::uint8_t>(bytes, bytes + blob.size);
+}
+
+// Character Creator writes opacity as its own image; glTF carries opacity only
+// as the alpha channel of the base colour. Carrying it across therefore means
+// compositing the two, and this is the one place an import re-encodes a
+// creator's image. That is sound under ADR 0033: the canonical blob is the FBX
+// the creator sent and is never rewritten, and this GLB is a derived rendition
+// of it, so the re-encode changes nothing anyone can lose.
+//
+// **White is opaque.** Measured, not assumed, and the two names disagree: FBX
+// files this texture under `TransparentColor`, whose own semantics are the
+// opposite, while Reallusion names the file `_Opacity`. The eyelash map settles
+// it — white lashes on a black card, and the lashes are the part you can see.
+// Guessing wrong here inverts every masked surface, which renders as a solid
+// black rectangle where a lash should be and looks like a geometry fault.
+std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
+                                                      const ufbx_blob& opacity) {
+    const auto base = image::decode_png_or_jpeg(to_u8(colour));
+    const auto mask = image::decode_png_or_jpeg(to_u8(opacity));
+    if (!base || !mask || base->empty() || mask->empty()) return std::nullopt;
+
+    auto rgba = image::to_rgba(*base);
+    if (rgba.empty()) return std::nullopt;
+    auto resampled = *mask;
+    if (resampled.width != rgba.width || resampled.height != rgba.height)
+        resampled = image::resize_nearest(resampled, rgba.width, rgba.height);
+    if (resampled.empty()) return std::nullopt;
+
+    const auto pixels = rgba.pixel_count();
+    for (std::size_t at = 0; at < pixels; ++at) {
+        const auto* sample = &resampled.pixels[at * resampled.channels];
+        // A one- or two-channel mask is already the value; a colour one is
+        // read as luminance rather than by taking the red channel, so a mask
+        // authored as a coloured image does not silently lose two thirds of
+        // its information.
+        const std::uint32_t value =
+            resampled.channels >= 3
+                ? (sample[0] * 77u + sample[1] * 151u + sample[2] * 28u) >> 8
+                : sample[0];
+        rgba.pixels[at * 4 + 3] = static_cast<std::uint8_t>(value);
+    }
+
+    const auto encoded = image::encode_png(rgba);
+    if (!encoded) return std::nullopt;
+    std::vector<std::byte> out(encoded->size());
+    std::memcpy(out.data(), encoded->data(), encoded->size());
+    return out;
 }
 
 // ufbx stores a 3x4 column-major affine; glTF wants a 4x4 column-major one.
@@ -196,19 +249,59 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
         // Images this mesh's own materials use, in first-encounter order, so an
         // asset carries only what it draws with. A map shared by two materials
         // is embedded once.
-        std::map<std::uint32_t, std::size_t> image_slot;
-        std::vector<const ufbx_texture_file*> image_files;
-        const auto slot_for = [&](const ufbx_texture* texture) -> long long {
-            if (texture == nullptr || !texture->has_file) return -1;
+        // An image bound for the GLB: either the creator's bytes untouched, or
+        // a colour map with an opacity map composited into its alpha.
+        struct Embedded {
+            std::vector<std::byte> bytes;
+            const char* mime{};
+        };
+        // Keyed on the *pair*, because a colour map composited with two
+        // different opacity maps is two different images while the same pair
+        // reached from two materials is one.
+        std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> image_slot;
+        std::vector<Embedded> image_files;
+
+        // The file a texture carries, or null when it named one it did not
+        // carry — a reference this importer will not follow off disk.
+        const auto carried = [&](const ufbx_texture* texture) -> const ufbx_texture_file* {
+            if (texture == nullptr || !texture->has_file) return nullptr;
             const auto& file = scene->texture_files.data[texture->file_index];
-            if (file.content.size == 0) return -1;      // named, not carried
-            if (sniff_image(file.content) == nullptr) return -1;
-            if (const auto found = image_slot.find(texture->file_index);
-                found != image_slot.end())
+            if (file.content.size == 0) return nullptr;
+            if (sniff_image(file.content) == nullptr) return nullptr;
+            return &file;
+        };
+
+        constexpr std::uint32_t no_opacity = std::numeric_limits<std::uint32_t>::max();
+        const auto slot_for = [&](const ufbx_texture* texture,
+                                  const ufbx_texture* opacity) -> long long {
+            const auto* file = carried(texture);
+            if (file == nullptr) return -1;
+            const auto* mask = carried(opacity);
+            const std::pair<std::uint32_t, std::uint32_t> key{
+                texture->file_index, mask != nullptr ? opacity->file_index : no_opacity};
+            if (const auto found = image_slot.find(key); found != image_slot.end())
                 return static_cast<long long>(found->second);
+
+            Embedded embedded;
+            if (mask != nullptr) {
+                if (auto merged = composite_alpha(file->content, mask->content)) {
+                    embedded.bytes = std::move(*merged);
+                    embedded.mime = "image/png";  // composite_alpha encodes PNG
+                } else {
+                    // Either image being unreadable is worth reporting rather
+                    // than half-applying: the colour still goes in, and the
+                    // count says the mask did not.
+                    ++result.bindings_dropped;
+                }
+            }
+            if (embedded.bytes.empty()) {
+                const auto* bytes = static_cast<const std::byte*>(file->content.data);
+                embedded.bytes.assign(bytes, bytes + file->content.size);
+                embedded.mime = sniff_image(file->content);
+            }
             const auto slot = image_files.size();
-            image_slot.emplace(texture->file_index, slot);
-            image_files.push_back(&file);
+            image_slot.emplace(key, slot);
+            image_files.push_back(std::move(embedded));
             return static_cast<long long>(slot);
         };
 
@@ -403,25 +496,40 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                     ? mesh->materials.data[part_index]
                     : nullptr;
             long long base_colour = -1, normal_map = -1;
+            bool masked = false;
             std::string name = "part " + std::to_string(part_index);
             if (material != nullptr) {
                 name = std::string(text(material->name));
+                // ufbx's own PBR maps rather than raw FBX property names.
+                // It normalizes across shading models — these materials are
+                // `phong`, where the colour arrives as `DiffuseColor` — so
+                // reading the FBX names directly would be a second, worse copy
+                // of a table ufbx already maintains.
+                //
+                // Opacity is the exception, and deliberately so. For the FBX
+                // shaders ufbx maps `TransparentColor` to `transmission_color`,
+                // not to `opacity`, because that is what the slot means in the
+                // format. Reallusion puts an opacity map there anyway. Both
+                // are consulted, opacity first, so a file that means what it
+                // says still works.
+                const ufbx_texture* opacity = material->pbr.opacity.texture;
+                if (opacity == nullptr) opacity = material->pbr.transmission_color.texture;
+
+                base_colour = slot_for(material->pbr.base_color.texture, opacity);
+                normal_map = slot_for(material->pbr.normal_map.texture, nullptr);
+                masked = opacity != nullptr && carried(opacity) != nullptr && base_colour >= 0;
+
+                // Anything else the material bound and glTF has no place for —
+                // metalness and roughness maps above all, which the gate's
+                // material model does not carry. Counted rather than dropped in
+                // silence.
                 for (std::size_t at = 0; at < material->textures.count; ++at) {
-                    const auto& binding = material->textures.data[at];
-                    const auto property = text(binding.material_prop);
-                    if (property == "DiffuseColor") {
-                        base_colour = slot_for(binding.texture);
-                    } else if (property == "NormalMap" || property == "Bump") {
-                        normal_map = slot_for(binding.texture);
-                    } else {
-                        // TransparentColor above all: Character Creator writes
-                        // opacity as its own image and glTF carries it only as
-                        // the alpha of the base colour, which would need the
-                        // two composited. Counted, not silently dropped - the
-                        // visible result is a lash or a tearline drawn as an
-                        // opaque slab.
-                        ++result.bindings_dropped;
-                    }
+                    const auto* bound = material->textures.data[at].texture;
+                    if (bound == nullptr) continue;
+                    if (bound == material->pbr.base_color.texture ||
+                        bound == material->pbr.normal_map.texture || bound == opacity)
+                        continue;
+                    ++result.bindings_dropped;
                 }
             }
             if (!materials.empty()) materials += ',';
@@ -432,6 +540,13 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             materials += "}";
             if (normal_map >= 0)
                 materials += ",\"normalTexture\":{\"index\":" + std::to_string(normal_map) + "}";
+            // BLEND rather than MASK: a lash map is soft-edged and a cutoff
+            // would leave it either jagged or square. The cost is draw order,
+            // which is the renderer's problem and not one we can decide here.
+            if (masked) {
+                materials += ",\"alphaMode\":\"BLEND\"";
+                ++result.opacity_composited;
+            }
             materials += ",\"doubleSided\":true}";
 
             if (!primitives.empty()) primitives += ',';
@@ -497,15 +612,14 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
         // claiming to have imported it.
         std::string images, textures;
         for (std::size_t at = 0; at < image_files.size(); ++at) {
-            const auto& file = *image_files[at];
+            const auto& file = image_files[at];
             pad_to_four(binary);
             const auto offset = binary.size();
-            const auto* bytes = static_cast<const std::byte*>(file.content.data);
-            binary.insert(binary.end(), bytes, bytes + file.content.size);
-            const auto view = add_view(offset, file.content.size, 0);
+            binary.insert(binary.end(), file.bytes.begin(), file.bytes.end());
+            const auto view = add_view(offset, file.bytes.size(), 0);
             if (!images.empty()) images += ',';
             images += "{\"bufferView\":" + std::to_string(view) + ",\"mimeType\":\"" +
-                      sniff_image(file.content) + "\"}";
+                      file.mime + "\"}";
             if (!textures.empty()) textures += ',';
             textures += "{\"source\":" + std::to_string(at) + "}";
         }

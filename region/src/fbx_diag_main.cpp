@@ -357,6 +357,20 @@ bool report(const fs::path& path, const fs::path& write_to) {
                   << claimed;
         if (file.content.size > 0) std::cout << "  (" << mebibytes(file.content.size) << ')';
         std::cout << '\n';
+
+        // With --write, the embedded images land beside the GLBs. Looking at
+        // one is how a question like "does white mean opaque in this map"
+        // gets answered, and it is not answerable from the file's own
+        // vocabulary: FBX calls the slot TransparentColor and Reallusion names
+        // the file Opacity, which are opposite conventions wearing each
+        // other's clothes.
+        if (!write_to.empty() && file.content.size > 0) {
+            auto leaf = fs::path(std::string(text(file.filename))).filename().string();
+            if (leaf.empty()) leaf = "texture_" + std::to_string(at);
+            std::ofstream image(write_to / leaf, std::ios::binary);
+            image.write(static_cast<const char*>(file.content.data),
+                        static_cast<std::streamsize>(file.content.size));
+        }
     }
     std::cout << "    on disk " << resolved << ", missing " << missing << ", outside root "
               << escaping << ", embedded " << embedded << "; " << mebibytes(texture_bytes)
@@ -453,6 +467,9 @@ bool report(const fs::path& path, const fs::path& write_to) {
     if (imported.influences_pruned > 0)
         std::cout << ", " << imported.influences_pruned
                   << " vertex influence list(s) pruned to four";
+    if (imported.opacity_composited > 0)
+        std::cout << ", " << imported.opacity_composited
+                  << " opacity map(s) composited into base-colour alpha";
     if (imported.bindings_dropped > 0)
         std::cout << ", " << imported.bindings_dropped << " texture binding(s) glTF cannot carry";
     std::cout << '\n';
@@ -511,6 +528,21 @@ bool report(const fs::path& path, const fs::path& write_to) {
             output.write(reinterpret_cast<const char*>(asset.glb.data()),
                          static_cast<std::streamsize>(asset.glb.size()));
             std::cout << "      wrote: " << target.string() << '\n';
+
+            // And the base-colour images back out of it, read by the same
+            // extract_textures the upload path uses. These are the *composited*
+            // maps, so opening one is how the opacity merge gets checked by
+            // eye — arithmetic that inverts a mask produces a file that is
+            // valid, the right size, and wrong in the only way that matters.
+            const auto extracted = homeworldz::mesh::extract_textures(asset.glb);
+            for (std::size_t at = 0; at < extracted.textures.size(); ++at) {
+                const auto& texture = extracted.textures[at];
+                const auto suffix = texture.mime == "image/png" ? ".png" : ".jpg";
+                std::ofstream image(
+                    write_to / (name + "_base" + std::to_string(at) + suffix), std::ios::binary);
+                image.write(reinterpret_cast<const char*>(texture.bytes.data()),
+                            static_cast<std::streamsize>(texture.bytes.size()));
+            }
         }
     }
     return !any_over && import_clean;
