@@ -216,8 +216,11 @@ client family is served a derived rendition by a conversion worker.
 - [x] Regenerate stale renditions.
 - [ ] M4 rigged mesh: glTF skins mapped onto the Bento skeleton (refusing rigs that do not map), attachments and body wearables.
 - [ ] M5 import breadth: **server-side** FBX/OBJ/DAE and archive import ([ADR 0035](adr/0035-server-side-source-format-import.md)), so every client uploads the source and gets the same result — and a third-party viewer gains import by uploading a file rather than implementing a converter. Documented Daz Studio export path, optional web import service on the management site.
+  - [x] **FBX** import, live and proven against the cloud grid: an upload is stored canonically, imported off the region's loop into one asset per mesh, and lands as inventory items. A 105 MB Character Creator character imports as 15 assets carrying 89 textures.
+  - [ ] OBJ and DAE, and the archive/bundle layer for sources whose textures are external.
 - [ ] Rig retargeting, so a creator does not need Blender with Avastar or Bento Buddy to bring a body in.
-- [ ] Possible with M5: retarget a Character Creator rig onto the Bento skeleton.
+  - [x] **Character Creator correspondence**, which the design could not assume: all 85 joints a CC skin binds map onto 60 Bento joints, none unmapped, and joints with no equivalent fold into the nearest ancestor that has one. Proportions ride on joint position overrides rather than moving the mesh.
+  - [ ] **Pose reconciliation, which is what still blocks wearing one.** Every Character Creator export measured so far is A-pose, about 30° below horizontal; the Bento skeleton rests in T-pose, and overrides move a joint's rest position while animations rotate from it. A T-pose export sidesteps this; correcting the pose during retarget is the general answer and is not built.
 
 ### Content creation and inventory breadth
 
