@@ -328,6 +328,10 @@ Conversion convert_glb(std::span<const std::byte> glb) {
     if (rigged) {
         const auto& source = data->skins[0];
         slmesh::Skin built;
+        // Kept alongside the skin so the joint position overrides can be made
+        // parent-relative once every joint's rest position is known.
+        std::vector<const cgltf_node*> joint_nodes;
+        std::vector<std::array<float, 3>> joint_world_rest;
         for (cgltf_size index = 0; index < source.joints_count; ++index) {
             const auto* node = source.joints[index];
             const std::string_view name =
@@ -419,10 +423,32 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             // by construction: there must be exactly one alternate matrix per
             // joint or the viewer ignores every override, and a position within
             // 0.1 mm of the skeleton's default is skipped as no change.
+            //
+            // The position is **relative to the joint's parent**, which is the
+            // one thing about this that cannot be read off the asset. The
+            // viewer hands the value to LLJoint::setPosition, and that writes
+            // `mXform.setPosition` — the local transform — while world position
+            // is a separate accumulation through the parents
+            // (lljoint.cpp:336-359, getWorldPosition:746). avatar_lad.xml
+            // stores its own positions the same way, each `pos` relative to the
+            // bone above it.
+            //
+            // Writing world positions here put every joint at its own height
+            // *above its parent*, so each one inherited the whole chain's error
+            // and limbs came out fifteen metres long. Nothing offline could see
+            // it: the inverse bind above is this matrix's exact inverse, so the
+            // bind pose is identity whichever convention is used, and rig_check
+            // compares positions that are correct in world terms. It took
+            // wearing one (2026-08-10).
+            //
+            // Filled in after this loop, once every joint's rest position is
+            // known — a parent may appear later in the skin than its child.
             built.alternate_inverse_bind.push_back({1, 0, 0, 0,
                                                     0, 1, 0, 0,
                                                     0, 0, 1, 0,
                                                     rest[0], rest[1], rest[2], 1});
+            joint_nodes.push_back(node);
+            joint_world_rest.push_back(rest);
             int depth = 0;
             for (const cgltf_node* up = node != nullptr ? node->parent : nullptr; up != nullptr;
                  up = up->parent)
@@ -433,6 +459,62 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             // else bound the joint at all.
             source_depth.push_back(supplies_position ? depth
                                                      : std::numeric_limits<int>::max());
+        }
+        // Each override made relative to its parent, per the note above.
+        //
+        // The parent is found in the *source* rig, since that is the hierarchy
+        // the positions were measured in: walk up from the joint's node to the
+        // nearest ancestor that is also bound here and that retargets to a
+        // different Bento joint. The second condition is what makes folding
+        // safe — a limb's twist bones retarget to the limb itself, and
+        // measuring a joint against something that became the same joint would
+        // give an offset of nearly zero.
+        //
+        // A joint with no such ancestor is the root of what this mesh binds,
+        // and keeps its world position: there is nothing above it here to be
+        // relative to, and the viewer measures the topmost joint from the
+        // avatar's own origin.
+        {
+            std::map<const cgltf_node*, std::size_t> index_of_node;
+            for (std::size_t at = 0; at < joint_nodes.size(); ++at)
+                if (joint_nodes[at] != nullptr) index_of_node.emplace(joint_nodes[at], at);
+            for (std::size_t at = 0; at < built.alternate_inverse_bind.size(); ++at) {
+                const cgltf_node* up = joint_nodes[at] != nullptr ? joint_nodes[at]->parent
+                                                                 : nullptr;
+                for (; up != nullptr; up = up->parent) {
+                    if (up->name == nullptr) continue;
+                    const auto parent_name = mesh::retarget_joint(up->name);
+                    // Not a joint, or one that folds into this same joint: keep
+                    // climbing. Measuring against something that became the
+                    // same joint would give an offset of nearly zero.
+                    if (parent_name.empty() || parent_name == built.joints[at]) continue;
+                    // Measured against where the *source rig* puts the parent,
+                    // whether or not this mesh binds it. A pair of boots binds
+                    // the knee and not the hip, but it is worn with the body
+                    // that does, and the body will have moved that hip to the
+                    // character's own. An offset measured from Linden's hip
+                    // instead would be right only for boots worn bare.
+                    //
+                    // Read from the node hierarchy rather than the bound
+                    // joints, which is why fbx_import carries a joint's
+                    // ancestors even when the skin does not weight them.
+                    std::array<float, 3> parent_rest{};
+                    if (const auto found = index_of_node.find(up);
+                        found != index_of_node.end() &&
+                        built.joints[found->second] == parent_name) {
+                        parent_rest = joint_world_rest[found->second];
+                    } else {
+                        float world[16];
+                        cgltf_node_transform_world(up, world);
+                        parent_rest = {world[12], world[13], world[14]};
+                        to_region_axes(parent_rest);
+                    }
+                    for (int axis = 0; axis < 3; ++axis)
+                        built.alternate_inverse_bind[at][12 + axis] =
+                            joint_world_rest[at][axis] - parent_rest[axis];
+                    break;
+                }
+            }
         }
         joint_names = built.joints;
         skin = std::move(built);

@@ -134,7 +134,12 @@ TextureExtraction extract_textures(std::span<const std::byte> glb);
 // produced for an agreeing rig therefore differs from what this produces and
 // reconverts, which is what returns such content to the bytes it had before
 // overrides existed.
-inline constexpr const char* generator = "meshsmith/0.13";
+// 0.14 writes joint position overrides relative to each joint's parent, which
+// is the convention the viewer reads them in. 0.13 wrote world positions, so
+// every joint was placed at its own height *above its parent* and inherited the
+// whole chain's error: a worn body's limbs came out fifteen metres long. Every
+// rendition carrying an override table is superseded.
+inline constexpr const char* generator = "meshsmith/0.14";
 
 } // namespace homeworldz::mesh
 

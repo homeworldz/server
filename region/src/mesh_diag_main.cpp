@@ -130,8 +130,25 @@ int main(int argc, char** argv) {
         else if (overrides != parsed->skin->joints.size())
             std::cout << overrides << " for " << parsed->skin->joints.size()
                       << " joints - MISMATCHED, so a viewer discards all of them\n";
-        else
-            std::cout << overrides << ", one per joint\n";
+        else {
+            // The largest override, which says which convention these are in.
+            // A joint position override is relative to its parent, so a body's
+            // biggest is a limb segment - tens of centimetres. A figure near
+            // the joint's height above the ground means world positions got
+            // written, and every joint will inherit its ancestors' error.
+            float worst = 0.0f;
+            std::string worst_joint;
+            for (std::size_t at = 0; at < overrides; ++at) {
+                const auto& m = parsed->skin->alternate_inverse_bind[at];
+                const auto length = std::sqrt(m[12] * m[12] + m[13] * m[13] + m[14] * m[14]);
+                if (length > worst) {
+                    worst = length;
+                    worst_joint = parsed->skin->joints[at];
+                }
+            }
+            std::cout << overrides << ", one per joint; largest " << worst * 1000.0f << " mm ("
+                      << worst_joint << ")\n";
+        }
         std::cout << "  skin: " << parsed->skin->joints.size() << " joint(s):";
         for (std::size_t at = 0; at < parsed->skin->joints.size(); ++at) {
             if (at == 12) {
