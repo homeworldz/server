@@ -281,6 +281,26 @@ struct PublishQueue::State {
                         result.opacity_composited = imported.opacity_composited;
                         result.influences_pruned = imported.influences_pruned;
                         for (const auto& mesh : imported.meshes) {
+                            // The gate, on what the import produced. ADR 0035:
+                            // "import is not a side door into the asset store",
+                            // and without this it was exactly that - a part
+                            // reached the vault having passed no check an
+                            // uploaded GLB has to pass.
+                            //
+                            // Origin::Import differs in one thing only: a
+                            // skeleton that resolves to nothing is recorded
+                            // rather than refused, because for imported content
+                            // that is an unanswered question and not an
+                            // offence (mesh_acceptance.h).
+                            const auto accepted = validate_glb(mesh.glb, Origin::Import);
+                            if (!accepted.accepted)
+                                throw std::runtime_error("mesh \"" + mesh.name +
+                                                         "\" was refused: " + accepted.reason);
+                            for (const auto& joint : accepted.unresolved_joints)
+                                if (std::find(result.unresolved_joints.begin(),
+                                              result.unresolved_joints.end(),
+                                              joint) == result.unresolved_joints.end())
+                                    result.unresolved_joints.push_back(joint);
                             // The mesh's own name, which is the author's naming
                             // and the one they will recognise in inventory.
                             // A part that fails takes the whole import with it

@@ -488,7 +488,16 @@ bool report(const fs::path& path, const fs::path& write_to) {
         // importer wrote and the gate refuses is a defect in the importer, not
         // a property of the source — with one expected exception, which the
         // gate names for itself: joints the skeleton does not know.
-        const auto accepted = homeworldz::mesh::validate_glb(asset.glb);
+        // Both verdicts, because they answer different questions and the
+        // difference is the whole of ADR 0035's position on rigs. As an upload
+        // a Character Creator part is refused for binding a skeleton that is
+        // not ours; as an import the same bytes are accepted with the skeleton
+        // recorded, and the geometry and textures are usable while wearing it
+        // waits on retargeting.
+        const auto accepted =
+            homeworldz::mesh::validate_glb(asset.glb, homeworldz::mesh::Origin::Upload);
+        const auto importable =
+            homeworldz::mesh::validate_glb(asset.glb, homeworldz::mesh::Origin::Import);
         std::cout << "    " << std::left << std::setw(22) << asset.name << std::right << ' '
                   << mebibytes(asset.glb.size()) << ", " << asset.primitives << " primitive(s), "
                   << asset.triangles << " triangles, " << asset.textures << " texture(s)"
@@ -509,10 +518,20 @@ bool report(const fs::path& path, const fs::path& write_to) {
             std::cout << "      posed: " << metres(posed->second[0]) << " x "
                       << metres(posed->second[1]) << " x " << metres(posed->second[2])
                       << " m once skinned\n";
-        std::cout << "      gate: " << (accepted.accepted ? "accepted" : "REFUSED");
-        if (!accepted.accepted) {
-            std::cout << " - " << accepted.reason;
+        std::cout << "      as upload: " << (accepted.accepted ? "accepted" : "REFUSED");
+        if (!accepted.accepted) std::cout << " - " << accepted.reason;
+        std::cout << '\n';
+        std::cout << "      as import: " << (importable.accepted ? "accepted" : "REFUSED");
+        if (!importable.accepted) {
+            std::cout << " - " << importable.reason;
+            // Only the import verdict decides this tool's exit status. A part
+            // refused as an upload for its skeleton is expected and is not a
+            // fault in the importer; a part refused as an import is.
             import_clean = false;
+        } else if (!importable.unresolved_joints.empty()) {
+            std::cout << " (rig unresolved, not wearable: "
+                      << importable.unresolved_joints.size() << " joint(s), e.g. "
+                      << importable.unresolved_joints.front() << ')';
         }
         std::cout << '\n';
 
@@ -545,7 +564,11 @@ bool report(const fs::path& path, const fs::path& write_to) {
             }
         }
     }
-    return !any_over && import_clean;
+    // Only the import decides this. The whole-file gate table above is a fact
+    // about packaging, not a verdict: nothing ever gates an FBX as one asset,
+    // because import emits one asset per mesh and it is those the gate sees.
+    // Failing on it would report every Character Creator body as broken.
+    return import_clean;
 }
 
 } // namespace

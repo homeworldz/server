@@ -95,11 +95,17 @@ struct JointFinding {
 // out to be broken keep arriving as Unproven, the coverage rule earns its keep;
 // if none do, it never needed one. Nothing yet distinguishes those futures.
 //
-// Note this gates nothing today either way. check_rig runs in the diagnostic
-// tool and is *not* wired into validate_glb, so the upload path still accepts on
-// names, joint counts and influence sets alone. Wiring it is what makes this
-// decision take effect, and is deliberately a separate change from the one that
-// turned rigged acceptance on.
+// **Corrected 2026-08-10.** This said "note this gates nothing today either way.
+// check_rig runs in the diagnostic tool and is *not* wired into validate_glb, so
+// the upload path still accepts on names, joint counts and influence sets
+// alone." It was accurate when written and stopped being so when the wiring
+// landed; validate_glb calls check_rig and refuses on Disagrees. The decision
+// above therefore takes effect today rather than pending a later change.
+//
+// A stale note that under-states a check is worse than one that overstates it:
+// this one described the position safety net as disconnected, which is precisely
+// the reading that makes mapping a foreign skeleton onto ours by name alone look
+// harmless.
 enum class RigOutcome {
     Agrees,     // at least one joint was decided, and none disagreed
     Disagrees,  // at least one joint disagreed, or could not be read at all

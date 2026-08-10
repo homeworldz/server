@@ -126,6 +126,11 @@ public:
         std::size_t textures{};
         std::size_t opacity_composited{};
         std::size_t influences_pruned{};
+        // Import: joint names the skeleton did not recognise, deduplicated
+        // across every part. Non-empty means the parts are geometry and
+        // textures a creator can use and a body nobody can wear yet — the rig
+        // question asked and recorded rather than answered (ADR 0035).
+        std::vector<std::string> unresolved_joints;
     };
 
     // `open_storage` and `open_grid` are both called on the worker thread, once,

@@ -12,6 +12,7 @@
 #include <string_view>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace homeworldz::mesh {
 
@@ -103,9 +104,16 @@ inline constexpr bool nonzero_morph_weights_accepted = false;
 //
 // A rig whose joints are all positionally coincident (RigOutcome::Unproven) is
 // accepted, decided 2026-08-08 and provisional pending real-world use
-// (rig_check.h). It gates nothing yet regardless: the geometric check is not
-// wired into validate_glb, so this path still accepts on names, joint counts and
-// influence sets alone.
+// (rig_check.h).
+//
+// **Corrected 2026-08-10.** This paragraph used to end "it gates nothing yet
+// regardless: the geometric check is not wired into validate_glb, so this path
+// still accepts on names, joint counts and influence sets alone." That is false
+// and was false when read: check_rig *is* called here and RigOutcome::Disagrees
+// *is* a refusal. The note survived the change that wired it in, and it is the
+// worse kind of stale — it describes a safety net as disconnected when it is
+// connected, which invites exactly the "just add the aliases" shortcut it was
+// written to warn against.
 //
 // max_rig_influences is enforced and unit-tested, and no natural file will ever
 // trip it - which is a property of the number rather than a gap in coverage.
@@ -153,6 +161,33 @@ inline constexpr std::uint64_t max_source_bytes = 96ull << 20;
 // (the read-never-encode contract of ADR 0033).
 std::string acceptance_policy_json();
 
+// Where the bytes being gated came from. The rules are the same either way with
+// exactly one exception, stated here rather than in a second copy of the gate.
+enum class Origin {
+    // A creator's own GLB, arriving at the upload capability. Gated in full.
+    Upload,
+    // A part produced by importing a source file (ADR 0035). Everything the
+    // gate protects still applies — geometry, textures, extensions, sizes,
+    // morph weights — because import must not be a side door into the asset
+    // store, which that ADR says in as many words.
+    //
+    // The one difference is the rig, and it is a difference of *question*
+    // rather than of strictness. An FBX carries whatever skeleton its author
+    // used, and Character Creator's `CC_Base_*` resolves to nothing here. For
+    // an upload that is a refusal, because the creator chose to send a rig
+    // claiming to be ours. For an import it is simply an unanswered question:
+    // the geometry and textures are good and useful now, and whether the body
+    // can be *worn* waits on retargeting — which is exactly the position ADR
+    // 0035 takes ("an imported static mesh is useful immediately").
+    //
+    // So an unresolved skeleton is recorded in `unresolved_joints` instead of
+    // refused. A rig whose names *do* resolve is still checked against the
+    // skeleton's rest pose and still refused when it disagrees: that one is a
+    // rig claiming to be ours and misplacing itself, which is the mirrored-rig
+    // hazard rig_check.h exists for, and importing it would ship it broken.
+    Import,
+};
+
 struct Acceptance {
     bool accepted{};
     // Actionable when refused: names the rule and the offending value, since
@@ -161,12 +196,18 @@ struct Acceptance {
     std::uint32_t triangles{};
     std::uint32_t materials{};
     std::uint32_t textures{};
+    // Joint names that resolved to nothing in the skeleton. Always empty for an
+    // accepted upload, since one is refused; populated for an accepted import,
+    // where it is the record that the rig question was asked and not answered.
+    // A non-empty list means the asset is not wearable yet.
+    std::vector<std::string> unresolved_joints;
 };
 
 // validate_glb applies the gate to an uploaded GLB: container and version,
 // self-containment (no external buffer or image URIs), the extension
 // allowlist, and the caps above.
-Acceptance validate_glb(std::span<const std::byte> content);
+Acceptance validate_glb(std::span<const std::byte> content,
+                        Origin origin = Origin::Upload);
 
 } // namespace homeworldz::mesh
 

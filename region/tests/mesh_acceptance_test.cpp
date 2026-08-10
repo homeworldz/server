@@ -166,6 +166,47 @@ int main() {
         refused_joint.reason.find("Bip01_Spine") == std::string::npos)
         return 9;
 
+    // The same bytes, arriving as an import, are accepted with the skeleton
+    // recorded (ADR 0035). This is the *only* rule that differs between the two
+    // origins, and it differs because the question differs: an upload chose to
+    // send a rig claiming to be ours, while an import carries whatever skeleton
+    // its author used and its geometry is useful before anyone can wear it.
+    //
+    // Both directions are asserted. Accepting the import proves the exemption
+    // exists; the refusal above proves it did not leak into the upload path,
+    // which is what would turn import into the side door ADR 0035 forbids.
+    const auto imported_joint =
+        validate_glb(bad_joint, homeworldz::mesh::Origin::Import);
+    if (!imported_joint.accepted) return 60;
+    if (imported_joint.unresolved_joints.size() != 1) return 61;
+    if (imported_joint.unresolved_joints.front() != "Bip01_Spine") return 62;
+    // A rig that *does* resolve leaves the list empty, so a caller can read
+    // "not wearable" off it without asking a second question.
+    if (!validate_glb(rigged, homeworldz::mesh::Origin::Import)
+             .unresolved_joints.empty())
+        return 63;
+    // Everything else the gate protects still applies to an import, or import
+    // is the side door into the asset store that ADR 0035 forbids. The
+    // extension allowlist stands in for the rest: it is refused on a file that
+    // is otherwise entirely valid, so the refusal cannot be a structural
+    // accident, and the reason is asserted rather than only the verdict — a
+    // test that checks "refused" alone passes just as happily when the fixture
+    // is malformed.
+    {
+        const auto extended = glb(std::string(rig_head) +
+            R"(,"extensionsUsed":["KHR_draco_mesh_compression"])"
+            R"(,"nodes":[{"mesh":0},{"name":"mPelvis"}],"skins":[{"joints":[1]}]})",
+            triangle_bin());
+        const auto as_upload = validate_glb(extended, homeworldz::mesh::Origin::Upload);
+        if (as_upload.accepted ||
+            as_upload.reason.find("KHR_draco_mesh_compression") == std::string::npos)
+            return 64;
+        const auto as_import = validate_glb(extended, homeworldz::mesh::Origin::Import);
+        if (as_import.accepted ||
+            as_import.reason.find("KHR_draco_mesh_compression") == std::string::npos)
+            return 65;
+    }
+
     // An alias reaches the M4 gate rather than the joint check. The viewer
     // resolves `hip` onto mPelvis, and refusing it would reject what Blender
     // and Avastar emit while the published policy claimed compatibility.

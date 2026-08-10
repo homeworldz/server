@@ -3700,6 +3700,21 @@ int main(int argc, char* argv[]) {
                             if (!parts.empty()) parts += ',';
                             parts += homeworldz::api::json_string(part.item_id);
                         }
+                        // The unresolved rig is reported here because here is
+                        // the only place it surfaces: the parts are in
+                        // inventory and look complete, and nothing else says
+                        // the body cannot be worn yet. Named rather than
+                        // counted - "CC_Base_Pelvis" tells a reader which
+                        // skeleton arrived, and a number does not.
+                        std::string unresolved;
+                        for (const auto& joint : done.unresolved_joints) {
+                            if (!unresolved.empty()) unresolved += ',';
+                            if (unresolved.size() > 400) {
+                                unresolved += "\"...\"";
+                                break;
+                            }
+                            unresolved += homeworldz::api::json_string(joint);
+                        }
                         std::cout << "{\"level\":\"info\",\"message\":\"source imported\","
                                      "\"sourceAssetId\":"
                                   << homeworldz::api::json_string(done.source_asset_id)
@@ -3707,6 +3722,9 @@ int main(int argc, char* argv[]) {
                                   << ",\"textures\":" << done.textures
                                   << ",\"opacityComposited\":" << done.opacity_composited
                                   << ",\"influencesPruned\":" << done.influences_pruned
+                                  << ",\"wearable\":"
+                                  << (done.unresolved_joints.empty() ? "true" : "false")
+                                  << ",\"unresolvedJoints\":[" << unresolved << "]"
                                   << ",\"items\":[" << parts << "]}" << std::endl;
                     } else {
                         // ADR 0035: import failure is a property of the asset,

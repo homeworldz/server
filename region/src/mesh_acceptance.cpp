@@ -77,7 +77,11 @@ std::string acceptance_policy_json() {
         ",\"allowedExtensions\":[" + extensions + "]}";
 }
 
-Acceptance validate_glb(std::span<const std::byte> content) {
+Acceptance validate_glb(std::span<const std::byte> content, Origin origin) {
+    // Joint names this file binds that resolve to nothing in the skeleton. An
+    // upload is refused at the first one; an import collects them and carries
+    // them out in the result.
+    std::vector<std::string> unresolved;
     if (content.size() > max_glb_bytes)
         return refuse("file is " + std::to_string(content.size()) +
                       " bytes; the limit is " + std::to_string(max_glb_bytes));
@@ -161,10 +165,19 @@ Acceptance validate_glb(std::span<const std::byte> content) {
             // that Blender and Avastar emit. Naming the offending joint matters
             // because the creator hearing it may be several tools away from the
             // file.
-            if (!is_riggable_joint(name))
-                return refuse("a skin binds joint \"" + std::string(name) +
-                              "\", which is not a joint of the " +
-                              std::string(rigged_skeleton) + " skeleton");
+            if (!is_riggable_joint(name)) {
+                if (origin == Origin::Upload)
+                    return refuse("a skin binds joint \"" + std::string(name) +
+                                  "\", which is not a joint of the " +
+                                  std::string(rigged_skeleton) + " skeleton");
+                // An import: the file carries whatever skeleton its author
+                // used, and that is a question rather than an offence
+                // (mesh_acceptance.h, Origin::Import). Recorded so the asset
+                // can say it is not wearable, and so the names are available
+                // when retargeting has something to say about them.
+                if (std::find(unresolved.begin(), unresolved.end(), name) == unresolved.end())
+                    unresolved.emplace_back(name);
+            }
         }
     }
     // The per-mesh budget counts joints a mesh *uses*, not what its skin
@@ -304,6 +317,12 @@ Acceptance validate_glb(std::span<const std::byte> content) {
             // arrived.
             inverse_bind.push_back(to_region_axes_matrix(matrix));
         }
+        // A skeleton that resolved to nothing cannot be measured against ours:
+        // every name would come back Unknown, which check_rig reports as
+        // Disagrees, and refusing on that would refuse the import for the very
+        // thing already recorded above. Skipped rather than softened, so the
+        // check keeps meaning exactly what it means for an upload.
+        if (!unresolved.empty()) continue;
         const auto finding = check_rig(names, inverse_bind);
         if (finding.outcome == RigOutcome::Disagrees)
             return refuse("a skin's joints do not stand where the " +
@@ -345,6 +364,7 @@ Acceptance validate_glb(std::span<const std::byte> content) {
     }
 
     Acceptance result;
+    result.unresolved_joints = std::move(unresolved);
     result.materials = static_cast<std::uint32_t>(data->materials_count);
     result.textures = static_cast<std::uint32_t>(data->textures_count);
     if (result.materials > max_materials)
