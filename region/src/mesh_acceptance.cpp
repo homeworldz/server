@@ -2,6 +2,7 @@
 #include "homeworldz/avatar_joints.h"
 #include "homeworldz/axes.h"
 #include "homeworldz/rig_check.h"
+#include "homeworldz/rig_retarget.h"
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
@@ -82,6 +83,9 @@ Acceptance validate_glb(std::span<const std::byte> content, Origin origin) {
     // upload is refused at the first one; an import collects them and carries
     // them out in the result.
     std::vector<std::string> unresolved;
+    // Set when any joint reached its Bento name through the retarget table
+    // rather than by already being one.
+    bool retargeted = false;
     if (content.size() > max_glb_bytes)
         return refuse("file is " + std::to_string(content.size()) +
                       " bytes; the limit is " + std::to_string(max_glb_bytes));
@@ -165,7 +169,18 @@ Acceptance validate_glb(std::span<const std::byte> content, Origin origin) {
             // that Blender and Avastar emit. Naming the offending joint matters
             // because the creator hearing it may be several tools away from the
             // file.
-            if (!is_riggable_joint(name)) {
+            // Retargetable, not merely already-Bento. Since the converter maps
+            // a foreign skeleton onto ours (AUTO-RIGGING.md Case 1), the
+            // question a gate should ask is whether this rig can be *made* to
+            // fit, not whether it arrived fitting. Asking the old question made
+            // an imported Character Creator body report itself unwearable while
+            // the type-49 a viewer actually fetches was correctly Bento-rigged.
+            // A name that only the retarget table places means this is a
+            // foreign skeleton being mapped onto ours, not a Bento rig. The
+            // distinction decides whether the position check below can say
+            // anything: see where `retargeted` is read.
+            if (canonical_joint(name).empty() && !retarget_joint(name).empty()) retargeted = true;
+            if (retarget_joint(name).empty()) {
                 if (origin == Origin::Upload)
                     return refuse("a skin binds joint \"" + std::string(name) +
                                   "\", which is not a joint of the " +
@@ -317,12 +332,23 @@ Acceptance validate_glb(std::span<const std::byte> content, Origin origin) {
             // arrived.
             inverse_bind.push_back(to_region_axes_matrix(matrix));
         }
-        // A skeleton that resolved to nothing cannot be measured against ours:
-        // every name would come back Unknown, which check_rig reports as
-        // Disagrees, and refusing on that would refuse the import for the very
-        // thing already recorded above. Skipped rather than softened, so the
-        // check keeps meaning exactly what it means for an upload.
-        if (!unresolved.empty()) continue;
+        // Two cases this check cannot speak to, skipped rather than softened so
+        // that what it does say keeps its full strength.
+        //
+        // A skeleton that resolved to nothing: every name comes back Unknown,
+        // which check_rig reports as Disagrees, and refusing on that would
+        // refuse an import for exactly the thing already recorded above.
+        //
+        // And a *retargeted* skeleton, which is the subtler one. This check asks
+        // whether a rig stands where the Bento skeleton rests — a fair question
+        // of a body that arrived claiming Bento names, where sitting elsewhere
+        // means the names are lying. A Character Creator body claims nothing of
+        // the sort: it was mapped onto our skeleton by the converter, it keeps
+        // its own proportions on purpose, and it declares them through joint
+        // position overrides. Measuring it against Linden's rest pose asks a
+        // question it never answered. Aaron's shoulder sits 74 mm from Linden's
+        // and his knee 48; both are the body he is, not a fault.
+        if (!unresolved.empty() || retargeted) continue;
         const auto finding = check_rig(names, inverse_bind);
         if (finding.outcome == RigOutcome::Disagrees)
             return refuse("a skin's joints do not stand where the " +
