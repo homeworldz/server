@@ -53,8 +53,9 @@ var validKinds = map[string]bool{
 // cap exactly, on the reasoning that a derived encoding larger than any storable
 // source is a converter bug rather than content.
 //
-// The two parted company on 2026-08-10, when the vault's cap rose to 128 MiB to
-// hold source-format uploads (ADR 0035). This one stays at 64 MiB, because the
+// The two parted company on 2026-08-10, when the vault's cap rose to hold
+// source-format uploads (ADR 0035) — 256 MiB as of that day. This one stays at
+// 64 MiB, and the gap is now four-fold rather than two, because the
 // reasoning behind it did not change: what is stored here derives from *one*
 // mesh or one image, and an import splits a source file into one asset per mesh
 // before anything is derived from it. A rendition approaching a whole
@@ -63,7 +64,7 @@ var validKinds = map[string]bool{
 // That is safe by a chain of bounds rather than by habit, and the middle one is
 // what holds it up:
 //
-//	source upload      128 MiB   this package's MaxBlobSize, and the region's
+//	source upload      256 MiB   this package's MaxBlobSize, and the region's
 //	                             max_source_bytes pre-limit
 //	an imported part    32 MiB   max_glb_bytes, enforced on every part by
 //	                             validate_glb(..., Origin::Import)
@@ -79,7 +80,7 @@ var validKinds = map[string]bool{
 // **The one case that would break this is currently unreachable, and whoever
 // makes it reachable needs to raise this number.** meshsmith can convert an FBX
 // straight to a `gltf` rendition, which for a single-mesh source produces one
-// rendition roughly the size of the whole upload — up to the full 128 MiB. That
+// rendition roughly the size of the whole upload — up to the full 256 MiB. That
 // branch has no caller: the region imports source files on its own publish
 // worker and requests no rendition of them, because an import yields one asset
 // per mesh and a rendition is one blob per (asset, kind). If that path is ever

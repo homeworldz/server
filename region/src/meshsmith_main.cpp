@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
                 //
                 // Two things to know before wiring it to anything. A
                 // single-mesh source produces a rendition roughly the size of
-                // the whole upload — up to 128 MiB — against a rendition store
+                // the whole upload — up to 256 MiB — against a rendition store
                 // that caps at 64 (grid/internal/renditions/store.go), so that
                 // constant has to move first. And a multi-mesh source cannot be
                 // served this way at all, for the reason stated above; that is

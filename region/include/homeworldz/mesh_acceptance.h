@@ -154,7 +154,8 @@ inline constexpr std::string_view upload_path = "/session/uploads/mesh";
 inline constexpr std::string_view imported_formats[] = {"fbx"};
 // A source file may be larger than a GLB of the same content, because it
 // carries its textures uncompressed by any container and, for FBX, embeds them.
-// A fully dressed CC5 character with hair and beard measures 105 MiB.
+// A dressed CC5 character measures 105 MiB, and the high-definition exports run
+// 82, 92, 169 and 191 MiB.
 //
 // **A pre-limit on the blob, and it must never exceed the grid vault's cap.**
 // The source file *is* the canonical blob, so a limit above the vault's accepts
@@ -174,7 +175,7 @@ inline constexpr std::string_view imported_formats[] = {"fbx"};
 // neither can read the other's constant. `vault.MaxBlobSize` in
 // grid/internal/vault/store.go governs; if the two ever disagree, that one
 // wins and this one is the bug.
-inline constexpr std::uint64_t max_source_bytes = 128ull << 20;
+inline constexpr std::uint64_t max_source_bytes = 256ull << 20;
 
 // The acceptance policy as the JSON object served in the session hello
 // (the read-never-encode contract of ADR 0033).
