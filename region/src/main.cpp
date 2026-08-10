@@ -123,6 +123,30 @@ constexpr int http_client_timeout_ms = 15000;
 // (ADR 0035) crawling in over a poor link — and bounded because a connection
 // that never completes is a buffer nobody is reading.
 constexpr int http_client_total_timeout_ms = 900000;
+// How many bytes of *large* request body the region will hold at once, across
+// every connection reading one and every job still carrying one.
+//
+// Per-connection limits multiply; this does not. maximum_incoming_http is 256
+// and a source upload may be 256 MiB (ADR 0035), so without an aggregate the
+// worst case is measured in tens of gigabytes — buffered, note, before the
+// bearer ticket has been checked, because a body must be read before it can be
+// authorized.
+//
+// 512 MiB is two max-size uploads, which is the useful depth and no more: the
+// publish worker is serial, so a third concurrent upload buys no throughput and
+// only costs memory. It counts the queue as well as the sockets because a job
+// owns a copy of the file until it reports — counting sockets alone would let
+// the same 256 MiB be admitted twice.
+//
+// Small requests are deliberately outside this. They are already held to
+// maximum_http_body_size, and letting a large upload's budget refuse a viewer's
+// ordinary GET would turn a memory guard into an outage.
+constexpr std::uint64_t http_large_body_budget = 512ull << 20;
+// The bound every route but the upload one keeps, and the line above which a
+// request counts as "large" and is charged to the budget. It was a local
+// constant in two functions and is now one definition, because a third reader
+// had to agree with both.
+constexpr std::size_t maximum_http_body_size = 1024 * 1024;
 // A ceiling on connections held mid-request. Reached only by a peer opening
 // sockets faster than they time out; past it the listen queue does the refusing,
 // which is the right place for it — unlike the old behaviour, where the queue
@@ -541,7 +565,6 @@ enum class HttpRequestState { need_more, complete, invalid };
 // difference is only that this returns rather than waits.
 HttpRequestState http_request_state(std::string& request) {
     constexpr std::size_t maximum_header_size = 64 * 1024;
-    constexpr std::size_t maximum_body_size = 1024 * 1024;
     // The source-format cap, not the GLB one: this route now accepts an FBX as
     // well (ADR 0035), and a Character Creator body is 19-41 MB against a 32 MB
     // GLB limit. Capping here at the GLB figure would refuse the file before the
@@ -554,7 +577,7 @@ HttpRequestState http_request_state(std::string& request) {
                                                     : HttpRequestState::need_more;
     }
     const std::string_view head(request.data(), header_end + 4);
-    std::size_t body_limit = maximum_body_size;
+    std::size_t body_limit = maximum_http_body_size;
     if (head.starts_with("POST " + std::string(homeworldz::mesh::upload_path)))
         body_limit = maximum_mesh_body;
     if (head.starts_with("POST /caps/upload-file/") ||
@@ -570,7 +593,6 @@ HttpRequestState http_request_state(std::string& request) {
 
 std::optional<std::string> receive_http_request(socket_handle client) {
     constexpr std::size_t maximum_header_size = 64 * 1024;
-    constexpr std::size_t maximum_body_size = 1024 * 1024;
     // The mesh upload route alone accepts a body up to the published source cap
     // (plus header slack); every other route keeps the tight general bound. The
     // source cap rather than the GLB one, since this route now takes an FBX too
@@ -580,7 +602,7 @@ std::optional<std::string> receive_http_request(socket_handle client) {
     std::string request;
     std::array<char, 4096> buffer{};
     std::optional<std::size_t> expected_size;
-    std::size_t body_limit = maximum_body_size;
+    std::size_t body_limit = maximum_http_body_size;
     while (request.size() <= maximum_header_size + body_limit) {
         const auto received = recv(client, buffer.data(), static_cast<int>(buffer.size()), 0);
         if (received <= 0) return std::nullopt;
@@ -3693,8 +3715,13 @@ int main(int argc, char* argv[]) {
         // licence: a byte every fourteen seconds would hold a connection, and
         // its buffer, for as long as the sender liked.
         std::chrono::steady_clock::time_point expires;
+        // Bytes this connection has reserved against http_large_body_budget,
+        // zero for an ordinary request. Released when the entry goes, whatever
+        // took it — completed, refused, timed out or dropped.
+        std::uint64_t reserved{};
     };
     std::vector<IncomingHttp> incoming_http;
+    std::uint64_t http_large_bytes_reserved = 0;
     std::cout << "{\"level\":\"info\",\"message\":\"region service listening\",\"httpPort\":"
               << configured_port() << ",\"viewerPort\":" << region_viewer_port << "}" << std::endl;
     while (running) {
@@ -3773,12 +3800,20 @@ int main(int argc, char* argv[]) {
                         // and its import is queued, but no object or inventory
                         // item exists yet. Saying 201 here would name an item
                         // that does not exist.
+                        // No rendition is named here. An earlier version said
+                        // `"renditions":{"gltf":"queued"}`, which stopped being
+                        // true when the region took the import onto its own
+                        // worker and stopped requesting one — a response
+                        // claiming work that nothing was doing. What follows a
+                        // stored source is assets, one per mesh, and they
+                        // appear in inventory rather than as a rendition of
+                        // this id.
                         ? homeworldz::http::response_for_content(
                               waiting->request, 202, "application/json",
                               "{\"assetId\":" +
                                   homeworldz::api::json_string(done.published.asset_id) +
                                   ",\"status\":\"importing\""
-                                  ",\"renditions\":{\"gltf\":\"queued\"}}")
+                                  ",\"produces\":\"assets\"}")
                     : done.ok
                         ? homeworldz::http::response_for_content(
                               waiting->request, 201, "application/json",
@@ -3908,6 +3943,50 @@ int main(int argc, char* argv[]) {
                         // Progress is proof of life, so the idle clock restarts.
                         entry->deadline =
                             http_now + std::chrono::milliseconds(http_client_timeout_ms);
+                        // The budget is charged as soon as the headers say how
+                        // large the body will be, which is the only moment a
+                        // refusal is still cheap — before the bytes arrive.
+                        if (entry->reserved == 0) {
+                            const auto header_end = entry->buffer.find("\r\n\r\n");
+                            if (header_end != std::string::npos) {
+                                const std::string_view head(entry->buffer.data(), header_end + 4);
+                                const auto declared =
+                                    homeworldz::http::request_content_length(head);
+                                if (declared && *declared > maximum_http_body_size) {
+                                    const auto held = publish_queue ? publish_queue->bytes_held() : 0;
+                                    if (http_large_bytes_reserved + held + *declared >
+                                        http_large_body_budget) {
+                                        set_socket_blocking_mode(entry->client, true);
+                                        // Length measured, not written down. The
+                                        // first version of this declared 118 for
+                                        // a 108-byte body, which does not fail
+                                        // loudly — the client waits for ten
+                                        // bytes that never arrive.
+                                        const std::string body =
+                                            "{\"code\":\"upload_capacity\",\"message\":"
+                                            "\"the region is already holding as much upload as it "
+                                            "can; retry shortly\"}";
+                                        const std::string busy =
+                                            "HTTP/1.1 503 Service Unavailable\r\n"
+                                            "Content-Type: application/json\r\n"
+                                            "Retry-After: 30\r\nConnection: close\r\n"
+                                            "Content-Length: " + std::to_string(body.size()) +
+                                            "\r\n\r\n" + body;
+                                        static_cast<void>(send_all(entry->client, busy));
+                                        close_socket(entry->client);
+                                        std::cout << "{\"level\":\"warning\",\"message\":"
+                                                     "\"upload refused for capacity\",\"declared\":"
+                                                  << *declared << ",\"reserved\":"
+                                                  << http_large_bytes_reserved << ",\"held\":"
+                                                  << held << "}" << std::endl;
+                                        finished = true;
+                                        break;
+                                    }
+                                    entry->reserved = *declared;
+                                    http_large_bytes_reserved += *declared;
+                                }
+                            }
+                        }
                         const auto state = http_request_state(entry->buffer);
                         if (state == HttpRequestState::complete) {
                             ready_client = entry->client;
@@ -3938,6 +4017,10 @@ int main(int argc, char* argv[]) {
             }
             if (finished) {
                 const bool dispatching = ready_client == entry->client;
+                // Released here and nowhere else, so every way an entry can end
+                // — served, refused, timed out, dropped — gives the budget back.
+                http_large_bytes_reserved -=
+                    (std::min)(http_large_bytes_reserved, entry->reserved);
                 entry = incoming_http.erase(entry);
                 if (dispatching) break;
             } else {

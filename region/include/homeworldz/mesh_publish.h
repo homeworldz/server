@@ -179,6 +179,12 @@ public:
     // deciding whether a drain is worth the call.
     std::size_t outstanding() const;
 
+    // Upload bytes this queue is holding — everything queued plus whatever the
+    // worker has in hand. A job owns a copy of the file until it reports, so
+    // these bytes outlive the socket they arrived on, and a memory budget that
+    // counted only sockets would let the same 256 MiB be admitted twice over.
+    std::uint64_t bytes_held() const;
+
 private:
     struct State;
     std::unique_ptr<State> state_;

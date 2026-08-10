@@ -212,6 +212,10 @@ struct PublishQueue::State {
     std::vector<Result> completed;
     std::uint64_t next_id{1};
     std::size_t in_flight{};
+    // Bytes of upload held by queued jobs and by the one being worked on.
+    // Counted on submit and released when the job reports, so it covers the
+    // whole time a copy of the file exists here.
+    std::uint64_t bytes_held{};
     bool stopping{};
     std::thread worker;
 
@@ -237,6 +241,7 @@ struct PublishQueue::State {
 
         for (;;) {
             Job job;
+            std::size_t job_bytes = 0;
             {
                 std::unique_lock lock(mutex);
                 wake.wait(lock, [this] { return stopping || !queue.empty(); });
@@ -245,6 +250,9 @@ struct PublishQueue::State {
                 if (queue.empty()) return;
                 job = std::move(queue.front());
                 queue.pop_front();
+                // Still held — the worker has the bytes now instead of the
+                // queue, and only reporting releases them.
+                job_bytes = job.glb.size();
             }
 
             Result result;
@@ -333,8 +341,10 @@ struct PublishQueue::State {
                 std::lock_guard lock(mutex);
                 completed.push_back(std::move(result));
                 --in_flight;
+                bytes_held -= (std::min<std::uint64_t>)(bytes_held, job_bytes);
                 if (follow_on) {
                     follow_on->id = next_id++;
+                    bytes_held += follow_on->glb.size();
                     queue.push_back(std::move(*follow_on));
                     ++in_flight;
                 }
@@ -368,6 +378,7 @@ std::uint64_t PublishQueue::submit(std::vector<std::byte> glb, std::string name,
     {
         std::lock_guard lock(state_->mutex);
         id = state_->next_id++;
+        state_->bytes_held += glb.size();
         state_->queue.push_back(
             {id, std::move(glb), std::move(name), std::move(creator_user_id), Kind::Publish, {}});
         ++state_->in_flight;
@@ -382,6 +393,7 @@ std::uint64_t PublishQueue::submit_source(std::vector<std::byte> source, std::st
     {
         std::lock_guard lock(state_->mutex);
         id = state_->next_id++;
+        state_->bytes_held += source.size();
         state_->queue.push_back({id, std::move(source), std::move(name),
                                  std::move(creator_user_id), Kind::StoreSource, {}});
         ++state_->in_flight;
@@ -398,6 +410,11 @@ std::vector<PublishQueue::Result> PublishQueue::take_completed() {
 std::size_t PublishQueue::outstanding() const {
     std::lock_guard lock(state_->mutex);
     return state_->in_flight;
+}
+
+std::uint64_t PublishQueue::bytes_held() const {
+    std::lock_guard lock(state_->mutex);
+    return state_->bytes_held;
 }
 
 } // namespace homeworldz::mesh
