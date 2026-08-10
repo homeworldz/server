@@ -174,10 +174,17 @@ PublishedMesh store_source(std::span<const std::byte> source, const std::string&
         throw std::runtime_error("source asset registration failed");
     if (!grid.store_vault_asset(stored.viewer_id, source))
         throw std::runtime_error("source vault write-through failed");
-    // The import itself, on the conversion queue ADR 0035 puts it on. What
-    // happens when it lands is the part still to be decided; the request is
-    // correct either way, and re-requesting is idempotent grid-side.
-    static_cast<void>(grid.request_asset_rendition(stored.viewer_id, "gltf"));
+    // Deliberately no rendition request. An earlier version queued a `gltf`
+    // rendition here, from when meshsmith was going to do the conversion; the
+    // import now runs on this worker instead, and nothing fetches a glTF of the
+    // source anyway — the objects a creator ends up with reference the *parts*,
+    // each its own asset with its own renditions, and the source is kept as the
+    // canonical original rather than as something rendered.
+    //
+    // Leaving the request in was not merely wasted work. meshsmith refuses a
+    // multi-mesh FBX by design, so every character uploaded would have left a
+    // permanently failed job behind it, and a queue full of expected failures
+    // is one nobody reads.
     published.asset_id = stored.viewer_id;
     return published;
 }

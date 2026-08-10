@@ -49,9 +49,16 @@ var validKinds = map[string]bool{
 	"png-texture": true,
 }
 
-// MaxRenditionSize bounds a stored rendition; it matches the vault's blob cap
-// because a derived encoding larger than any storable source is a converter
-// bug, not content.
+// MaxRenditionSize bounds a stored rendition. It used to match the vault's blob
+// cap exactly, on the reasoning that a derived encoding larger than any storable
+// source is a converter bug rather than content.
+//
+// The two parted company on 2026-08-10, when the vault's cap rose to 128 MiB to
+// hold source-format uploads (ADR 0035). This one stays at 64 MiB, because the
+// reasoning behind it did not change: what is stored here derives from *one*
+// mesh or one image, and an import splits a source file into one asset per mesh
+// before anything is derived from it. A rendition approaching a whole
+// character's upload is still the converter bug this was guarding against.
 const MaxRenditionSize = 64 << 20
 
 // maxAttempts parks a job that keeps failing instead of burning a worker on

@@ -153,9 +153,28 @@ inline constexpr std::string_view upload_path = "/session/uploads/mesh";
 // imports as six assets each of which is comfortably inside them.
 inline constexpr std::string_view imported_formats[] = {"fbx"};
 // A source file may be larger than a GLB of the same content, because it
-// carries its textures uncompressed by any container and, for FBX, often
-// embeds them. Character Creator bodies measure 19-41 MB.
-inline constexpr std::uint64_t max_source_bytes = 96ull << 20;
+// carries its textures uncompressed by any container and, for FBX, embeds them.
+// A fully dressed CC5 character with hair and beard measures 105 MiB.
+//
+// **A pre-limit on the blob, and it must never exceed the grid vault's cap.**
+// The source file *is* the canonical blob, so a limit above the vault's accepts
+// uploads that cannot then be stored: the creator's file is taken, validated,
+// and lost at `store_vault_asset`, with an error about the grid rather than
+// about their file. Refusing here instead answers 422 at the door, naming the
+// size and the limit, before anything has been read or registered.
+//
+// Below the vault's cap is a legitimate choice rather than a fault — a region
+// may take less than the grid would keep — so the relationship is `<=`, and it
+// defaults to the same figure. Above it is always the bug. The first version of
+// this number was picked independently, at 96 MiB against a vault cap of 64,
+// and managed to be wrong in both directions at once: it refused files the
+// corpus actually contains and accepted files the grid would not keep.
+//
+// Kept in step by hand, because the region is C++ and the vault is Go and
+// neither can read the other's constant. `vault.MaxBlobSize` in
+// grid/internal/vault/store.go governs; if the two ever disagree, that one
+// wins and this one is the bug.
+inline constexpr std::uint64_t max_source_bytes = 128ull << 20;
 
 // The acceptance policy as the JSON object served in the session hello
 // (the read-never-encode contract of ADR 0033).

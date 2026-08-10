@@ -37,9 +37,23 @@ import (
 )
 
 // MaxBlobSize bounds a single ingest so a malformed or hostile declared length
-// cannot fill the vault filesystem. It is far above any expected texture, mesh,
-// or animation asset.
-const MaxBlobSize = 64 << 20
+// cannot fill the vault filesystem.
+//
+// **Raised to 128 MiB on 2026-08-10, from 64.** The old figure was described
+// here as "far above any expected texture, mesh, or animation asset", and that
+// stopped being true when source formats became storable (ADR 0035): the
+// canonical blob is now the creator's own FBX rather than a converted GLB, and
+// it carries every texture the character uses. Measured against the four
+// Character Creator exports prepared that day, two exceeded 64 MiB — a fully
+// dressed CC5 character with hair and beard is 105 MiB, and one of the plain
+// CC3 bodies came in 19 KB over, which is the margin that says the old cap was
+// not chosen against files like these.
+//
+// 128 MiB rather than more because this is a deliberately provisional number:
+// Kevin is near the complex end of what a creator exports, and the cost of a
+// larger cap is real. The region reads an upload into memory and copies it for
+// its publish worker, so the peak is roughly twice the file.
+const MaxBlobSize = 128 << 20
 
 var (
 	ErrNotFound = errors.New("vault does not hold the blob")
