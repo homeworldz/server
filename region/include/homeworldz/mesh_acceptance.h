@@ -27,17 +27,21 @@ inline constexpr std::uint32_t max_materials = 8;
 inline constexpr std::uint32_t max_textures = 16;
 // Bytes of any single embedded image.
 //
-// **Raised to 16 MiB on 2026-08-10, from 8.** Set before any source-format
-// import existed, when an embedded image meant a texture someone had packed
-// into a GLB by hand. A high-definition Character Creator export carries 4K
-// skin maps straight out of the tool: `_HD_Aaron_T` has one of 10,420,962
-// bytes, and its part was refused for it while every other limit was
-// comfortable.
+// **Derived from `max_glb_bytes` rather than chosen, since 2026-08-10.** It was
+// 8 MiB, set before source-format import existed, when an embedded image meant a
+// texture someone had packed into a GLB by hand. Real exports blew past it
+// twice in one day — a high-definition Character Creator body carries a
+// 10,420,962-byte skin map, a game-optimised one a 19,029,084-byte atlas — and
+// raising it by whatever the latest file needed was going to keep happening.
 //
-// Still well under `max_glb_bytes`, so a file cannot be one enormous texture,
-// and each embedded image becomes its own asset anyway (ADR 0033 M3) — this
-// bounds one texture, not the file.
-inline constexpr std::uint64_t max_image_bytes = 16ull << 20;
+// So it is three quarters of the file cap. An embedded image lives *inside* a
+// GLB, so it can never exceed `max_glb_bytes` however this is set; what the
+// number is really for is refusing a file that is one enormous texture and
+// almost no mesh. Three quarters says that plainly and stops the chase.
+//
+// Each image becomes its own asset anyway (ADR 0033 M3), so this bounds one
+// texture rather than the upload.
+inline constexpr std::uint64_t max_image_bytes = max_glb_bytes / 4 * 3;
 // Bento skinning allows at most this many influences per vertex. Published
 // now even though rigged mesh lands with M4 (ADR 0033), so importing clients
 // already read it rather than encode it.

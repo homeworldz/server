@@ -392,6 +392,7 @@ bool report(const fs::path& path, const fs::path& write_to) {
     // inverse bind, since that is the frame a joint position override is
     // written in.
     std::map<std::string, std::array<float, 3>> joint_positions;
+    std::map<std::string, std::array<float, 3>> bind_positions;
     for (std::size_t at = 0; at < scene->skin_clusters.count; ++at) {
         const ufbx_skin_cluster* cluster = scene->skin_clusters.data[at];
         if (!cluster->bone_node) continue;
@@ -405,6 +406,22 @@ bool report(const fs::path& path, const fs::path& write_to) {
                                       static_cast<float>(translation.z)};
         homeworldz::mesh::to_region_axes(position);
         joint_positions.emplace(std::string(target), position);
+
+        // The same joint as the file's *bind* pose puts it, which FBX stores
+        // separately from the node transforms. A tool can export a character
+        // standing one way while its skin was bound in another, and skinning
+        // follows the bind — so if these two disagree, reading node_to_world is
+        // reading the wrong pose.
+        if (const auto* pose = cluster->bone_node->bind_pose) {
+            if (const auto* bone_pose = ufbx_get_bone_pose(pose, cluster->bone_node)) {
+                const auto& bound = bone_pose->bone_to_world.cols[3];
+                std::array<float, 3> at{static_cast<float>(bound.x),
+                                        static_cast<float>(bound.y),
+                                        static_cast<float>(bound.z)};
+                homeworldz::mesh::to_region_axes(at);
+                bind_positions.emplace(std::string(target), at);
+            }
+        }
     }
     std::size_t riggable = 0;
     for (const auto& joint : joints)
@@ -467,6 +484,25 @@ bool report(const fs::path& path, const fs::path& write_to) {
                           : degrees < -10.0f ? "arms raised; not a pose this maps"
                                              : "T-pose")
                       << '\n';
+        }
+        // And the bind pose, where the file records one. FBX stores it apart
+        // from the node transforms, and skinning follows the bind — so if the
+        // two disagree, the bind is what a retarget has to work from and the
+        // node transforms are the wrong thing to have measured.
+        if (const auto shoulder = bind_positions.find("mShoulderLeft"),
+            wrist = bind_positions.find("mWristLeft");
+            shoulder != bind_positions.end() && wrist != bind_positions.end()) {
+            const auto reach = wrist->second[1] - shoulder->second[1];
+            const auto drop = shoulder->second[2] - wrist->second[2];
+            const auto degrees =
+                static_cast<float>(std::atan2(drop, std::abs(reach)) * 180.0 / 3.14159265358979);
+            std::cout << "    bind:     arm " << metres(degrees) << " degrees below horizontal"
+                      << (degrees > 10.0f ? " - the bind pose is A-pose as well"
+                                          : " - THE BIND POSE IS T")
+                      << '\n';
+        } else if (!joint_positions.empty()) {
+            std::cout << "    bind:     the file records no bind pose; node transforms are all "
+                         "there is\n";
         }
     }
 

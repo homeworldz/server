@@ -83,9 +83,17 @@ inline constexpr JointCorrespondence character_creator_to_bento[] = {
     {"CC_Base_L_Breast", "LEFT_PEC"},
     {"CC_Base_R_Breast", "RIGHT_PEC"},
 
-    // Arms. CC skins to the twist bones; the limb bones carry no weight.
+    // Arms. A full-detail CC body skins to the twist bones and leaves the limb
+    // bones weightless, but a game-optimised export binds the limb bone as well
+    // — `CC_Game_Body` binds `CC_Base_L_Upperarm` directly. Both spellings are
+    // listed, and they fold together, which is right either way: the twists
+    // distribute a roll the viewer applies to the limb.
     {"CC_Base_L_Clavicle", "mCollarLeft"},
     {"CC_Base_R_Clavicle", "mCollarRight"},
+    {"CC_Base_L_Upperarm", "mShoulderLeft"},
+    {"CC_Base_R_Upperarm", "mShoulderRight"},
+    {"CC_Base_L_Forearm", "mElbowLeft"},
+    {"CC_Base_R_Forearm", "mElbowRight"},
     {"CC_Base_L_UpperarmTwist01", "mShoulderLeft"},
     {"CC_Base_L_UpperarmTwist02", "mShoulderLeft"},
     {"CC_Base_R_UpperarmTwist01", "mShoulderRight"},
@@ -131,7 +139,11 @@ inline constexpr JointCorrespondence character_creator_to_bento[] = {
     {"CC_Base_R_Pinky2", "mHandPinky2Right"},
     {"CC_Base_R_Pinky3", "mHandPinky3Right"},
 
-    // Legs, again skinned to the twist bones.
+    // Legs, the same pairing of limb bone and its twists.
+    {"CC_Base_L_Thigh", "mHipLeft"},
+    {"CC_Base_R_Thigh", "mHipRight"},
+    {"CC_Base_L_Calf", "mKneeLeft"},
+    {"CC_Base_R_Calf", "mKneeRight"},
     {"CC_Base_L_ThighTwist01", "mHipLeft"},
     {"CC_Base_L_ThighTwist02", "mHipLeft"},
     {"CC_Base_R_ThighTwist01", "mHipRight"},
