@@ -26,7 +26,18 @@ inline constexpr std::uint32_t max_materials = 8;
 // Distinct textures per file.
 inline constexpr std::uint32_t max_textures = 16;
 // Bytes of any single embedded image.
-inline constexpr std::uint64_t max_image_bytes = 8ull << 20;
+//
+// **Raised to 16 MiB on 2026-08-10, from 8.** Set before any source-format
+// import existed, when an embedded image meant a texture someone had packed
+// into a GLB by hand. A high-definition Character Creator export carries 4K
+// skin maps straight out of the tool: `_HD_Aaron_T` has one of 10,420,962
+// bytes, and its part was refused for it while every other limit was
+// comfortable.
+//
+// Still well under `max_glb_bytes`, so a file cannot be one enormous texture,
+// and each embedded image becomes its own asset anyway (ADR 0033 M3) — this
+// bounds one texture, not the file.
+inline constexpr std::uint64_t max_image_bytes = 16ull << 20;
 // Bento skinning allows at most this many influences per vertex. Published
 // now even though rigged mesh lands with M4 (ADR 0033), so importing clients
 // already read it rather than encode it.

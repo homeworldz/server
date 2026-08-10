@@ -386,9 +386,24 @@ bool report(const fs::path& path, const fs::path& write_to) {
     // skeleton would recognise any of these at all, and for a Character Creator
     // rig the answer is the point (ADR 0035, "What this does not solve").
     std::set<std::string> joints;
+    // Where each *retargeted* joint rests, in region axes and metres, for the
+    // pose check below. Taken from the bone's world transform rather than its
+    // inverse bind, since that is the frame a joint position override is
+    // written in.
+    std::map<std::string, std::array<float, 3>> joint_positions;
     for (std::size_t at = 0; at < scene->skin_clusters.count; ++at) {
         const ufbx_skin_cluster* cluster = scene->skin_clusters.data[at];
-        if (cluster->bone_node) joints.insert(std::string(text(cluster->bone_node->name)));
+        if (!cluster->bone_node) continue;
+        const auto name = std::string(text(cluster->bone_node->name));
+        joints.insert(name);
+        const auto target = homeworldz::mesh::retarget_joint(name);
+        if (target.empty()) continue;
+        const auto& translation = cluster->bone_node->node_to_world.cols[3];
+        std::array<float, 3> position{static_cast<float>(translation.x),
+                                      static_cast<float>(translation.y),
+                                      static_cast<float>(translation.z)};
+        homeworldz::mesh::to_region_axes(position);
+        joint_positions.emplace(std::string(target), position);
     }
     std::size_t riggable = 0;
     for (const auto& joint : joints)
@@ -424,6 +439,34 @@ bool report(const fs::path& path, const fs::path& write_to) {
         std::cout << '\n';
         for (const auto& joint : retarget.unmapped)
             std::cout << "      unmapped: " << joint << '\n';
+
+        // A-pose or T-pose, from the arm the rig actually has.
+        //
+        // This matters more than it sounds. Joint position overrides move a
+        // joint's *rest* position, and SL joints are translation-only, so
+        // animations rotate them from wherever rest is. Writing an A-posed
+        // body's positions as overrides leaves the skeleton A-posed at rest and
+        // every animation authored against T-pose lands the arms low — which
+        // reads as an animation fault rather than a rig one, and is the
+        // expensive kind of wrong to chase.
+        //
+        // Measured shoulder-to-wrist, because that is the segment the two poses
+        // disagree about: the lateral reach is nearly identical either way and
+        // only the height differs.
+        if (const auto shoulder = joint_positions.find("mShoulderLeft"),
+            wrist = joint_positions.find("mWristLeft");
+            shoulder != joint_positions.end() && wrist != joint_positions.end()) {
+            const auto reach = wrist->second[1] - shoulder->second[1];
+            const auto drop = shoulder->second[2] - wrist->second[2];
+            const auto degrees =
+                static_cast<float>(std::atan2(drop, std::abs(reach)) * 180.0 / 3.14159265358979);
+            std::cout << "    pose:     arm " << metres(degrees)
+                      << " degrees below horizontal - "
+                      << (degrees > 10.0f ? "A-POSE, resave in T-pose before rigging"
+                          : degrees < -10.0f ? "arms raised; not a pose this maps"
+                                             : "T-pose")
+                      << '\n';
+        }
     }
 
     // Against the published gate. These are the ADR 0033 numbers the upload path
