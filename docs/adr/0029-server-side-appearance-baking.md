@@ -296,3 +296,29 @@ Verified end to end on the cloud grid: an appearance-less client in Welcome, an
 logging a fresh bake with slot 10 moving `1.000000` to `0.000000` and
 `"appearance refreshed","serial":2`. Nothing was said by the grid, which is
 correct — it logs only what fails.
+
+### Confirmed by a second viewer (2026-08-10)
+
+The operator stood in Welcome in Firestorm while an appearance-less bot wearing
+the lower alpha arrived, and reported what the log had only ever asserted: the
+bot rendered with **head, arms and upper body and no lower body at all**. Taking
+the alpha off through AIS made the legs appear — default red pants — and putting
+it back removed them again, neither side relogging. Both directions logged
+`"told":1`, the first time the broadcast leg has run with a recipient rather
+than into an empty region.
+
+Re-wearing the alpha logged no bake at all. That outfit was already in the
+per-outfit cache from the join, so the work was skipped and only the appearance
+re-sent — the cache visible in the absence of work.
+
+The same session covered the guard: removing an attachment in Firestorm produced
+two AIS operations and two `outfit change left to the wearer's own baking` lines
+for the operator's own agent. Without that guard each would have replaced a real
+baker's appearance with the server's and broadcast it, so the operator would have
+looked wrong to every viewer but their own — while looking perfectly correct to
+themselves, which is why it took asking what would happen when someone logged in
+to watch, rather than a test, to find it.
+
+Also settled: a hair "bald cap" cannot be taken off, and no request for it
+reaches the grid. Hair is a body part (asset type 13, wearable type 2) and body
+parts are replaced, never removed.
