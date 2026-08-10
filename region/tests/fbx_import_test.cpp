@@ -81,5 +81,23 @@ int main() {
         if (result.error.size() < 8) return 12;
     }
 
+    // The dispatch sniff. meshsmith uses this to decide which converter a
+    // canonical blob wants, so a wrong answer sends a GLB down the FBX path or
+    // an FBX down the type-49 one, and the failure surfaces as a converter
+    // error about the wrong format entirely.
+    {
+        using homeworldz::mesh::looks_like_fbx;
+        if (!looks_like_fbx(bytes("Kaydara FBX Binary  \x00\x1a\x00"))) return 13;
+        if (!looks_like_fbx(bytes("; FBX 7.4.0 project file"))) return 14;
+        // The two formats this worker converts between must not be mistaken
+        // for it. A GLB begins "glTF" and a type-49 asset begins with its own
+        // header; neither is an FBX.
+        if (looks_like_fbx(bytes("glTF\x02\x00\x00\x00"))) return 15;
+        if (looks_like_fbx({})) return 16;
+        // Short inputs must not read past the end to answer.
+        if (looks_like_fbx(bytes("Kay"))) return 17;
+        if (looks_like_fbx(bytes(";"))) return 18;
+    }
+
     return 0;
 }

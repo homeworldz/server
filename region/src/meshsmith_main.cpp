@@ -7,6 +7,7 @@
 // Deliberately boring: one job at a time, failures reported with the
 // converter's own reason, an empty queue answered by sleeping. Dying is safe
 // — the lease lapses and the job is claimable again.
+#include "homeworldz/fbx_import.h"
 #include "homeworldz/grid_client.h"
 #include "homeworldz/image.h"
 #include "homeworldz/mesh_convert.h"
@@ -84,6 +85,9 @@ int main(int argc, char** argv) {
 #endif
     std::signal(SIGINT, handle_stop);
     std::signal(SIGTERM, handle_stop);
+    // The generator tag is the converter's, and import is now part of what it
+    // produces: a glTF derived from an FBX and one derived from a type-49 are
+    // both `gltf` renditions of this generator.
     log("info", "meshsmith started",
         ",\"generator\":" + json_string(homeworldz::mesh::generator) +
         ",\"grid\":" + json_string(grid_url));
@@ -156,8 +160,37 @@ int main(int argc, char** argv) {
             // type-49 derives the modern client's glTF (ADR 0033 M1 and M2).
             std::vector<std::byte> derived;
             std::string detail;
+            // A canonical blob may now be a source format the creator uploaded
+            // (ADR 0035), so both mesh directions have to ask what they are
+            // holding before converting it.
+            const auto is_glb = canonical.body.size() >= 4 &&
+                                std::memcmp(canonical.body.data(), "glTF", 4) == 0;
+            const auto is_fbx = homeworldz::mesh::looks_like_fbx(content);
             if (kind == "sl-mesh") {
-                const auto conversion = homeworldz::mesh::convert_glb(content);
+                // The viewer's type-49 derives from a GLB. When the canonical
+                // blob is not one, the GLB it derives from is this asset's own
+                // `gltf` rendition — the import's output — so this job depends
+                // on that one having run. Requesting it and failing is right:
+                // the queue re-claims a failed job, and by then the glTF exists.
+                std::string source_bytes;
+                std::span<const std::byte> mesh_source = content;
+                if (!is_glb) {
+                    const auto rendition = transport->send(
+                        "GET", "/api/v1/assets/" + asset_id + "/renditions/gltf", {});
+                    if (rendition.status_code != 200 || rendition.body.empty()) {
+                        transport->send("POST", "/api/v1/assets/" + asset_id + "/renditions",
+                                        R"({"kind":"gltf"})");
+                        give_up("the canonical blob is not a GLB and its gltf rendition is not "
+                                "ready yet; the import has been requested and this will convert "
+                                "on a later claim");
+                        continue;
+                    }
+                    source_bytes = rendition.body;
+                    mesh_source = std::span(
+                        reinterpret_cast<const std::byte*>(source_bytes.data()),
+                        source_bytes.size());
+                }
+                const auto conversion = homeworldz::mesh::convert_glb(mesh_source);
                 if (!conversion.ok) {
                     give_up(conversion.error);
                     continue;
@@ -165,7 +198,35 @@ int main(int argc, char** argv) {
                 derived = conversion.sl_mesh;
                 detail = ",\"faces\":" + std::to_string(conversion.faces) +
                     ",\"highTriangles\":" + std::to_string(conversion.high_triangles) +
-                    ",\"lowestTriangles\":" + std::to_string(conversion.lowest_triangles);
+                    ",\"lowestTriangles\":" + std::to_string(conversion.lowest_triangles) +
+                    ",\"from\":" + json_string(is_glb ? "canonical" : "gltf rendition");
+            } else if (kind == "gltf" && is_fbx) {
+                // Import (ADR 0035). One FBX mesh becomes one asset, so a file
+                // carrying several has no single glTF to be the rendition of
+                // this asset — that is asset *creation*, which needs a decision
+                // this worker cannot make on its own and an API it does not
+                // have. Refused by name rather than by silently importing the
+                // first mesh and losing the rest.
+                const auto conversion = homeworldz::mesh::gltf_from_fbx(content);
+                if (!conversion.ok) {
+                    give_up(conversion.error);
+                    continue;
+                }
+                if (conversion.meshes.size() != 1) {
+                    give_up("the FBX carries " + std::to_string(conversion.meshes.size()) +
+                            " meshes and import produces one asset per mesh; multi-mesh import "
+                            "creates assets rather than a rendition and is not wired up yet");
+                    continue;
+                }
+                const auto& only = conversion.meshes.front();
+                derived = only.glb;
+                detail = ",\"primitives\":" + std::to_string(only.primitives) +
+                    ",\"vertices\":" + std::to_string(only.vertices) +
+                    ",\"triangles\":" + std::to_string(only.triangles) +
+                    ",\"textures\":" + std::to_string(only.textures) +
+                    ",\"opacityComposited\":" + std::to_string(conversion.opacity_composited) +
+                    ",\"influencesPruned\":" + std::to_string(conversion.influences_pruned) +
+                    ",\"from\":\"fbx\"";
             } else if (kind == "gltf") {
                 const auto conversion = homeworldz::mesh::gltf_from_sl_mesh(content);
                 if (!conversion.ok) {
@@ -175,7 +236,8 @@ int main(int argc, char** argv) {
                 derived = conversion.glb;
                 detail = ",\"primitives\":" + std::to_string(conversion.primitives) +
                     ",\"vertices\":" + std::to_string(conversion.vertices) +
-                    ",\"triangles\":" + std::to_string(conversion.triangles);
+                    ",\"triangles\":" + std::to_string(conversion.triangles) +
+                    ",\"from\":\"sl-mesh\"";
             } else if (kind == "j2c-texture") {
                 // A viewer cannot read the PNG or JPEG a GLB embeds, so the
                 // canonical image derives the JPEG2000 the legacy texture

@@ -99,6 +99,14 @@ struct FbxImport {
     std::size_t bindings_dropped{};
 };
 
+// True when these bytes begin like an FBX, binary or ASCII.
+//
+// For dispatch only — deciding which converter a canonical blob wants, which is
+// the canonical format's business rather than the job's (ADR 0033). It is not a
+// validity check and must not be used as one: `gltf_from_fbx` is the authority
+// on whether the file is really an FBX, and it says so with a reason.
+bool looks_like_fbx(std::span<const std::byte> content);
+
 // Import an FBX. Assumes nothing about the bytes: this runs in the conversion
 // worker on attacker-supplied input (ADR 0035, "Conversion runs in the meshsmith
 // worker"), never on a serving path.

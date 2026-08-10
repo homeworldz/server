@@ -173,6 +173,19 @@ struct Streams {
 
 } // namespace
 
+bool looks_like_fbx(std::span<const std::byte> content) {
+    // The binary magic Autodesk has written since FBX 6, and the comment line
+    // an ASCII export opens with. Both are what ufbx itself detects on; this is
+    // the same question asked earlier and more cheaply.
+    constexpr std::string_view binary_magic = "Kaydara FBX Binary";
+    constexpr std::string_view ascii_magic = "; FBX";
+    const auto begins_with = [&](std::string_view prefix) {
+        if (content.size() < prefix.size()) return false;
+        return std::memcmp(content.data(), prefix.data(), prefix.size()) == 0;
+    };
+    return begins_with(binary_magic) || begins_with(ascii_magic);
+}
+
 FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
     auto options = fbx_load_options();
     ufbx_error error{};
