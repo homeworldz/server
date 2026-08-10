@@ -137,3 +137,97 @@ func TestPostgresRenditionLifecycle(t *testing.T) {
 		t.Fatalf("open missing = %v", err)
 	}
 }
+
+// TestRequeueStaleRevivesFailures covers the half of the sweep that reads no
+// renditions at all.
+//
+// A job that failed stored nothing, so the stale-generator query cannot see it,
+// and for a long time that meant a permanent failure outlived the fix for it:
+// Character Creator bodies imported before rig retargeting existed had every
+// sl-mesh job parked with "a skin binds joint CC_Base_Head" — precisely what
+// the next generator was written to answer — and a sweep left all of them
+// alone.
+func TestRequeueStaleRevivesFailures(t *testing.T) {
+	databaseURL := os.Getenv("HOMEWORLDZ_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("HOMEWORLDZ_TEST_DATABASE_URL is not configured")
+	}
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	store, err := NewPostgresStore(db, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// One asset whose conversion failed for good, and one that converted under
+	// a generator that has since been superseded.
+	failed := registerAsset(t, db)
+	stale := registerAsset(t, db)
+
+	if _, err := store.Request(ctx, failed, "sl-mesh"); err != nil {
+		t.Fatal(err)
+	}
+	job, ok, err := store.Claim(ctx, []string{"sl-mesh"}, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	// Exhaust the attempts so the job parks rather than returning to the queue.
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := store.Fail(ctx, job.ID, "a skin binds joint \"CC_Base_Head\""); err != nil {
+			t.Fatal(err)
+		}
+		if claimed, more, claimErr := store.Claim(ctx, []string{"sl-mesh"}, time.Minute); claimErr != nil {
+			t.Fatal(claimErr)
+		} else if more {
+			job = claimed
+		}
+	}
+	var parked string
+	if err := db.QueryRow(`SELECT state FROM rendition_jobs WHERE asset_id = $1 AND kind = 'sl-mesh'`,
+		failed).Scan(&parked); err != nil {
+		t.Fatal(err)
+	}
+	if parked != "failed" {
+		t.Fatalf("job state before sweep = %q, wanted failed", parked)
+	}
+
+	if _, err := store.Request(ctx, stale, "sl-mesh"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.Claim(ctx, []string{"sl-mesh"}, time.Minute); err != nil || !ok {
+		t.Fatalf("claim stale = %v, %v", ok, err)
+	}
+	if _, err := store.Put(ctx, stale, "sl-mesh", "meshsmith/0.11",
+		bytes.NewReader([]byte("converted under the old generator"))); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.RequeueStale(ctx, "sl-mesh", "meshsmith/0.12"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both are queued again: the stale success because its generator differs,
+	// and the parked failure because the converter that recorded it is gone.
+	for _, subject := range []struct {
+		assetID string
+		why     string
+	}{{failed, "parked failure"}, {stale, "stale success"}} {
+		var state string
+		var attempts int
+		if err := db.QueryRow(
+			`SELECT state, attempts FROM rendition_jobs WHERE asset_id = $1 AND kind = 'sl-mesh'`,
+			subject.assetID).Scan(&state, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		if state != "queued" || attempts != 0 {
+			t.Fatalf("%s after sweep = %q with %d attempts, wanted queued with 0",
+				subject.why, state, attempts)
+		}
+	}
+}

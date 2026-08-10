@@ -328,7 +328,35 @@ func (s *PostgresStore) RequeueStale(ctx context.Context, kind, currentGenerator
 	if err != nil {
 		return 0, fmt.Errorf("count requeued renditions: %w", err)
 	}
-	return requeued, nil
+
+	// And the failures, which the query above cannot see: it reads
+	// asset_renditions, and a job that failed stored nothing to be stale.
+	//
+	// Without this a permanent failure outlives the fix for it. Character
+	// Creator bodies imported before rig retargeting existed had every sl-mesh
+	// job parked with `a skin binds joint "CC_Base_Head"` — the exact complaint
+	// the next generator was written to answer — and the sweep left all
+	// thirty-nine of them alone, because none had a rendition to be stale.
+	//
+	// Every failure of the kind is retried rather than only those an older
+	// generator recorded, because rendition_jobs does not remember which
+	// converter failed it. That is the proportionate trade: a generator bump is
+	// a deliberate and rare act, retries are bounded by maxAttempts, and the
+	// cost of re-trying content that genuinely cannot convert is a few wasted
+	// conversions against the alternative of content that can never recover.
+	retried, err := s.db.ExecContext(ctx, `
+		UPDATE rendition_jobs SET
+			state = 'queued', attempts = 0, error = '', leased_until = NULL,
+			updated_at = now()
+		WHERE kind = $1 AND state = 'failed'`, kind)
+	if err != nil {
+		return 0, fmt.Errorf("requeue failed renditions: %w", err)
+	}
+	failed, err := retried.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count retried renditions: %w", err)
+	}
+	return requeued + failed, nil
 }
 
 func (s *PostgresStore) List(ctx context.Context, assetID string) ([]Rendition, error) {
