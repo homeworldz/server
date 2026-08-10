@@ -317,6 +317,11 @@ Conversion convert_glb(std::span<const std::byte> glb) {
     // per asset, so two skins would need merging or picking, and both are
     // guesses about what the author meant.
     std::vector<std::string> joint_names;
+    // How far each source joint sits from the skeleton's root. Several sources
+    // may fold onto one Bento joint, and the shallowest of them is the one whose
+    // position that joint should take: a twist bone is a *child* of the limb it
+    // twists, so it sits partway down the segment rather than at its origin.
+    std::vector<int> source_depth;
     std::optional<slmesh::Skin> skin;
     const bool rigged = data->skins_count != 0;
     if (data->skins_count > 1) return fail("the GLB declares more than one skin");
@@ -413,6 +418,11 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                                                     0, 1, 0, 0,
                                                     0, 0, 1, 0,
                                                     rest[0], rest[1], rest[2], 1});
+            int depth = 0;
+            for (const cgltf_node* up = node != nullptr ? node->parent : nullptr; up != nullptr;
+                 up = up->parent)
+                ++depth;
+            source_depth.push_back(depth);
         }
         joint_names = built.joints;
         skin = std::move(built);
@@ -628,6 +638,8 @@ Conversion convert_glb(std::span<const std::byte> glb) {
         // listed twice, with the weights that should have summed competing
         // instead.
         std::map<std::string, std::uint32_t> slot_of_joint;
+        // Depth of the source that currently owns each slot's matrices.
+        std::vector<int> slot_depth;
         for (const auto& face : faces)
             for (const auto& vertex : face.influences)
                 for (const auto& influence : vertex) {
@@ -639,6 +651,26 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                     if (const auto found = slot_of_joint.find(name);
                         found != slot_of_joint.end()) {
                         joint_slot[influence.joint] = found->second;
+                        // The slot keeps its index, so influences already
+                        // remapped stay valid — but its *position* should come
+                        // from the parent-most source that folded here, not
+                        // whichever vertex happened to arrive first.
+                        //
+                        // Character Creator folds a limb's twist bones onto the
+                        // limb, and a twist bone sits partway down the segment.
+                        // Taking the first-seen one put the knee at 288 mm
+                        // where the skeleton rests it at 535 — a knee halfway
+                        // down the shin, on two different characters, which is
+                        // proportion nobody has.
+                        const auto at = found->second;
+                        if (influence.joint < source_depth.size() &&
+                            source_depth[influence.joint] < slot_depth[at]) {
+                            slot_depth[at] = source_depth[influence.joint];
+                            compacted.inverse_bind[at] = skin->inverse_bind[influence.joint];
+                            if (!compacted.alternate_inverse_bind.empty())
+                                compacted.alternate_inverse_bind[at] =
+                                    skin->alternate_inverse_bind[influence.joint];
+                        }
                         continue;
                     }
                     if (compacted.joints.size() >= 255)
@@ -647,6 +679,9 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                     const auto slot = static_cast<std::uint32_t>(compacted.joints.size());
                     joint_slot[influence.joint] = slot;
                     slot_of_joint.emplace(name, slot);
+                    slot_depth.push_back(influence.joint < source_depth.size()
+                                             ? source_depth[influence.joint]
+                                             : 0);
                     compacted.joints.push_back(name);
                     compacted.inverse_bind.push_back(skin->inverse_bind[influence.joint]);
                     // The override table must stay exactly parallel to the
