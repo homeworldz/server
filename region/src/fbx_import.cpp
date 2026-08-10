@@ -232,14 +232,25 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
         const ufbx_skin_deformer* skin =
             mesh->skin_deformers.count > 0 ? mesh->skin_deformers.data[0] : nullptr;
 
-        // Geometry stays in its own space when skinned, because that is the
-        // space the cluster matrices map out of: skinning composes the joint's
-        // world transform with `geometry_to_bone`, and baking a world transform
-        // into the positions would apply it twice. Unskinned geometry has no
-        // such composition to ride on, so its node transform is baked in.
+        // Geometry is baked to world space, skinned or not, so that bind space
+        // *is* world space and the file is conventional glTF.
+        //
+        // The first version left skinned geometry in its own space and used
+        // ufbx's `geometry_to_bone` as the inverse bind. That skins correctly —
+        // the two are in the same space and compose to world — but it hides the
+        // joint positions somewhere no reader can use them: the bind matrices
+        // then describe a body lying on its side in geometry coordinates, and
+        // anything asking "where does this joint rest" gets the height in X.
+        // The retarget needs exactly that answer to write joint position
+        // overrides, and got 1.63 m of head height on the X axis.
+        //
+        // With positions in world space the inverse bind is simply the inverse
+        // of the joint's own world transform, which is what glTF means by one:
+        // jointWorld * inverseBind is identity at rest, so the bind pose is the
+        // geometry as written.
         const ufbx_matrix to_world = node->geometry_to_world;
         const ufbx_matrix normal_matrix = ufbx_matrix_for_normals(&to_world);
-        const bool bake_transform = skin == nullptr;
+        constexpr bool bake_transform = true;
 
         ImportedMesh imported;
         imported.name = std::string(text(mesh->name));
@@ -588,8 +599,14 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             pad_to_four(binary);
             const auto bind_offset = binary.size();
             for (std::size_t at = 0; at < skin->clusters.count; ++at) {
-                const auto& matrix = to_gltf_matrix(skin->clusters.data[at]->geometry_to_bone);
-                for (const auto value : matrix) append_float(binary, value);
+                // inverse(joint world), because the geometry is in world space.
+                // Not `geometry_to_bone`: that maps out of a space nothing else
+                // in this file is written in.
+                const auto* bone = skin->clusters.data[at]->bone_node;
+                const ufbx_matrix world = bone != nullptr ? bone->node_to_world
+                                                          : ufbx_identity_matrix;
+                const ufbx_matrix inverse = ufbx_matrix_invert(&world);
+                for (const auto value : to_gltf_matrix(inverse)) append_float(binary, value);
             }
             const auto bind_view = add_view(bind_offset, binary.size() - bind_offset, 0);
             accessors += ",{\"bufferView\":" + std::to_string(bind_view) +

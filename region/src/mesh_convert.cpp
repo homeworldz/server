@@ -5,6 +5,7 @@
 #include "homeworldz/avatar_joints.h"
 #include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/rig_check.h"
+#include "homeworldz/rig_retarget.h"
 #include "homeworldz/slmesh.h"
 
 #include <cgltf.h>
@@ -99,8 +100,22 @@ std::optional<slmesh::Submesh> to_submesh(const Face& face,
                 std::vector<slmesh::Influence> bound;
                 for (const auto& influence : face.influences[index]) {
                     if (influence.joint >= joint_slot.size()) return std::nullopt;
-                    bound.push_back({static_cast<std::uint8_t>(joint_slot[influence.joint]),
-                                     influence.weight});
+                    const auto slot = static_cast<std::uint8_t>(joint_slot[influence.joint]);
+                    // Two source joints that retargeted onto one Bento joint
+                    // reach the same slot, and a vertex weighted to both must
+                    // end up with the sum rather than two entries competing for
+                    // one index. This is where a CC body's twist-bone weights
+                    // become the limb's.
+                    const auto existing =
+                        std::find_if(bound.begin(), bound.end(),
+                                     [slot](const slmesh::Influence& candidate) {
+                                         return candidate.joint == slot;
+                                     });
+                    if (existing != bound.end()) {
+                        existing->weight += influence.weight;
+                        continue;
+                    }
+                    bound.push_back({slot, influence.weight});
                 }
                 submesh.influences.push_back(std::move(bound));
             }
@@ -312,7 +327,12 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             const auto* node = source.joints[index];
             const std::string_view name =
                 node != nullptr && node->name != nullptr ? node->name : "";
-            const auto canonical = mesh::canonical_joint(name);
+            // Retargeting, not just alias resolution (AUTO-RIGGING.md Case 1).
+            // retarget_joint tries the skeleton's own aliases first, so a rig
+            // that already speaks Bento is untouched, and falls back to the
+            // foreign-skeleton correspondence table. A Character Creator body
+            // reaches here naming CC_Base_* and leaves naming Bento joints.
+            const auto canonical = mesh::retarget_joint(name);
             if (canonical.empty())
                 return fail("a skin binds joint \"" + std::string(name) +
                             "\", which is not a joint of the " +
@@ -356,6 +376,25 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                                           0, 1, 0, 0,
                                           0, 0, 1, 0,
                                           -rest[0], -rest[1], -rest[2], 1});
+            // Where this body wants the joint, as a joint position override.
+            //
+            // This is what lets an imported body keep its own proportions
+            // instead of being squeezed onto Linden's skeleton, and it is the
+            // mechanism every non-Linden-shaped mesh body in Second Life
+            // already uses. Read from Firestorm rather than guessed
+            // (llvoavatar.cpp, addAttachmentOverridesForObject): the viewer
+            // takes `mAlternateBindMatrix[i]`'s *translation* as the desired
+            // position and calls addAttachmentPosOverride with it directly, so
+            // this matrix is not an inverse — it is where the joint goes.
+            //
+            // Two conditions from that same code, both of which this satisfies
+            // by construction: there must be exactly one alternate matrix per
+            // joint or the viewer ignores every override, and a position within
+            // 0.1 mm of the skeleton's default is skipped as no change.
+            built.alternate_inverse_bind.push_back({1, 0, 0, 0,
+                                                    0, 1, 0, 0,
+                                                    0, 0, 1, 0,
+                                                    rest[0], rest[1], rest[2], 1});
         }
         joint_names = built.joints;
         skin = std::move(built);
@@ -560,6 +599,17 @@ Conversion convert_glb(std::span<const std::byte> glb) {
     if (skin) {
         joint_slot.assign(skin->joints.size(), std::numeric_limits<std::uint32_t>::max());
         slmesh::Skin compacted;
+        // Keyed by the joint's *name*, not its source index, so several source
+        // joints that retargeted onto one Bento joint share a slot and their
+        // weights add. A Character Creator body needs this: it skins to twist
+        // bones, so `UpperarmTwist01` and `UpperarmTwist02` both become
+        // mShoulderLeft, and five separate toe bones become mToeLeft.
+        //
+        // Without the merge they would occupy separate slots under the same
+        // name, which the viewer resolves to one joint anyway — the same joint
+        // listed twice, with the weights that should have summed competing
+        // instead.
+        std::map<std::string, std::uint32_t> slot_of_joint;
         for (const auto& face : faces)
             for (const auto& vertex : face.influences)
                 for (const auto& influence : vertex) {
@@ -567,13 +617,26 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                         return fail("a vertex binds a joint the skin does not declare");
                     if (joint_slot[influence.joint] != std::numeric_limits<std::uint32_t>::max())
                         continue;
+                    const auto& name = skin->joints[influence.joint];
+                    if (const auto found = slot_of_joint.find(name);
+                        found != slot_of_joint.end()) {
+                        joint_slot[influence.joint] = found->second;
+                        continue;
+                    }
                     if (compacted.joints.size() >= 255)
                         return fail("a mesh binds more than 254 joints, which the asset "
                                     "format cannot index");
-                    joint_slot[influence.joint] =
-                        static_cast<std::uint32_t>(compacted.joints.size());
-                    compacted.joints.push_back(skin->joints[influence.joint]);
+                    const auto slot = static_cast<std::uint32_t>(compacted.joints.size());
+                    joint_slot[influence.joint] = slot;
+                    slot_of_joint.emplace(name, slot);
+                    compacted.joints.push_back(name);
                     compacted.inverse_bind.push_back(skin->inverse_bind[influence.joint]);
+                    // The override table must stay exactly parallel to the
+                    // joint table: the viewer drops *every* override when the
+                    // two lengths disagree.
+                    if (!skin->alternate_inverse_bind.empty())
+                        compacted.alternate_inverse_bind.push_back(
+                            skin->alternate_inverse_bind[influence.joint]);
                 }
         if (compacted.joints.empty()) return fail("a rigged mesh binds no joints");
         compacted.bind_shape = skin->bind_shape;

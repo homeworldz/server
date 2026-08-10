@@ -30,6 +30,7 @@
 #include "homeworldz/fbx_import.h"
 #include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/mesh_convert.h"
+#include "homeworldz/rig_retarget.h"
 
 #include "fbx_load.h"
 #include "ufbx.h"
@@ -395,21 +396,34 @@ bool report(const fs::path& path, const fs::path& write_to) {
     std::cout << "  skin:     " << scene->skin_deformers.count << " deformer(s), " << joints.size()
               << " distinct joint(s), " << max_influences << " max influences per vertex\n";
     if (!joints.empty()) {
-        std::cout << "    joints:  ";
-        std::size_t shown = 0;
-        for (const auto& joint : joints) {
-            if (shown++ == 8) {
-                std::cout << " ... (" << joints.size() - 8 << " more)";
-                break;
-            }
-            std::cout << ' ' << joint;
-        }
-        std::cout << '\n';
+        // Every name, not a sample. Correspondence for retargeting
+        // (docs/AUTO-RIGGING.md, Case 1) is decided joint by joint, and a
+        // truncated list is exactly the thing that cannot be used to decide it.
+        std::cout << "    joints:\n";
+        for (const auto& joint : joints)
+            std::cout << "      " << std::left << std::setw(34) << joint << std::right
+                      << (homeworldz::mesh::is_riggable_joint(joint) ? "resolves" : "-") << '\n';
         std::cout << "    " << riggable << " of " << joints.size()
                   << " resolve to a skeleton joint";
         if (riggable == 0)
             std::cout << " - the rig is not wearable without retargeting, as ADR 0035 expects";
         std::cout << '\n';
+
+        // And what a retarget would make of them (AUTO-RIGGING.md Case 1). The
+        // number that decides whether a body can be worn is `targets`, not
+        // `mapped`: the per-mesh budget counts distinct Bento joints, and the
+        // folds are what bring a dense foreign rig under it.
+        const std::vector<std::string> source_joints(joints.begin(), joints.end());
+        const auto retarget = homeworldz::mesh::describe_retarget(source_joints);
+        std::cout << "    retarget: " << retarget.mapped << " mapped onto "
+                  << retarget.targets << " Bento joint(s), " << retarget.merged
+                  << " merged, " << retarget.unmapped.size() << " unmapped";
+        if (retarget.targets > homeworldz::mesh::max_joints_per_mesh)
+            std::cout << "  OVER the " << homeworldz::mesh::max_joints_per_mesh
+                      << "-joint per-mesh budget";
+        std::cout << '\n';
+        for (const auto& joint : retarget.unmapped)
+            std::cout << "      unmapped: " << joint << '\n';
     }
 
     // Against the published gate. These are the ADR 0033 numbers the upload path
