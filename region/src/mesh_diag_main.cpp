@@ -81,6 +81,48 @@ int main(int argc, char** argv) {
         // override unless there is exactly one per joint
         // (llvoavatar.cpp, addAttachmentOverridesForObject), so a partial table
         // is silently no table at all.
+        // The two transforms a rigged mesh is skinned through, and the vertex
+        // range they act on. A rigged mesh is not scaled by its prim, so the
+        // normalization the converter applies has to be carried back out by
+        // bind_shape; if these disagree the body still parses and still reports
+        // sane joints, and explodes the moment anything skins it.
+        const auto& shape = parsed->skin->bind_shape;
+        std::cout << "  bind shape: scale (" << shape[0] << ", " << shape[5] << ", " << shape[10]
+                  << ") offset (" << shape[12] << ", " << shape[13] << ", " << shape[14] << ")\n";
+        if (!parsed->high.empty() && !parsed->high[0].positions.empty()) {
+            std::array<float, 3> low = parsed->high[0].positions[0];
+            std::array<float, 3> high = low;
+            for (const auto& submesh : parsed->high)
+                for (const auto& position : submesh.positions)
+                    for (int axis = 0; axis < 3; ++axis) {
+                        low[axis] = (std::min)(low[axis], position[axis]);
+                        high[axis] = (std::max)(high[axis], position[axis]);
+                    }
+            std::cout << "  vertices:   x " << low[0] << ".." << high[0] << "  y " << low[1] << ".."
+                      << high[1] << "  z " << low[2] << ".." << high[2] << '\n';
+        }
+        // Vertices carrying no usable influence. Retargeting drops influences
+        // whose source joint has no Bento correspondence, and a vertex weighted
+        // *only* to dropped joints keeps its position but loses every joint. The
+        // asset still parses, still reports a sane joint list and still passes
+        // the rig check; the viewer skins that vertex to nothing and collapses
+        // it to the object origin, which draws as a spike from the body surface
+        // to a point. Counted because no other check here can see it.
+        std::size_t unweighted = 0, total_vertices = 0;
+        for (const auto& submesh : parsed->high) {
+            total_vertices += submesh.positions.size();
+            for (std::size_t at = 0; at < submesh.positions.size(); ++at) {
+                float carried = 0.0f;
+                if (at < submesh.influences.size())
+                    for (const auto& influence : submesh.influences[at]) carried += influence.weight;
+                if (carried <= 0.0f) ++unweighted;
+            }
+        }
+        if (unweighted > 0) {
+            std::cout << "  UNWEIGHTED: " << unweighted << " of " << total_vertices
+                      << " vertices carry no joint - each collapses to the origin\n";
+            refused = 1;
+        }
         const auto overrides = parsed->skin->alternate_inverse_bind.size();
         std::cout << "  overrides: ";
         if (overrides == 0)

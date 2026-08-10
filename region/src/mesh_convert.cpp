@@ -693,6 +693,22 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                 }
         if (compacted.joints.empty()) return fail("a rigged mesh binds no joints");
         compacted.bind_shape = skin->bind_shape;
+        // Overrides only where the body actually wants a different skeleton.
+        //
+        // A joint position override is how a body keeps its own proportions,
+        // and writing one per joint unconditionally looked harmless because
+        // each merely restates where the joint already is. It is not harmless:
+        // overrides are applied per joint across *every* mesh the wearer has
+        // on, so a Linden-proportioned mesh that restates the defaults is
+        // still a mesh competing to set them. Content that rendered correctly
+        // before overrides existed should go back to being the same bytes.
+        //
+        // All or nothing, because that is the viewer's own rule — it discards
+        // every override unless there is exactly one per joint, so a table
+        // cannot be pruned entry by entry.
+        if (!compacted.alternate_inverse_bind.empty() &&
+            check_rig(compacted.joints, compacted.inverse_bind).outcome != RigOutcome::Disagrees)
+            compacted.alternate_inverse_bind.clear();
         skin = std::move(compacted);
     }
 
