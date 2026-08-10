@@ -3689,6 +3689,37 @@ int main(int argc, char* argv[]) {
         // listening for the receipt.
         if (publish_queue) {
             for (auto& done : publish_queue->take_completed()) {
+                // An import has no socket waiting on it: the creator was
+                // answered when their file was stored, and this is the parts
+                // arriving afterwards. It reports here and shows up as items in
+                // inventory.
+                if (done.kind == homeworldz::mesh::PublishQueue::Kind::Import) {
+                    if (done.ok) {
+                        std::string parts;
+                        for (const auto& part : done.parts) {
+                            if (!parts.empty()) parts += ',';
+                            parts += homeworldz::api::json_string(part.item_id);
+                        }
+                        std::cout << "{\"level\":\"info\",\"message\":\"source imported\","
+                                     "\"sourceAssetId\":"
+                                  << homeworldz::api::json_string(done.source_asset_id)
+                                  << ",\"assets\":" << done.parts.size()
+                                  << ",\"textures\":" << done.textures
+                                  << ",\"opacityComposited\":" << done.opacity_composited
+                                  << ",\"influencesPruned\":" << done.influences_pruned
+                                  << ",\"items\":[" << parts << "]}" << std::endl;
+                    } else {
+                        // ADR 0035: import failure is a property of the asset,
+                        // not a lost upload. The source is stored and stays
+                        // stored; this says why nothing came of it.
+                        std::cout << "{\"level\":\"error\",\"message\":\"source import failed\","
+                                     "\"sourceAssetId\":"
+                                  << homeworldz::api::json_string(done.source_asset_id)
+                                  << ",\"error\":" << homeworldz::api::json_string(done.error)
+                                  << "}" << std::endl;
+                    }
+                    continue;
+                }
                 const auto waiting = std::find_if(
                     pending_upload_responses.begin(), pending_upload_responses.end(),
                     [&](const PendingUploadResponse& candidate) {
@@ -3701,7 +3732,8 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
                 const auto response =
-                    done.ok && done.source_only
+                    done.ok &&
+                            done.kind == homeworldz::mesh::PublishQueue::Kind::StoreSource
                         // 202, not 201: the creator's file is stored and safe
                         // and its import is queued, but no object or inventory
                         // item exists yet. Saying 201 here would name an item
@@ -3731,7 +3763,7 @@ int main(int argc, char* argv[]) {
                 static_cast<void>(send_all(waiting->client, response.content));
                 finish_http_response(waiting->client);
                 close_socket(waiting->client);
-                if (done.ok && done.source_only)
+                if (done.ok && done.kind == homeworldz::mesh::PublishQueue::Kind::StoreSource)
                     std::cout << "{\"level\":\"info\",\"message\":\"source uploaded\",\"assetId\":"
                               << homeworldz::api::json_string(done.published.asset_id)
                               << ",\"creator\":" << homeworldz::api::json_string(waiting->creator)

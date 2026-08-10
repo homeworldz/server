@@ -99,5 +99,36 @@ int main() {
         if (queue.outstanding() != 0) return 10;
     }
 
+    // A source submission reports as a source, not as a publish. The loop picks
+    // its status code off this - 202 for a stored source against 201 for a
+    // published mesh - so a kind that came back wrong would answer the creator
+    // with a receipt for an inventory item that does not exist.
+    //
+    // What this cannot reach is the follow-on: a *successful* store raises the
+    // import job itself, and no store can succeed without a grid and a vault.
+    // That chain is covered by the integration path, not here, and saying so
+    // beats a test that looks like it covers it.
+    {
+        PublishQueue queue(failing_storage, failing_grid, "http://region.invalid");
+        const auto id = queue.submit_source(some_bytes(128), "Body", "creator");
+        const auto results = drain(queue, 1);
+        if (results.size() != 1) return 11;
+        if (results.front().id != id) return 12;
+        if (results.front().kind != PublishQueue::Kind::StoreSource) return 13;
+        if (results.front().ok) return 14;
+        if (results.front().error.empty()) return 15;
+    }
+
+    // A plain publish must still report as one, so the two are actually
+    // distinguished rather than both defaulting to whatever the enum's first
+    // value happens to be.
+    {
+        PublishQueue queue(failing_storage, failing_grid, "http://region.invalid");
+        queue.submit(some_bytes(128), "Mesh", "creator");
+        const auto results = drain(queue, 1);
+        if (results.size() != 1) return 16;
+        if (results.front().kind != PublishQueue::Kind::Publish) return 17;
+    }
+
     return 0;
 }

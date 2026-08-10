@@ -96,18 +96,36 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
 // it is right on its own merits, but it is no longer propping up a deadlock.
 class PublishQueue {
 public:
+    enum class Kind {
+        // A GLB, published straight through: one asset, one object, one item.
+        Publish,
+        // A source file stored as the canonical blob (ADR 0035). Answered 202
+        // rather than 201, because 201 names an inventory item and there is not
+        // one yet — the file is safe and being worked on, which is a different
+        // promise. The import follows on its own.
+        StoreSource,
+        // The import of a stored source: one asset per mesh. Nobody is waiting
+        // on a socket for this — it reports to the log, and the creator sees it
+        // as items appearing in inventory.
+        Import,
+    };
+
     struct Result {
         std::uint64_t id{};
+        Kind kind{Kind::Publish};
         bool ok{};
         // The publisher's own reason, for showing the creator verbatim.
         std::string error;
+        // Publish and StoreSource: the one asset each produced.
         PublishedMesh published;
-        // True for a source-format upload (ADR 0035): the creator's file has
-        // been stored and its import queued, and no object or inventory item
-        // exists yet. The two answer with different status codes because they
-        // are different promises — 201 is "here is your item", 202 is "your
-        // file is safe and being worked on".
-        bool source_only{};
+        // Import: the source it came from, and one entry per mesh published.
+        std::string source_asset_id;
+        std::vector<PublishedMesh> parts;
+        // Import: what the importer reported about the file, for the log line
+        // that is the only place this surfaces.
+        std::size_t textures{};
+        std::size_t opacity_composited{};
+        std::size_t influences_pruned{};
     };
 
     // `open_storage` and `open_grid` are both called on the worker thread, once,
@@ -129,13 +147,22 @@ public:
     // import. Grid I/O throughout, which is why it belongs here and not on the
     // loop.
     //
-    // It stops there deliberately. What turns an imported file into objects a
-    // creator owns is one asset per mesh, and where that runs is still open —
-    // the parts are produced either by this worker or by meshsmith, and the two
-    // differ in whether a glTF splitter has to exist. Storing the upload is the
-    // half that is identical under both, and it is the half that must not be
-    // lost: ADR 0035 makes import failure a property of the asset rather than a
-    // failed upload, which is only true if the upload was kept.
+    // The store is reported as soon as it is done, and the import follows as a
+    // second job this queue raises for itself. That split is what lets the
+    // creator hear "your file is stored" in seconds while the import takes as
+    // long as it takes: a Character Creator body is six meshes, and publishing
+    // six is six times 7 + 3T grid round trips.
+    //
+    // The import runs *here*, on this worker, rather than in meshsmith. ADR
+    // 0035 puts conversion in the worker because "import is unbounded CPU on
+    // attacker-supplied input and must not sit on any serving path" — this
+    // thread is not a serving path, so the reason is satisfied even though the
+    // letter names meshsmith. The alternative was meshsmith emitting one
+    // combined glTF and the region splitting it back into meshes, since a
+    // rendition is one blob per (asset, kind) and cannot be N; that costs a
+    // glTF-to-glTF splitter re-deriving what gltf_from_fbx already does, and a
+    // second parse of the same geometry, for no result the creator can tell
+    // apart.
     std::uint64_t submit_source(std::vector<std::byte> source, std::string name,
                                 std::string creator_user_id);
 

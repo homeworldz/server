@@ -1,5 +1,6 @@
 #include "homeworldz/mesh_publish.h"
 
+#include "homeworldz/fbx_import.h"
 #include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/mesh_convert.h"
 #include "homeworldz/mesh_model_upload.h"
@@ -193,7 +194,9 @@ struct PublishQueue::State {
         std::vector<std::byte> glb;
         std::string name;
         std::string creator_user_id;
-        bool source_only{};
+        Kind kind{Kind::Publish};
+        // Import only: the stored source this came from.
+        std::string source_asset_id;
     };
 
     mutable std::mutex mutex;
@@ -239,19 +242,57 @@ struct PublishQueue::State {
 
             Result result;
             result.id = job.id;
-            result.source_only = job.source_only;
+            result.kind = job.kind;
+            // Set when a stored source needs its import raising, which cannot
+            // be done while the result lock is held below.
+            std::optional<Job> follow_on;
             if (!storage || !grid) {
                 result.error = open_error;
             } else {
                 try {
-                    if (job.source_only)
-                        result.published =
-                            store_source(job.glb, job.creator_user_id, *storage, *grid,
-                                         region_public_endpoint);
-                    else
+                    switch (job.kind) {
+                    case Kind::Publish:
                         result.published =
                             publish_glb(job.glb, job.name, job.creator_user_id, *storage, *grid,
                                         region_public_endpoint);
+                        break;
+                    case Kind::StoreSource: {
+                        result.published =
+                            store_source(job.glb, job.creator_user_id, *storage, *grid,
+                                         region_public_endpoint);
+                        // The import, raised now that the file is safe. It
+                        // carries the bytes rather than re-reading them: they
+                        // are already here, and a re-read would be a second
+                        // chance for the two to differ.
+                        Job next;
+                        next.glb = std::move(job.glb);
+                        next.name = job.name;
+                        next.creator_user_id = job.creator_user_id;
+                        next.kind = Kind::Import;
+                        next.source_asset_id = result.published.asset_id;
+                        follow_on = std::move(next);
+                        break;
+                    }
+                    case Kind::Import: {
+                        result.source_asset_id = job.source_asset_id;
+                        const auto imported = gltf_from_fbx(job.glb);
+                        if (!imported.ok) throw std::runtime_error(imported.error);
+                        result.textures = imported.textures_embedded;
+                        result.opacity_composited = imported.opacity_composited;
+                        result.influences_pruned = imported.influences_pruned;
+                        for (const auto& mesh : imported.meshes) {
+                            // The mesh's own name, which is the author's naming
+                            // and the one they will recognise in inventory.
+                            // A part that fails takes the whole import with it
+                            // rather than leaving a creator half a body with no
+                            // way to tell which half.
+                            result.parts.push_back(publish_glb(mesh.glb, mesh.name,
+                                                               job.creator_user_id, *storage,
+                                                               *grid, region_public_endpoint));
+                        }
+                        break;
+                    }
+                    }
                     result.ok = true;
                 } catch (const std::exception& error) {
                     result.error = error.what();
@@ -265,6 +306,11 @@ struct PublishQueue::State {
                 std::lock_guard lock(mutex);
                 completed.push_back(std::move(result));
                 --in_flight;
+                if (follow_on) {
+                    follow_on->id = next_id++;
+                    queue.push_back(std::move(*follow_on));
+                    ++in_flight;
+                }
             }
         }
     }
@@ -296,7 +342,7 @@ std::uint64_t PublishQueue::submit(std::vector<std::byte> glb, std::string name,
         std::lock_guard lock(state_->mutex);
         id = state_->next_id++;
         state_->queue.push_back(
-            {id, std::move(glb), std::move(name), std::move(creator_user_id), false});
+            {id, std::move(glb), std::move(name), std::move(creator_user_id), Kind::Publish, {}});
         ++state_->in_flight;
     }
     state_->wake.notify_one();
@@ -309,8 +355,8 @@ std::uint64_t PublishQueue::submit_source(std::vector<std::byte> source, std::st
     {
         std::lock_guard lock(state_->mutex);
         id = state_->next_id++;
-        state_->queue.push_back(
-            {id, std::move(source), std::move(name), std::move(creator_user_id), true});
+        state_->queue.push_back({id, std::move(source), std::move(name),
+                                 std::move(creator_user_id), Kind::StoreSource, {}});
         ++state_->in_flight;
     }
     state_->wake.notify_one();
