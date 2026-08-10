@@ -38,6 +38,11 @@ namespace homeworldz::mesh {
 struct JointCorrespondence {
     std::string_view source;
     std::string_view target;
+    // Whether this source may supply the target's position when several fold
+    // onto it. A skeleton root corresponds to the pelvis for weighting — a
+    // vertex bound to it should follow the avatar — but it rests on the ground,
+    // and letting it answer "where is the pelvis" puts the pelvis at the feet.
+    bool supplies_position{true};
 };
 
 // Character Creator (CC3/CC4/CC5) to Bento.
@@ -65,6 +70,12 @@ inline constexpr JointCorrespondence character_creator_to_bento[] = {
     // Spine and head
     // Some rigs carry a root `Hip` above `Pelvis`; both are the same joint to
     // Bento, and merging them is right rather than a compromise.
+    // The skeleton root, above `Hip`. Clothing picks up stray weights on it —
+    // a belt and a pair of boots in one export bound it — and refusing the
+    // whole mesh over a bone that means "follow the avatar" is the wrong
+    // answer. It does not supply the pelvis position: it sits at the
+    // character's ground origin, half a metre below the joint.
+    {"CC_Base_BoneRoot", "mPelvis", false},
     {"CC_Base_Hip", "mPelvis"},
     {"CC_Base_Pelvis", "mPelvis"},
     {"CC_Base_Waist", "mTorso"},
@@ -179,6 +190,11 @@ inline constexpr JointCorrespondence character_creator_to_bento[] = {
 // Consults the correspondence table first and then the skeleton's own alias
 // resolution, so a rig that already speaks Bento passes through unchanged.
 std::string_view retarget_joint(std::string_view source);
+
+// Whether `source` may answer for its target's position. True for anything not
+// listed as an exception, including every name the skeleton's own aliases
+// resolve, so this only ever subtracts from what the table already maps.
+bool retarget_supplies_position(std::string_view source);
 
 struct RetargetFinding {
     // Source joints that found a target, and those that did not.

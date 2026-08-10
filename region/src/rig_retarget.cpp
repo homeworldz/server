@@ -18,6 +18,16 @@ std::string_view retarget_joint(std::string_view source) {
     return {};
 }
 
+bool retarget_supplies_position(std::string_view source) {
+    // A name the skeleton resolves itself is a Bento joint under another
+    // spelling, and speaks for its own position. Only the correspondence table
+    // carries exceptions.
+    if (!canonical_joint(source).empty()) return true;
+    for (const auto& entry : character_creator_to_bento)
+        if (entry.source == source) return entry.supplies_position;
+    return true;
+}
+
 RetargetFinding describe_retarget(const std::vector<std::string>& sources) {
     RetargetFinding finding;
     std::set<std::string_view> targets;

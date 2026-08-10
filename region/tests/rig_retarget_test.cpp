@@ -85,5 +85,29 @@ int main() {
         }
     }
 
+    // The skeleton root weights to the pelvis but must never say where the
+    // pelvis is. It rests at the character's ground origin, so letting it
+    // answer puts the pelvis at the feet and stretches everything bound above
+    // it — and a belt and a pair of boots in one export both bind it, so this
+    // is reached by ordinary content rather than by a contrived rig.
+    {
+        if (retarget_joint("CC_Base_BoneRoot") != "mPelvis") return 25;
+        if (retarget_supplies_position("CC_Base_BoneRoot")) return 26;
+        // The bones that do carry the pelvis still answer for it, or the rule
+        // above would leave the joint with no position at all.
+        if (!retarget_supplies_position("CC_Base_Pelvis")) return 27;
+        if (!retarget_supplies_position("CC_Base_Hip")) return 28;
+        // Anything unlisted, and anything the skeleton resolves itself, speaks
+        // for its own position: this only ever subtracts from the table.
+        if (!retarget_supplies_position("mPelvis")) return 29;
+        if (!retarget_supplies_position("CC_Base_L_CalfTwist01")) return 30;
+        // Exactly one exception today. A second added without thought would
+        // silently drop a joint's position on every body that binds it.
+        int barred = 0;
+        for (const auto& entry : character_creator_to_bento)
+            if (!entry.supplies_position) ++barred;
+        if (barred != 1) return 31;
+    }
+
     return 0;
 }

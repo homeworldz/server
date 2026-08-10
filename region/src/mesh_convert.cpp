@@ -338,6 +338,7 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             // foreign-skeleton correspondence table. A Character Creator body
             // reaches here naming CC_Base_* and leaves naming Bento joints.
             auto canonical = mesh::retarget_joint(name);
+            bool supplies_position = mesh::retarget_supplies_position(name);
             if (canonical.empty()) {
                 // Fold into the nearest ancestor that does correspond
                 // (AUTO-RIGGING.md: "their weight merges into the nearest
@@ -352,6 +353,10 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                     if (up->name == nullptr) continue;
                     if (const auto folded = mesh::retarget_joint(up->name); !folded.empty()) {
                         canonical = folded;
+                        // The ancestor's answer, not this bone's: a bone folded
+                        // into the root inherits the root's inability to say
+                        // where the joint is.
+                        supplies_position = mesh::retarget_supplies_position(up->name);
                         break;
                     }
                 }
@@ -422,7 +427,12 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             for (const cgltf_node* up = node != nullptr ? node->parent : nullptr; up != nullptr;
                  up = up->parent)
                 ++depth;
-            source_depth.push_back(depth);
+            // A source barred from supplying a position is sorted behind every
+            // one that may, so the parent-most rule below still picks among the
+            // sources that can answer and only falls back to this when nothing
+            // else bound the joint at all.
+            source_depth.push_back(supplies_position ? depth
+                                                     : std::numeric_limits<int>::max());
         }
         joint_names = built.joints;
         skin = std::move(built);
