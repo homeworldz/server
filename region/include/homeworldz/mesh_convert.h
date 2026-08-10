@@ -119,7 +119,14 @@ TextureExtraction extract_textures(std::span<const std::byte> glb);
 // every joint rot="0 0 0", so an exporter's bone orientations describe a
 // skeleton the viewer does not have; carried through, they turned the reference
 // body's arm chain a quarter turn while every joint still measured correctly.
-inline constexpr const char* generator = "meshsmith/0.11";
+// 0.12 retargets foreign rigs onto Bento and writes joint position overrides
+// (AUTO-RIGGING.md Case 1). Two reasons every earlier rendition is superseded:
+// a skin that named CC_Base_* was refused outright and produced nothing, and a
+// skin that did map now carries an alt_inverse_bind table it did not before, so
+// a body keeps its own proportions rather than taking Linden's. Bumping this is
+// what re-queues them — nothing in the grid sweeps on its own, and the worker's
+// --regenerate startup pass is the only caller of the endpoint that does.
+inline constexpr const char* generator = "meshsmith/0.12";
 
 } // namespace homeworldz::mesh
 
