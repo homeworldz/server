@@ -139,7 +139,13 @@ TextureExtraction extract_textures(std::span<const std::byte> glb);
 // every joint was placed at its own height *above its parent* and inherited the
 // whole chain's error: a worn body's limbs came out fifteen metres long. Every
 // rendition carrying an override table is superseded.
-inline constexpr const char* generator = "meshsmith/0.14";
+// 0.15 measures each override against the joint's parent *in the skeleton*
+// rather than in the source rig. 0.14 used the source's parent as a proxy, which
+// holds only where the hierarchies correspond: Character Creator runs Pelvis ->
+// Waist -> Spine01 -> Spine02 where Bento runs mPelvis -> mSpine1 -> mSpine2 ->
+// mTorso, so a body came apart from the chest up while its legs stayed correct.
+// Every rendition carrying an override table is superseded.
+inline constexpr const char* generator = "meshsmith/0.15";
 
 } // namespace homeworldz::mesh
 

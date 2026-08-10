@@ -34,4 +34,10 @@ bool joint_rest(std::string_view canonical, float& x, float& y, float& z) {
     return false;
 }
 
+std::string_view joint_parent(std::string_view canonical) {
+    for (const auto& entry : joint_parents)
+        if (entry.joint == canonical) return entry.parent;
+    return {};
+}
+
 } // namespace homeworldz::mesh

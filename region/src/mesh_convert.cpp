@@ -462,58 +462,57 @@ Conversion convert_glb(std::span<const std::byte> glb) {
         }
         // Each override made relative to its parent, per the note above.
         //
-        // The parent is found in the *source* rig, since that is the hierarchy
-        // the positions were measured in: walk up from the joint's node to the
-        // nearest ancestor that is also bound here and that retargets to a
-        // different Bento joint. The second condition is what makes folding
-        // safe — a limb's twist bones retarget to the limb itself, and
-        // measuring a joint against something that became the same joint would
-        // give an offset of nearly zero.
-        //
-        // A joint with no such ancestor is the root of what this mesh binds,
-        // and keeps its world position: there is nothing above it here to be
-        // relative to, and the viewer measures the topmost joint from the
-        // avatar's own origin.
+        // mPelvis keeps its world position: it is the root of the skeleton, and
+        // the viewer measures it from the avatar's own origin.
         {
-            std::map<const cgltf_node*, std::size_t> index_of_node;
-            for (std::size_t at = 0; at < joint_nodes.size(); ++at)
-                if (joint_nodes[at] != nullptr) index_of_node.emplace(joint_nodes[at], at);
+            // Where each joint's target sits in this rig, for measuring against.
+            std::map<std::string_view, std::array<float, 3>> world_of_target;
+            for (std::size_t at = 0; at < built.joints.size(); ++at)
+                world_of_target.emplace(built.joints[at], joint_world_rest[at]);
             for (std::size_t at = 0; at < built.alternate_inverse_bind.size(); ++at) {
-                const cgltf_node* up = joint_nodes[at] != nullptr ? joint_nodes[at]->parent
-                                                                 : nullptr;
-                for (; up != nullptr; up = up->parent) {
-                    if (up->name == nullptr) continue;
-                    const auto parent_name = mesh::retarget_joint(up->name);
-                    // Not a joint, or one that folds into this same joint: keep
-                    // climbing. Measuring against something that became the
-                    // same joint would give an offset of nearly zero.
-                    if (parent_name.empty() || parent_name == built.joints[at]) continue;
-                    // Measured against where the *source rig* puts the parent,
-                    // whether or not this mesh binds it. A pair of boots binds
-                    // the knee and not the hip, but it is worn with the body
-                    // that does, and the body will have moved that hip to the
-                    // character's own. An offset measured from Linden's hip
-                    // instead would be right only for boots worn bare.
-                    //
-                    // Read from the node hierarchy rather than the bound
-                    // joints, which is why fbx_import carries a joint's
-                    // ancestors even when the skin does not weight them.
-                    std::array<float, 3> parent_rest{};
-                    if (const auto found = index_of_node.find(up);
-                        found != index_of_node.end() &&
-                        built.joints[found->second] == parent_name) {
-                        parent_rest = joint_world_rest[found->second];
-                    } else {
-                        float world[16];
-                        cgltf_node_transform_world(up, world);
-                        parent_rest = {world[12], world[13], world[14]};
-                        to_region_axes(parent_rest);
+                // The parent is the *skeleton's*, not the source rig's. The
+                // viewer accumulates world position down its own hierarchy, and
+                // the two do not correspond: Character Creator runs Pelvis ->
+                // Waist -> Spine01 -> Spine02 where Bento runs mPelvis ->
+                // mSpine1 -> mSpine2 -> mTorso. Measuring against the source's
+                // parent tore a body apart from the chest up — arms, hands, neck
+                // and head each inheriting the error — while the legs, whose
+                // chains do correspond, stayed correct (in-world, 2026-08-10).
+                const auto parent_name = joint_parent(built.joints[at]);
+                if (parent_name.empty()) continue;  // mPelvis: measured from the origin
+                // Where the viewer will actually put the parent, which is not
+                // always where either skeleton rests it. An unbound joint keeps
+                // the *skeleton's* offset from its own parent, so it hangs off
+                // whatever this mesh did override further up: Bento's inserted
+                // spine joints, which no imported rig has, therefore sit at
+                // Linden's offsets measured from this body's pelvis. Measuring
+                // against Linden's own position instead leaves every chain
+                // carrying the pelvis's displacement — 27 mm here, and 78 mm by
+                // the time it reaches the jaw.
+                std::array<float, 3> parent_rest{};
+                if (const auto found = world_of_target.find(parent_name);
+                    found != world_of_target.end()) {
+                    parent_rest = found->second;
+                } else {
+                    if (!joint_rest(parent_name, parent_rest[0], parent_rest[1], parent_rest[2]))
+                        continue;
+                    // Walk up to the nearest joint this mesh does place, and
+                    // carry the skeleton's own offsets back down from it.
+                    for (auto above = joint_parent(parent_name); !above.empty();
+                         above = joint_parent(above)) {
+                        const auto bound = world_of_target.find(above);
+                        if (bound == world_of_target.end()) continue;
+                        std::array<float, 3> above_rest{};
+                        if (!joint_rest(above, above_rest[0], above_rest[1], above_rest[2]))
+                            break;
+                        for (int axis = 0; axis < 3; ++axis)
+                            parent_rest[axis] += bound->second[axis] - above_rest[axis];
+                        break;
                     }
-                    for (int axis = 0; axis < 3; ++axis)
-                        built.alternate_inverse_bind[at][12 + axis] =
-                            joint_world_rest[at][axis] - parent_rest[axis];
-                    break;
                 }
+                for (int axis = 0; axis < 3; ++axis)
+                    built.alternate_inverse_bind[at][12 + axis] =
+                        joint_world_rest[at][axis] - parent_rest[axis];
             }
         }
         joint_names = built.joints;

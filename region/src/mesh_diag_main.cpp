@@ -6,6 +6,7 @@
 // against a real region to find out. This answers the same questions offline
 // through the identical code paths — not a reimplementation of the rules,
 // which would be a second copy able to disagree with the first.
+#include "homeworldz/avatar_joints.h"
 #include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/mesh_convert.h"
 #include "homeworldz/rig_check.h"
@@ -150,6 +151,71 @@ int main(int argc, char** argv) {
             }
             std::cout << overrides << ", one per joint; largest " << worst * 1000.0f << " mm ("
                       << worst_joint << ")\n";
+            // What the viewer will actually build from them. An override is a
+            // local offset, so world position is the sum down the skeleton's
+            // hierarchy, taking this mesh's value where it has one and the
+            // skeleton's own where it does not. That total has to match the
+            // joint's world position, which is what the inverse bind encodes
+            // and what rig_check measures.
+            //
+            // This is the check that was missing. Both convention errors — world
+            // positions written as local, then local measured against the source
+            // rig's parent rather than the skeleton's — were invisible to
+            // everything else here, because the inverse bind is the override's
+            // exact inverse and so the bind pose is identity either way. Each
+            // was found by wearing one.
+            std::size_t disagreed = 0;
+            float worst_gap = 0.0f;
+            std::string worst_gap_joint;
+            for (std::size_t at = 0; at < overrides; ++at) {
+                std::array<float, 3> built{};
+                bool known = true;
+                for (auto name = std::string_view(parsed->skin->joints[at]); !name.empty();
+                     name = homeworldz::mesh::joint_parent(name)) {
+                    const auto found = std::find(parsed->skin->joints.begin(),
+                                                 parsed->skin->joints.end(), name);
+                    if (found != parsed->skin->joints.end()) {
+                        const auto& m = parsed->skin->alternate_inverse_bind[
+                            static_cast<std::size_t>(found - parsed->skin->joints.begin())];
+                        for (int axis = 0; axis < 3; ++axis) built[axis] += m[12 + axis];
+                        continue;
+                    }
+                    // Not overridden by this mesh, so it keeps the skeleton's
+                    // own offset from *its* parent.
+                    std::array<float, 3> here{}, up{};
+                    const auto parent = homeworldz::mesh::joint_parent(name);
+                    if (!homeworldz::mesh::joint_rest(name, here[0], here[1], here[2])) {
+                        known = false;
+                        break;
+                    }
+                    if (!parent.empty())
+                        homeworldz::mesh::joint_rest(parent, up[0], up[1], up[2]);
+                    for (int axis = 0; axis < 3; ++axis) built[axis] += here[axis] - up[axis];
+                }
+                if (!known) continue;
+                const auto& inverse = parsed->skin->inverse_bind[at];
+                float gap = 0.0f;
+                for (int axis = 0; axis < 3; ++axis) {
+                    const auto difference = built[axis] + inverse[12 + axis];
+                    gap += difference * difference;
+                }
+                gap = std::sqrt(gap);
+                if (gap > 0.001f) {
+                    ++disagreed;
+                    if (gap > worst_gap) {
+                        worst_gap = gap;
+                        worst_gap_joint = parsed->skin->joints[at];
+                    }
+                }
+            }
+            std::cout << "  rebuilt:    "
+                      << (disagreed == 0
+                              ? "every joint lands where the mesh says it should\n"
+                              : std::to_string(disagreed) + " of " +
+                                    std::to_string(overrides) +
+                                    " joints land elsewhere, worst " + worst_gap_joint + " at " +
+                                    std::to_string(worst_gap * 1000.0f) + " mm\n");
+            if (disagreed != 0) refused = 1;
         }
         std::cout << "  skin: " << parsed->skin->joints.size() << " joint(s):";
         for (std::size_t at = 0; at < parsed->skin->joints.size(); ++at) {
