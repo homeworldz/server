@@ -160,6 +160,11 @@ public:
     void restore_motion(scene::Vector3 velocity, std::array<float, 3> rotation, bool flying);
     void teleport(scene::Vector3 position, bool flying);
     void synchronize_physics(scene::Vector3 position, scene::Vector3 velocity, bool grounded);
+    // Rebuilding the physics capsule under a standing avatar loses its ground
+    // contact for a step, and regaining it looks exactly like touching down
+    // after a fall. Call this when the capsule is replaced rather than when the
+    // avatar moved, so the recovered contact is not animated as a landing.
+    void ignore_next_landing() { ignore_next_landing_ = true; }
     void step(double seconds);
     const AvatarState& state() const { return state_; }
     std::array<float, 3> look_direction() const;
@@ -175,6 +180,7 @@ private:
     std::uint32_t controls_{};
     std::array<float, 3> body_rotation_{};
     double landing_animation_remaining_{};
+    bool ignore_next_landing_{};
     bool physics_grounding_{};
     bool border_crossing_enabled_{};
 };

@@ -413,5 +413,37 @@ int main() {
         if (motion_fields_json(MovementAnimation::walk, stale) !=
             "\"motion\":\"walk\",\"clips\":[\"" + gesture + "\"]") return 39;
     }
+
+    // Replacing a standing avatar's physics capsule loses its ground contact
+    // for one step, and regaining it is indistinguishable here from touching
+    // down after a fall. The region rebuilds the capsule whenever an avatar's
+    // shape changes, so without this a re-bake plays a landing animation on an
+    // avatar that never left the ground — which is what the operator saw.
+    {
+        using homeworldz::viewer::MovementAnimation;
+        homeworldz::viewer::AvatarController standing{{128.0, 128.0, 25.0}, 25.0, 1.78};
+        standing.synchronize_physics({128.0, 128.0, 25.0}, {}, true);
+        if (standing.movement_animation() == MovementAnimation::land) return 40;
+
+        // The contact lost and recovered, with nothing said about why: a
+        // landing, because from here that is exactly what it looks like.
+        standing.synchronize_physics({128.0, 128.0, 25.0}, {}, false);
+        standing.synchronize_physics({128.0, 128.0, 25.0}, {}, true);
+        if (standing.movement_animation() != MovementAnimation::land) return 41;
+
+        // The same sequence, declared as a capsule rebuild, is not.
+        homeworldz::viewer::AvatarController reshaped{{128.0, 128.0, 25.0}, 25.0, 1.78};
+        reshaped.synchronize_physics({128.0, 128.0, 25.0}, {}, true);
+        reshaped.ignore_next_landing();
+        reshaped.synchronize_physics({128.0, 128.0, 25.0}, {}, false);
+        reshaped.synchronize_physics({128.0, 128.0, 25.0}, {}, true);
+        if (reshaped.movement_animation() == MovementAnimation::land) return 42;
+
+        // And it is spent once. A real landing after the rebuild still animates,
+        // or an avatar that steps off something shortly afterwards falls silently.
+        reshaped.synchronize_physics({128.0, 128.0, 25.0}, {}, false);
+        reshaped.synchronize_physics({128.0, 128.0, 25.0}, {}, true);
+        if (reshaped.movement_animation() != MovementAnimation::land) return 43;
+    }
     return 0;
 }

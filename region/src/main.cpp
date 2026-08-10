@@ -2324,6 +2324,43 @@ int main(int argc, char* argv[]) {
         definition.walkable_slope_degrees = walkable_slope_degrees;
         return definition;
     };
+    // Re-shape a live avatar's physics capsule, and only when its shape really
+    // changed. An appearance arrives on every re-bake, alpha toggle and outfit
+    // change, and almost none of them move a millimetre of the body: ten
+    // consecutive updates were measured at an identical height, three of them
+    // inside one second, each rebuilding the capsule for nothing.
+    //
+    // Rebuilding is not free. A new CharacterVirtual has no resolved ground
+    // contact until the next step, so it reports airborne once and then lands —
+    // and regaining contact is indistinguishable, in the controller, from
+    // touching down after a fall, which is the landing animation the operator
+    // saw on every re-bake. It also arrives at rest, and create_character's
+    // upward search for a clear spot — written for materializing an avatar at
+    // login, not for swapping a capsule under a standing one — can lift it.
+    //
+    // So: skip the rebuild when nothing changed, and when it must happen, carry
+    // the velocity across and tell the controller the recovered contact is not
+    // a landing.
+    const auto reshape_avatar_capsule = [&](auto& live, double height, double hip_offset) {
+        if (live.controller.state().height == height &&
+            live.controller.state().hip_offset == hip_offset)
+            return false;
+        live.controller.set_avatar_geometry(height, hip_offset);
+        if (!physics_world) return true;
+        const auto velocity = live.controller.state().velocity;
+        const auto was_grounded = live.controller.state().grounded;
+        if (live.physics_character != 0) physics_world->remove_character(live.physics_character);
+        live.physics_character = physics_world->create_character(
+            character_definition(live.entity_id, live.controller.state().position, height));
+        physics_world->set_character_velocity(live.physics_character, velocity);
+        physics_world->set_character_flying(live.physics_character,
+                                            live.controller.state().flying);
+        // Only an avatar that was standing can have its regained contact
+        // mistaken for a landing; one that was already falling is owed the real
+        // one when it arrives.
+        if (was_grounded) live.controller.ignore_next_landing();
+        return true;
+    };
     const auto collision_ground_height = [&](const homeworldz::scene::Vector3& position) {
         if (physics_world && physics_terrain != 0) {
             constexpr double ray_origin_height = 4096.0;
@@ -8213,25 +8250,19 @@ int main(int argc, char* argv[]) {
                             server_seeded_appearances.erase(endpoint);
                             if (const auto geometry = homeworldz::viewer::avatar_geometry(*appearance)) {
                                 avatar_geometries[endpoint] = *geometry;
-                                if (const auto live = avatars.find(endpoint); live != avatars.end()) {
-                                    live->second.controller.set_avatar_geometry(
-                                        geometry->height, geometry->hip_offset);
-                                    if (physics_world) {
-                                        if (live->second.physics_character != 0)
-                                            physics_world->remove_character(live->second.physics_character);
-                                        live->second.physics_character = physics_world->create_character(
-                                            character_definition(live->second.entity_id,
-                                                live->second.controller.state().position,
-                                                geometry->height));
-                                        physics_world->set_character_flying(
-                                            live->second.physics_character,
-                                            live->second.controller.state().flying);
-                                    }
-                                }
-                                std::cout << "{\"level\":\"info\",\"message\":\"avatar geometry updated\","
-                                             "\"height\":" << geometry->height << ",\"hipOffset\":"
-                                          << geometry->hip_offset << ",\"visualParams\":"
-                                          << appearance->visual_params.size() << "}" << std::endl;
+                                bool reshaped = false;
+                                if (const auto live = avatars.find(endpoint); live != avatars.end())
+                                    reshaped = reshape_avatar_capsule(
+                                        live->second, geometry->height, geometry->hip_offset);
+                                // Logged only when the body actually changed. An
+                                // appearance that reshapes nothing said "geometry
+                                // updated" on every re-bake, which is how ten
+                                // identical heights read as ten changes.
+                                if (reshaped)
+                                    std::cout << "{\"level\":\"info\",\"message\":\"avatar geometry updated\","
+                                                 "\"height\":" << geometry->height << ",\"hipOffset\":"
+                                              << geometry->hip_offset << ",\"visualParams\":"
+                                              << appearance->visual_params.size() << "}" << std::endl;
                             }
                             // WearableData.TextureIndex is a texture-entry face,
                             // not an EBakedTextureIndex: the viewer converts with
@@ -8928,23 +8959,18 @@ int main(int argc, char* argv[]) {
                                             homeworldz::viewer::avatar_geometry(seeded)) {
                                         avatar_geometries[endpoint] = *geometry;
                                         if (const auto live = avatars.find(endpoint);
-                                            live != avatars.end()) {
-                                            live->second.controller.set_avatar_geometry(
-                                                geometry->height, geometry->hip_offset);
-                                            if (physics_world) {
-                                                if (live->second.physics_character != 0)
-                                                    physics_world->remove_character(
-                                                        live->second.physics_character);
-                                                live->second.physics_character =
-                                                    physics_world->create_character(
-                                                        {live->second.entity_id,
-                                                         live->second.controller.state().position, 0.3,
-                                                         geometry->height, 0.4});
-                                                physics_world->set_character_flying(
-                                                    live->second.physics_character,
-                                                    live->second.controller.state().flying);
-                                            }
-                                        }
+                                            live != avatars.end())
+                                            // Through the shared reshape, which this
+                                            // site used to bypass with a hand-written
+                                            // definition: radius 0.3 and slope 0.4
+                                            // rather than avatar_capsule_radius and
+                                            // the region's walkable slope, so a seeded
+                                            // avatar stood on a different capsule from
+                                            // every other one, for no reason anybody
+                                            // wrote down.
+                                            static_cast<void>(reshape_avatar_capsule(
+                                                live->second, geometry->height,
+                                                geometry->hip_offset));
                                     }
                                     const auto seeded_appearance =
                                         homeworldz::viewer::encode_avatar_appearance({

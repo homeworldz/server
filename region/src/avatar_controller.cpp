@@ -223,7 +223,13 @@ void AvatarController::synchronize_physics(
         state_.velocity = velocity;
     state_.grounded = grounded;
     physics_grounding_ = true;
-    if (!was_grounded && grounded) landing_animation_remaining_ = 0.4;
+    if (!was_grounded && grounded) {
+        // A capsule that was just replaced reports no contact until the next
+        // step resolves one, and that recovery is not a landing however much it
+        // looks like one from here.
+        if (ignore_next_landing_) ignore_next_landing_ = false;
+        else landing_animation_remaining_ = 0.4;
+    }
 }
 
 scene::Vector3 AvatarController::viewer_position() const {
