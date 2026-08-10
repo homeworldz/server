@@ -320,5 +320,8 @@ themselves, which is why it took asking what would happen when someone logged in
 to watch, rather than a test, to find it.
 
 Also settled: a hair "bald cap" cannot be taken off, and no request for it
-reaches the grid. Hair is a body part (asset type 13, wearable type 2) and body
-parts are replaced, never removed.
+reaches the grid — every AIS call in that window answered 200 and none concerned
+it. Hair is a body part (asset type 13, wearable type 2) and body parts are
+replaced, never removed. Firestorm agrees from its own side: it offers no "Take
+Off" for the item at all, only Delete. Going bald means swapping the hair body
+part, or masking the hair region (texture 25) with an alpha.
