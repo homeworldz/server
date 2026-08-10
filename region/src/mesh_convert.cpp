@@ -332,7 +332,25 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             // that already speaks Bento is untouched, and falls back to the
             // foreign-skeleton correspondence table. A Character Creator body
             // reaches here naming CC_Base_* and leaves naming Bento joints.
-            const auto canonical = mesh::retarget_joint(name);
+            auto canonical = mesh::retarget_joint(name);
+            if (canonical.empty()) {
+                // Fold into the nearest ancestor that does correspond
+                // (AUTO-RIGGING.md: "their weight merges into the nearest
+                // mapped ancestor"). This is what carries the joints a source
+                // invents rather than shares — Character Creator rigs an
+                // accessory to a bone named after itself, so an earring binds
+                // `Earring_Flower_0` and only its ancestry says that is the
+                // head. Naming every such bone in a table is impossible; the
+                // set is whatever a creator adds.
+                for (const cgltf_node* up = node != nullptr ? node->parent : nullptr;
+                     up != nullptr; up = up->parent) {
+                    if (up->name == nullptr) continue;
+                    if (const auto folded = mesh::retarget_joint(up->name); !folded.empty()) {
+                        canonical = folded;
+                        break;
+                    }
+                }
+            }
             if (canonical.empty())
                 return fail("a skin binds joint \"" + std::string(name) +
                             "\", which is not a joint of the " +

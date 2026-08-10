@@ -591,9 +591,9 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
         // joint's global transform down the node tree, so a flat list of world
         // transforms produces exactly the same bind result with nothing to get
         // wrong. It gives up animation, which this import does not read anyway,
-        // and it gives up nothing else: `convert_glb` reads a joint's name and
-        // its inverse bind matrix and never walks the tree.
-        std::string skin_json, joint_nodes, joint_list;
+        // and its inverse bind matrix — but the *retarget* does walk the tree,
+        // to fold a joint nothing corresponds to into the nearest one that does.
+        std::string skin_json, joint_nodes, joint_list, joint_roots;
         std::size_t joint_count = 0;
         if (skin != nullptr) {
             pad_to_four(binary);
@@ -614,25 +614,95 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 ",\"type\":\"MAT4\"}";
             const auto bind_accessor = accessor_count++;
 
+            // Emitted as a tree rather than a flat list, which is both what
+            // glTF means by a skeleton and what a retarget needs.
+            //
+            // The first version emitted every joint as a root carrying its world
+            // transform. That binds identically — glTF composes down the tree,
+            // and a one-level tree composes to the same thing — and it throws
+            // away ancestry. Ancestry is what folds a joint nothing corresponds
+            // to into the nearest one that does: Character Creator rigs an
+            // accessory to a bone named after itself, so an earring binds
+            // `Earring_Flower_0` and the only way to know that is the head is to
+            // walk up from it. Without the tree that mesh simply fails to
+            // convert, and the set of accessory names is unbounded.
+            // The nodes to emit: every joint this skin binds, then every
+            // ancestor of one, whether or not the skin binds it.
+            //
+            // The ancestors are the point. A mesh may bind exactly one joint —
+            // an earring binds `Earring_Flower_0` and nothing else — and its
+            // ancestry then lies entirely outside its own skin. Emitting only
+            // the skin's joints leaves that mesh a lone root with nothing above
+            // it, and no reader can discover that the bone hangs off the head.
+            // So the chain is carried, which is also simply the truth about the
+            // skeleton.
+            std::vector<const ufbx_node*> emitted;
+            std::map<const ufbx_node*, std::size_t> index_of_bone;
             for (std::size_t at = 0; at < skin->clusters.count; ++at) {
-                const ufbx_skin_cluster* cluster = skin->clusters.data[at];
-                const auto* bone = cluster->bone_node;
+                const auto* bone = skin->clusters.data[at]->bone_node;
+                index_of_bone.emplace(bone, emitted.size());
+                emitted.push_back(bone);  // null is tolerated; it emits as identity
+            }
+            for (std::size_t at = 0; at < skin->clusters.count; ++at)
+                for (const ufbx_node* up = emitted[at] != nullptr ? emitted[at]->parent : nullptr;
+                     up != nullptr; up = up->parent) {
+                    if (index_of_bone.count(up) != 0) break;  // and everything above it
+                    index_of_bone.emplace(up, emitted.size());
+                    emitted.push_back(up);
+                }
+
+            std::vector<std::string> children(emitted.size());
+            std::string roots;
+            for (std::size_t at = 0; at < emitted.size(); ++at) {
+                const auto* parent = emitted[at] != nullptr ? emitted[at]->parent : nullptr;
+                const auto found = parent != nullptr ? index_of_bone.find(parent)
+                                                     : index_of_bone.end();
+                // Node 0 is the mesh; these follow it.
+                const auto node_index = std::to_string(1 + at);
+                if (found == index_of_bone.end()) {
+                    if (!roots.empty()) roots += ',';
+                    roots += node_index;
+                } else {
+                    auto& list = children[found->second];
+                    if (!list.empty()) list += ',';
+                    list += node_index;
+                }
+            }
+
+            for (std::size_t at = 0; at < emitted.size(); ++at) {
+                const auto* bone = emitted[at];
+                const auto* parent = bone != nullptr ? bone->parent : nullptr;
+                const bool parented = parent != nullptr && index_of_bone.count(parent) != 0;
                 if (!joint_nodes.empty()) joint_nodes += ',';
-                if (!joint_list.empty()) joint_list += ',';
-                // Node 0 is the mesh; joints follow it.
-                joint_list += std::to_string(1 + at);
+                // Only the skin's own joints go in the joints array; the
+                // ancestors are there to be walked, not to be bound.
+                if (at < skin->clusters.count) {
+                    if (!joint_list.empty()) joint_list += ',';
+                    joint_list += std::to_string(1 + at);
+                }
+                // Local to its parent, since glTF accumulates down the tree: a
+                // world transform would be applied once per ancestor.
+                const ufbx_matrix world =
+                    bone != nullptr ? bone->node_to_world : ufbx_identity_matrix;
+                ufbx_matrix local = world;
+                if (parented) {
+                    const ufbx_matrix inverse = ufbx_matrix_invert(&parent->node_to_world);
+                    local = ufbx_matrix_mul(&inverse, &world);
+                }
                 joint_nodes += "{\"name\":" +
                     json_string(bone != nullptr ? text(bone->name) : std::string_view{}) +
                     ",\"matrix\":[";
-                const auto matrix = to_gltf_matrix(
-                    bone != nullptr ? bone->node_to_world : ufbx_identity_matrix);
+                const auto matrix = to_gltf_matrix(local);
                 for (std::size_t element = 0; element < matrix.size(); ++element) {
                     if (element != 0) joint_nodes += ',';
                     joint_nodes += number(matrix[element]);
                 }
-                joint_nodes += "]}";
+                joint_nodes += "]";
+                if (!children[at].empty()) joint_nodes += ",\"children\":[" + children[at] + "]";
+                joint_nodes += "}";
                 ++joint_count;
             }
+            joint_roots = roots;
             skin_json = ",\"skins\":[{\"inverseBindMatrices\":" + std::to_string(bind_accessor) +
                         ",\"joints\":[" + joint_list + "]}]";
         }
@@ -668,8 +738,11 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
         if (skin != nullptr) document += ",\"skin\":0";
         document += "}";
         if (!joint_nodes.empty()) document += ',' + joint_nodes;
+        // The mesh and the skeleton's roots only. Listing every joint would make
+        // each one a scene root as well as somebody's child, and glTF allows a
+        // node to appear in the hierarchy exactly once.
         document += "],\"scenes\":[{\"nodes\":[0";
-        for (std::size_t at = 0; at < joint_count; ++at) document += ',' + std::to_string(1 + at);
+        if (!joint_roots.empty()) document += ',' + joint_roots;
         document += "]}],\"scene\":0}";
 
         imported.glb = glb::wrap(std::move(document), std::move(binary));
