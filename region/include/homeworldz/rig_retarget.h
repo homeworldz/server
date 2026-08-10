@@ -63,6 +63,9 @@ struct JointCorrespondence {
 // (avatar_joints.h: findJoint walks collision volumes too), not to bones.
 inline constexpr JointCorrespondence character_creator_to_bento[] = {
     // Spine and head
+    // Some rigs carry a root `Hip` above `Pelvis`; both are the same joint to
+    // Bento, and merging them is right rather than a compromise.
+    {"CC_Base_Hip", "mPelvis"},
     {"CC_Base_Pelvis", "mPelvis"},
     {"CC_Base_Waist", "mTorso"},
     {"CC_Base_Spine01", "mTorso"},
@@ -156,6 +159,10 @@ inline constexpr JointCorrespondence character_creator_to_bento[] = {
     {"CC_Base_R_CalfTwist02", "mKneeRight"},
     {"CC_Base_L_Foot", "mAnkleLeft"},
     {"CC_Base_R_Foot", "mAnkleRight"},
+    // A simpler rig has one `ToeBase` where a full one has five toes; both
+    // arrive at the single toe joint Bento has.
+    {"CC_Base_L_ToeBase", "mToeLeft"},
+    {"CC_Base_R_ToeBase", "mToeRight"},
     {"CC_Base_L_BigToe1", "mToeLeft"},
     {"CC_Base_L_IndexToe1", "mToeLeft"},
     {"CC_Base_L_MidToe1", "mToeLeft"},
