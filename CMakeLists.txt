@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
-project(homeworldz VERSION 0.1.0 LANGUAGES CXX)
+# C is here for one vendored translation unit: third_party/ufbx/ufbx.c, the FBX
+# reader of ADR 0035. It compiles as C++ too, but it is upstream's file kept byte
+# for byte, and building it in the language it is written in is the version whose
+# behaviour upstream tests.
+project(homeworldz VERSION 0.1.0 LANGUAGES C CXX)
 
 if(NOT DEFINED HOMEWORLDZ_VERSION OR HOMEWORLDZ_VERSION STREQUAL "")
   file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" HOMEWORLDZ_VERSION LIMIT_COUNT 1)
@@ -43,5 +47,6 @@ if(TARGET openjp2)
 endif()
 
 enable_testing()
+add_subdirectory(third_party/ufbx)
 add_subdirectory(falcon)
 add_subdirectory(region)

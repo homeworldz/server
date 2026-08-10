@@ -39,13 +39,49 @@ shipped default content, and out of anything a marketplace would carry.
 
 Two things about that corpus shape the work that uses it:
 
-- **Their textures are external files**, a `textures/` tree referenced by
-  relative path, not embedded in the FBX. A single uploaded `.fbx` therefore
-  arrives with no textures at all — the exact symptom an import path is
-  supposed to remove.
+- **Their textures are embedded in the FBX**, not external — measured
+  2026-08-10 with `homeworldz-fbx-diag` (ufbx 0.23.0) across all five bodies,
+  which report 30–34 distinct texture files, every one of them carrying its
+  bytes inside the FBX and none resolving to a file on disk. A single uploaded
+  `.fbx` therefore arrives *with* its diffuse, normal and opacity maps.
+
+  This corrects the opposite claim, which stood here until it was checked. The
+  `textures/` tree beside each body is real and holds 68–80 files, but **the FBX
+  does not reference it**: searching the binary for `textures/`, `RGBAMask`,
+  `SSSMap`, `_roughness` and `_metallic` finds nothing, and the extra maps are
+  named by the Reallusion `.json` sidecar instead. So the on-disk tree is the
+  PBR set for Reallusion's own pipeline, not the FBX's missing textures, and
+  bundling it changes nothing an FBX reader would see.
+
+  A second finding rides on the first: every entry records its path as an
+  *absolute* path on the exporting machine, including a named user's home
+  directory, and ufbx reports it through `relative_filename` — whose own
+  documentation warns it "may be absolute". A reader that trusts the field name
+  tries to open a path that is neither ours nor relative to anything.
+
 - **Their joints are named `CC_Base_*`**, which `rig_check` refuses today, by
   design (see [AUTO-RIGGING.md](../../docs/AUTO-RIGGING.md)). Geometry and
   textures are one problem; wearing one as an avatar is the retargeting one.
+  Measured the same day: 85 distinct joints per body, of which **0** resolve
+  through the skeleton's alias table.
+
+- **Every body is over the ADR 0033 upload gate taken as one asset**, on four
+  counts and not narrowly: 17–18 materials against a limit of 8, 30–34 textures
+  against 16, 17–18 material parts (so 17–18 rendered faces) against 8, and 6
+  skin influences per vertex against 4. Triangles are the one comfortable
+  number — 35k–43k against 262k.
+
+  **Per mesh, all but one of those pass.** The limits are per asset, and nothing
+  requires one FBX to become one asset. The worst single mesh across all five
+  bodies is `CC_Base_Body` at 6 materials, 6 parts and 13 textures — inside 8,
+  8 and 16. Each body is 6–7 meshes that are already split along the lines the
+  gate cares about, because a Character Creator body is authored as body, eyes,
+  teeth, tongue, tearline and eye occlusion.
+
+  The one limit a split does not fix is **6 influences per vertex against 4**,
+  which is a property of the weights and has to be pruned and renormalized on
+  import. So what stands between this corpus and a test is one asset per mesh
+  plus influence pruning — not the parser, and not the gate's numbers.
 
 ## The case none of these fixtures covers yet
 

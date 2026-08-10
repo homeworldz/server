@@ -38,6 +38,10 @@ target_sources(homeworldz-region-core PRIVATE src/llsd_binary.cpp)
 target_sources(homeworldz-region-core PRIVATE src/render_material.cpp)
 target_sources(homeworldz-region-core PRIVATE src/texture_entry.cpp)
 target_sources(homeworldz-region-core PRIVATE src/mesh_model_upload.cpp)
+# FBX import (ADR 0035). ufbx is vendored rather than packaged, so this adds a
+# translation unit and no dependency the cloud box has to be prepared for.
+target_sources(homeworldz-region-core PRIVATE src/fbx_import.cpp)
+target_link_libraries(homeworldz-region-core PRIVATE homeworldz-ufbx)
 find_package(meshoptimizer CONFIG REQUIRED)
 target_link_libraries(homeworldz-region-core PRIVATE meshoptimizer::meshoptimizer)
 find_path(HOMEWORLDZ_CGLTF_INCLUDE_DIR cgltf.h REQUIRED)
@@ -126,6 +130,14 @@ target_link_libraries(homeworldz-mesh-acceptance-tests PRIVATE homeworldz-region
 add_test(NAME region-mesh-acceptance COMMAND homeworldz-mesh-acceptance-tests)
 add_executable(homeworldz-mesh-diag src/mesh_diag_main.cpp)
 target_link_libraries(homeworldz-mesh-diag PRIVATE homeworldz-region-core)
+# The FBX side of the same question (ADR 0035). Not a test: the corpus it reads
+# is local-only for licence reasons, so it has nothing to assert against.
+add_executable(homeworldz-fbx-diag src/fbx_diag_main.cpp)
+target_link_libraries(homeworldz-fbx-diag PRIVATE homeworldz-region-core homeworldz-ufbx)
+target_include_directories(homeworldz-fbx-diag PRIVATE src)
+add_executable(homeworldz-fbx-import-tests tests/fbx_import_test.cpp)
+target_link_libraries(homeworldz-fbx-import-tests PRIVATE homeworldz-region-core)
+add_test(NAME region-fbx-import COMMAND homeworldz-fbx-import-tests)
 add_executable(homeworldz-avatar-joints-tests tests/avatar_joints_test.cpp)
 target_link_libraries(homeworldz-avatar-joints-tests PRIVATE homeworldz-region-core)
 # Every test executable in this file needs an add_test beside it. Three did not

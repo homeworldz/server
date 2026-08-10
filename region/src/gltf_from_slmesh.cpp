@@ -9,10 +9,10 @@
 
 #include "homeworldz/slmesh.h"
 
+#include "glb_write.h"
+
 #include <array>
-#include <charconv>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <string>
 
@@ -20,38 +20,12 @@ namespace homeworldz::mesh {
 
 namespace {
 
-// Shortest round-trip decimal, so the JSON carries the float that was
-// computed rather than a printf approximation of it.
-std::string number(float value) {
-    std::array<char, 32> buffer{};
-    const auto [end, error] =
-        std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
-    if (error != std::errc{}) return "0";
-    return std::string(buffer.data(), end);
-}
-
-
-void append_u32(std::vector<std::byte>& out, std::uint32_t value) {
-    for (int shift = 0; shift < 32; shift += 8)
-        out.push_back(static_cast<std::byte>((value >> shift) & 0xffu));
-}
-
-void append_float(std::vector<std::byte>& out, float value) {
-    std::array<std::byte, sizeof value> raw{};
-    std::memcpy(raw.data(), &value, sizeof value);
-    out.insert(out.end(), raw.begin(), raw.end());
-}
-
-void append_u16(std::vector<std::byte>& out, std::uint16_t value) {
-    out.push_back(static_cast<std::byte>(value & 0xffu));
-    out.push_back(static_cast<std::byte>((value >> 8) & 0xffu));
-}
-
-// glTF requires an accessor's byteOffset to be a multiple of its component
-// size; padding every view to four satisfies both float and u16 attributes.
-void pad_to_four(std::vector<std::byte>& out) {
-    while (out.size() % 4 != 0) out.push_back(std::byte{});
-}
+// The container primitives moved to glb_write.h when FBX import became a second
+// writer of GLB. Same bytes, one definition.
+using glb::append_float;
+using glb::append_u16;
+using glb::number;
+using glb::pad_to_four;
 
 } // namespace
 
@@ -203,26 +177,7 @@ GltfConversion gltf_from_sl_mesh(std::span<const std::byte> asset) {
         "],\"materials\":[" + std::string(default_material) +
         "],\"meshes\":[{\"primitives\":[" + primitives +
         "]}],\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
-    while (document.size() % 4 != 0) document.push_back(' ');
-
-    const auto total = 12 + 8 + document.size() + (binary.empty() ? 0 : 8 + binary.size());
-    result.glb.reserve(total);
-    const char magic[4] = {'g', 'l', 'T', 'F'};
-    for (const char character : magic)
-        result.glb.push_back(static_cast<std::byte>(character));
-    append_u32(result.glb, 2);
-    append_u32(result.glb, static_cast<std::uint32_t>(total));
-    append_u32(result.glb, static_cast<std::uint32_t>(document.size()));
-    for (const char character : {'J', 'S', 'O', 'N'})
-        result.glb.push_back(static_cast<std::byte>(character));
-    for (const char character : document)
-        result.glb.push_back(static_cast<std::byte>(character));
-    if (!binary.empty()) {
-        append_u32(result.glb, static_cast<std::uint32_t>(binary.size()));
-        for (const char character : {'B', 'I', 'N', '\0'})
-            result.glb.push_back(static_cast<std::byte>(character));
-        result.glb.insert(result.glb.end(), binary.begin(), binary.end());
-    }
+    result.glb = glb::wrap(std::move(document), std::move(binary));
     result.ok = true;
     return result;
 }
