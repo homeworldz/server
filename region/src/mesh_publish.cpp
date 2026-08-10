@@ -8,9 +8,14 @@
 #include "homeworldz/viewer_capabilities.h"
 
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <thread>
+#include <utility>
 
 namespace homeworldz::mesh {
 
@@ -150,6 +155,129 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
     published.object_asset_id = object_stored.viewer_id;
     published.item_id = item.item_id;
     return published;
+}
+
+struct PublishQueue::State {
+    std::function<std::unique_ptr<storage::RegionStorage>()> open_storage;
+    std::function<std::unique_ptr<grid::Client>()> open_grid;
+    std::string region_public_endpoint;
+
+    struct Job {
+        std::uint64_t id{};
+        std::vector<std::byte> glb;
+        std::string name;
+        std::string creator_user_id;
+    };
+
+    mutable std::mutex mutex;
+    std::condition_variable wake;
+    std::deque<Job> queue;
+    std::vector<Result> completed;
+    std::uint64_t next_id{1};
+    std::size_t in_flight{};
+    bool stopping{};
+    std::thread worker;
+
+    void run() {
+        // Opened here rather than passed in: both own a handle — a sqlite
+        // connection and a socket — and a handle created on one thread and used
+        // on another is the bug this whole class exists to avoid.
+        std::unique_ptr<storage::RegionStorage> storage;
+        std::unique_ptr<grid::Client> grid;
+        std::string open_error;
+        try {
+            storage = open_storage();
+            grid = open_grid();
+        } catch (const std::exception& error) {
+            open_error = error.what();
+        }
+        if (!storage || !grid) {
+            if (open_error.empty()) open_error = "the publish worker could not open its own "
+                                                 "storage and grid connections";
+            std::cout << "{\"level\":\"error\",\"message\":\"publish worker unavailable\",\"error\":\""
+                      << open_error << "\"}" << std::endl;
+        }
+
+        for (;;) {
+            Job job;
+            {
+                std::unique_lock lock(mutex);
+                wake.wait(lock, [this] { return stopping || !queue.empty(); });
+                // Drain before stopping: a job accepted and dropped is an
+                // upload the creator was told nothing about.
+                if (queue.empty()) return;
+                job = std::move(queue.front());
+                queue.pop_front();
+            }
+
+            Result result;
+            result.id = job.id;
+            if (!storage || !grid) {
+                result.error = open_error;
+            } else {
+                try {
+                    result.published =
+                        publish_glb(job.glb, job.name, job.creator_user_id, *storage, *grid,
+                                    region_public_endpoint);
+                    result.ok = true;
+                } catch (const std::exception& error) {
+                    result.error = error.what();
+                } catch (...) {
+                    // The loop is waiting on a reply for this job and an
+                    // unknown exception must not turn into silence.
+                    result.error = "the publish worker failed for an unrecorded reason";
+                }
+            }
+            {
+                std::lock_guard lock(mutex);
+                completed.push_back(std::move(result));
+                --in_flight;
+            }
+        }
+    }
+};
+
+PublishQueue::PublishQueue(std::function<std::unique_ptr<storage::RegionStorage>()> open_storage,
+                           std::function<std::unique_ptr<grid::Client>()> open_grid,
+                           std::string region_public_endpoint)
+    : state_(std::make_unique<State>()) {
+    state_->open_storage = std::move(open_storage);
+    state_->open_grid = std::move(open_grid);
+    state_->region_public_endpoint = std::move(region_public_endpoint);
+    state_->worker = std::thread([state = state_.get()] { state->run(); });
+}
+
+PublishQueue::~PublishQueue() {
+    {
+        std::lock_guard lock(state_->mutex);
+        state_->stopping = true;
+    }
+    state_->wake.notify_all();
+    if (state_->worker.joinable()) state_->worker.join();
+}
+
+std::uint64_t PublishQueue::submit(std::vector<std::byte> glb, std::string name,
+                                   std::string creator_user_id) {
+    std::uint64_t id = 0;
+    {
+        std::lock_guard lock(state_->mutex);
+        id = state_->next_id++;
+        state_->queue.push_back(
+            {id, std::move(glb), std::move(name), std::move(creator_user_id)});
+        ++state_->in_flight;
+    }
+    state_->wake.notify_one();
+    return id;
+}
+
+std::vector<PublishQueue::Result> PublishQueue::take_completed() {
+    std::lock_guard lock(state_->mutex);
+    return std::exchange(state_->completed, {});
+}
+
+std::size_t PublishQueue::outstanding() const {
+    std::lock_guard lock(state_->mutex);
+    return state_->in_flight;
 }
 
 } // namespace homeworldz::mesh

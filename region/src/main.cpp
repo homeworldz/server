@@ -122,6 +122,13 @@ constexpr int http_client_timeout_ms = 15000;
 // which is the right place for it — unlike the old behaviour, where the queue
 // filled because nothing was draining it.
 constexpr std::size_t maximum_incoming_http = 256;
+// How long an upload's socket waits for its publish to finish (mesh_publish.h).
+// Generous on purpose: the work behind it is 7 + 3T grid round trips, each of
+// which grid_client.h bounds at 20 s per send or recv, so a slow grid can take
+// minutes on a texture-heavy mesh without anything being wrong. This is the
+// point at which the creator is told it did not finish rather than the point at
+// which it is abandoned — the job keeps running and its assets still land.
+constexpr int publish_response_timeout_s = 300;
 constexpr std::string_view system_creator_id = "00000000-0000-0000-0000-000000000002";
 constexpr std::string_view default_map_tile_asset_id = "00000000-0000-1111-9999-000000000100";
 homeworldz::config::RegionSettings configured_values;
@@ -319,6 +326,20 @@ struct PendingEventResponse {
     socket_handle client{invalid_socket};
     std::string request;
     std::string session_id;
+    std::chrono::steady_clock::time_point deadline{};
+};
+
+// A mesh upload whose publish is running on the worker thread. The socket stays
+// open and its response is written when the job reports back, so the creator's
+// client sees the same 201 it always did — it simply arrives when the work is
+// finished rather than holding the region still until then.
+struct PendingUploadResponse {
+    socket_handle client{invalid_socket};
+    std::string request;
+    std::uint64_t job{};
+    std::uint32_t triangles{};
+    std::uint32_t materials{};
+    std::string creator;
     std::chrono::steady_clock::time_point deadline{};
 };
 
@@ -1204,6 +1225,10 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<homeworldz::grid::RegistrationLifecycle> registration;
     std::unique_ptr<homeworldz::session::Server> session_server;
     std::unique_ptr<homeworldz::grid::Client> viewer_grid;
+    // Declared beside viewer_grid because it is built in the same place, once
+    // the grid URL and credential are known. It owns a thread, so it is reset
+    // explicitly at shutdown rather than left to unwind order.
+    std::unique_ptr<homeworldz::mesh::PublishQueue> publish_queue;
     // Access-key-authenticated client for estate updates via the region-runtime API.
     std::unique_ptr<homeworldz::grid::Client> estate_client;
     std::unique_ptr<homeworldz::grid::ViewerSessionCache> viewer_sessions;
@@ -1345,6 +1370,19 @@ int main(int argc, char* argv[]) {
 			provisioned_region_id = provisioned->id;
             auto viewer_transport = homeworldz::grid::socket_transport(grid_url, service_token);
             viewer_grid = std::make_unique<homeworldz::grid::Client>(std::move(viewer_transport));
+            // The publish worker's own connections, both opened on its thread.
+            // It never touches viewer_grid or the loop's storage handle: one
+            // owns a socket and the other a sqlite connection, and sharing
+            // either across threads is the hazard this exists to remove.
+            publish_queue = std::make_unique<homeworldz::mesh::PublishQueue>(
+                [region_data_path] {
+                    return std::make_unique<homeworldz::storage::RegionStorage>(region_data_path);
+                },
+                [grid_url, service_token] {
+                    return std::make_unique<homeworldz::grid::Client>(
+                        homeworldz::grid::socket_transport(grid_url, service_token));
+                },
+                region_public_endpoint);
             estate_client = std::make_unique<homeworldz::grid::Client>(
                 homeworldz::grid::socket_transport(grid_url, region_access_key));
             if (!refresh_region_neighbors(true)) {
@@ -2562,6 +2600,11 @@ int main(int argc, char* argv[]) {
         temporary_expirations;
     std::unordered_map<std::string, std::deque<std::string>> queued_viewer_events;
     std::vector<PendingEventResponse> pending_event_responses;
+    // Uploads whose publish is running off the loop, each holding the socket
+    // its 201 will be written to (mesh_publish.h). The same deferral the
+    // viewer's event queue uses, for the same reason: the loop must keep
+    // running while the answer is prepared.
+    std::vector<PendingUploadResponse> pending_upload_responses;
     std::vector<PendingAgentMovementComplete> pending_agent_movement_completes;
     std::uint64_t event_id{};
     std::uint64_t next_inventory_asset_xfer{1};
@@ -3631,6 +3674,74 @@ int main(int argc, char* argv[]) {
               << configured_port() << ",\"viewerPort\":" << region_viewer_port << "}" << std::endl;
     while (running) {
         const auto http_now = std::chrono::steady_clock::now();
+        // Publishes that finished since the last pass, each answered on the
+        // socket its handler kept open. A result whose socket has already gone
+        // (the wait below timed out) is dropped here rather than chased: the
+        // assets it made are real and registered, and there is no longer anyone
+        // listening for the receipt.
+        if (publish_queue) {
+            for (auto& done : publish_queue->take_completed()) {
+                const auto waiting = std::find_if(
+                    pending_upload_responses.begin(), pending_upload_responses.end(),
+                    [&](const PendingUploadResponse& candidate) {
+                        return candidate.job == done.id;
+                    });
+                if (waiting == pending_upload_responses.end()) {
+                    std::cout << "{\"level\":\"warning\",\"message\":\"mesh publish finished after "
+                                 "its client stopped waiting\",\"job\":" << done.id
+                              << ",\"ok\":" << (done.ok ? "true" : "false") << "}" << std::endl;
+                    continue;
+                }
+                const auto response =
+                    done.ok
+                        ? homeworldz::http::response_for_content(
+                              waiting->request, 201, "application/json",
+                              "{\"assetId\":" +
+                                  homeworldz::api::json_string(done.published.asset_id) +
+                                  ",\"objectAssetId\":" +
+                                  homeworldz::api::json_string(done.published.object_asset_id) +
+                                  ",\"itemId\":" +
+                                  homeworldz::api::json_string(done.published.item_id) +
+                                  ",\"triangles\":" + std::to_string(waiting->triangles) +
+                                  ",\"materials\":" + std::to_string(waiting->materials) +
+                                  ",\"renditions\":{\"sl-mesh\":\"queued\"}}")
+                        : homeworldz::http::response_for_content(
+                              waiting->request, 502, "application/json",
+                              homeworldz::api::to_json(homeworldz::api::Error{
+                                  "mesh_upload_failed", done.error}));
+                static_cast<void>(send_all(waiting->client, response.content));
+                finish_http_response(waiting->client);
+                close_socket(waiting->client);
+                if (done.ok)
+                    std::cout << "{\"level\":\"info\",\"message\":\"mesh uploaded\",\"assetId\":"
+                              << homeworldz::api::json_string(done.published.asset_id)
+                              << ",\"creator\":" << homeworldz::api::json_string(waiting->creator)
+                              << ",\"triangles\":" << waiting->triangles << "}" << std::endl;
+                else
+                    std::cout << "{\"level\":\"error\",\"message\":\"mesh upload failed\",\"error\":"
+                              << homeworldz::api::json_string(done.error) << "}" << std::endl;
+                pending_upload_responses.erase(waiting);
+            }
+        }
+        std::erase_if(pending_upload_responses, [&](const PendingUploadResponse& pending) {
+            if (pending.deadline > http_now) return false;
+            // The publish has not finished and the creator has waited long
+            // enough to be told so. 504 rather than 502: nothing failed, and
+            // the job is still running - its assets and inventory item will
+            // land, they simply arrive without a receipt.
+            const auto response = homeworldz::http::response_for_content(
+                pending.request, 504, "application/json",
+                homeworldz::api::to_json(homeworldz::api::Error{
+                    "mesh_publish_slow",
+                    "the upload was accepted and is still being published; it will appear in "
+                    "inventory when the grid finishes storing it"}));
+            static_cast<void>(send_all(pending.client, response.content));
+            finish_http_response(pending.client);
+            close_socket(pending.client);
+            std::cout << "{\"level\":\"warning\",\"message\":\"mesh publish outran its client\","
+                         "\"job\":" << pending.job << "}" << std::endl;
+            return true;
+        });
         std::erase_if(pending_event_responses, [&](const PendingEventResponse& pending) {
             if (pending.deadline > http_now) return false;
             const auto response = homeworldz::http::response_for_content(
@@ -4344,31 +4455,31 @@ int main(int argc, char* argv[]) {
                                     homeworldz::api::to_json(homeworldz::api::Error{
                                         "mesh_refused", acceptance.reason}));
                             } else {
-                                try {
+                                // Validation happened above and is bounded CPU
+                                // on a bounded body. Publishing is neither: it
+                                // is 7 + 3T blocking grid round trips, and on
+                                // this thread that is physics and viewer
+                                // packets stopped for the duration. It goes to
+                                // the worker, and the socket waits.
+                                if (!publish_queue) {
+                                    response = homeworldz::http::response_for_content(
+                                        request, 503, "application/json",
+                                        homeworldz::api::to_json(homeworldz::api::Error{
+                                            "publish_unavailable",
+                                            "the region is not registered with a grid, so an "
+                                            "upload cannot be published"}));
+                                } else {
                                     auto name = homeworldz::http::request_header_value(
                                         request, "X-Homeworldz-Name");
-                                    const auto published = homeworldz::mesh::publish_glb(
-                                        content, name, uploader->user_id, *storage, *viewer_grid,
-                                        region_public_endpoint);
-                                    response = homeworldz::http::response_for_content(
-                                        request, 201, "application/json",
-                                        "{\"assetId\":" + homeworldz::api::json_string(published.asset_id) +
-                                        ",\"objectAssetId\":" + homeworldz::api::json_string(published.object_asset_id) +
-                                        ",\"itemId\":" + homeworldz::api::json_string(published.item_id) +
-                                        ",\"triangles\":" + std::to_string(acceptance.triangles) +
-                                        ",\"materials\":" + std::to_string(acceptance.materials) +
-                                        ",\"renditions\":{\"sl-mesh\":\"queued\"}}");
-                                    std::cout << "{\"level\":\"info\",\"message\":\"mesh uploaded\",\"assetId\":"
-                                              << homeworldz::api::json_string(published.asset_id)
-                                              << ",\"creator\":" << homeworldz::api::json_string(uploader->userid)
-                                              << ",\"triangles\":" << acceptance.triangles << "}" << std::endl;
-                                } catch (const std::exception& error) {
-                                    std::cout << "{\"level\":\"error\",\"message\":\"mesh upload failed\",\"error\":"
-                                              << homeworldz::api::json_string(error.what()) << "}" << std::endl;
-                                    response = homeworldz::http::response_for_content(
-                                        request, 502, "application/json",
-                                        homeworldz::api::to_json(homeworldz::api::Error{
-                                            "mesh_upload_failed", error.what()}));
+                                    std::vector<std::byte> owned(content.begin(), content.end());
+                                    const auto job = publish_queue->submit(
+                                        std::move(owned), name, uploader->user_id);
+                                    pending_upload_responses.push_back(PendingUploadResponse{
+                                        client, std::string(request), job, acceptance.triangles,
+                                        acceptance.materials, uploader->userid,
+                                        std::chrono::steady_clock::now() +
+                                            std::chrono::seconds(publish_response_timeout_s)});
+                                    response_deferred = true;
                                 }
                             }
                         }
@@ -12053,6 +12164,12 @@ int main(int argc, char* argv[]) {
     }
     if (registration) registration->stop();
     for (const auto& pending : pending_event_responses) close_socket(pending.client);
+    for (const auto& pending : pending_upload_responses) close_socket(pending.client);
+    // Destroyed before the loop's own storage and grid handles go, since its
+    // destructor drains whatever it accepted: an upload taken and dropped on
+    // shutdown is one the creator was told nothing about and whose assets may
+    // be half-registered.
+    publish_queue.reset();
     close_socket(viewer_server);
     close_socket(server);
 #ifdef _WIN32

@@ -19,6 +19,9 @@
 #include "homeworldz/viewer_protocol.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -61,6 +64,72 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
                           const std::string& creator_user_id,
                           storage::RegionStorage& storage, grid::Client& grid,
                           const std::string& region_public_endpoint);
+
+// Publishing, moved off the region's loop.
+//
+// The region runs one thread. The `while (running)` loop in main.cpp services
+// the HTTP listener, the viewer's UDP socket, and the simulation, and an HTTP
+// handler that blocks does not merely delay a response — it stops physics and
+// stops avatars moving. `publish_glb` is the worst offender on that loop by a
+// wide margin: it makes **7 + 3T** blocking grid round trips for T textures, so
+// sixteen textures is fifty-five, and grid_client.h's own deadline bounds one
+// send or recv rather than a transfer. One upload could stall the region for as
+// long as the grid took to answer all of them.
+//
+// So the loop hands the work here and defers its HTTP response, exactly as it
+// already does for the viewer's long-poll event queue. The client sees the same
+// 201 it always did; it simply arrives when the work is done rather than
+// holding the region still until then.
+//
+// Two things this deliberately does *not* share with the loop:
+//
+//   - **the grid client**, which owns a socket. The worker builds its own from
+//     the factory, on the worker thread, and the loop's client is untouched.
+//   - **the region's storage handle**, which is one sqlite connection with no
+//     lock and sixty-odd callers on the loop. The worker opens its own, which
+//     WAL supports, rather than putting a mutex around all of them.
+//
+// It also removes a hazard rather than adding one. `store_vault_asset` is
+// documented as load-bearing because "this region's single HTTP thread is busy
+// with the upload and cannot answer a fetch-back until it returns" — with the
+// publish off the loop, the loop *can* answer. The write-through stays, because
+// it is right on its own merits, but it is no longer propping up a deadlock.
+class PublishQueue {
+public:
+    struct Result {
+        std::uint64_t id{};
+        bool ok{};
+        // The publisher's own reason, for showing the creator verbatim.
+        std::string error;
+        PublishedMesh published;
+    };
+
+    // `open_storage` and `open_grid` are both called on the worker thread, once,
+    // so nothing either returns is ever touched by two threads.
+    PublishQueue(std::function<std::unique_ptr<storage::RegionStorage>()> open_storage,
+                 std::function<std::unique_ptr<grid::Client>()> open_grid,
+                 std::string region_public_endpoint);
+    ~PublishQueue();
+    PublishQueue(const PublishQueue&) = delete;
+    PublishQueue& operator=(const PublishQueue&) = delete;
+
+    // Takes a copy of the bytes: the caller's request buffer does not outlive
+    // the handler, and the work does.
+    std::uint64_t submit(std::vector<std::byte> glb, std::string name,
+                         std::string creator_user_id);
+
+    // Everything finished since the last call. Called from the loop, which then
+    // writes each result to the socket it kept.
+    std::vector<Result> take_completed();
+
+    // Work submitted and not yet reported, for the shutdown path and for
+    // deciding whether a drain is worth the call.
+    std::size_t outstanding() const;
+
+private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
 
 } // namespace homeworldz::mesh
 

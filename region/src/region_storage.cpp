@@ -641,7 +641,14 @@ RegionStorage::RegionStorage(std::filesystem::path data_path) : data_path_(std::
         database_ = nullptr;
         throw std::runtime_error(error);
     }
-    execute(database_, "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
+    // busy_timeout so a second connection retries instead of failing outright.
+    // The publish worker opens its own handle rather than sharing the loop's
+    // (mesh_publish.h), which WAL supports for one writer and many readers —
+    // but two writers still collide, and the default behaviour is to return
+    // SQLITE_BUSY immediately rather than wait. Five seconds is far longer than
+    // any write here takes and far shorter than the grid deadlines around it.
+    execute(database_, "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"
+                       "PRAGMA foreign_keys=ON;"
                        "CREATE TABLE IF NOT EXISTS scene_metadata ("
                        "id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL,"
                        "snapshot_path TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);"
