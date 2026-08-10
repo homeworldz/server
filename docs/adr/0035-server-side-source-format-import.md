@@ -127,6 +127,46 @@ skeleton`. That is this ADR's stated position holding, not a defect — the
 geometry, materials and textures survive the trip, and wearing the result waits
 on retargeting.
 
+## Where import actually runs
+
+**Amended 2026-08-10.** The decision above says conversion runs in the meshsmith
+worker. It runs in the **region's publish worker** instead — a thread the region
+gained for a different reason, and one that satisfies this ADR's stated
+objection.
+
+The reason given was that "import is unbounded CPU on attacker-supplied input
+and must not sit on any serving path — least of all the region's, which serves
+HTTP on the thread that makes synchronous grid calls." That was accurate and
+understated. The region runs *one* loop, servicing HTTP, the viewer's UDP socket
+and the simulation together, and the mesh upload handler was already the worst
+thing on it: `publish_glb` makes 7 + 3T blocking grid round trips for T
+textures, fifty-five at the gate's limit, so an upload could stop physics for as
+long as the grid took. That was true before this ADR and had nothing to do with
+import.
+
+Fixing it gave the region a worker thread that is not a serving path. With that
+in place the objection is met, and the reason to prefer meshsmith goes with it.
+
+What decided it against meshsmith is the shape of a rendition. **A rendition is
+one blob per (asset, kind)**, and an import produces N — one asset per mesh, for
+the reasons in the section above. meshsmith could therefore only return a single
+combined glTF, which the region would have to split back apart, costing a
+glTF-to-glTF splitter that re-derives what `gltf_from_fbx` already does and a
+second parse of the same geometry, for no result a creator could tell apart.
+
+ADR 0028 is not weakened by this. Its concern is the region's *authority*, not
+its CPU, and nothing here grants any: the region already validates uploads,
+stores canonical blobs and creates inventory on the creator's own credential.
+Import adds no power it did not have.
+
+The upload's own contract follows from the same split:
+
+- A source upload is answered **202** with its asset id once the file is stored.
+  201 would name an inventory item, and there is not one yet.
+- The parts arrive afterwards as items in inventory. Import failure is reported
+  against the stored asset, exactly as this ADR requires — the source is kept
+  either way.
+
 ## The parser
 
 **ufbx** (MIT, single-file C) for FBX. It builds with the region's stack, adds no
