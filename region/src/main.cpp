@@ -118,6 +118,11 @@ std::atomic_bool running{true};
 // or send, not a whole transfer, so a live mesh upload keeps its time while a
 // silent peer is dropped rather than stalling the region's only loop.
 constexpr int http_client_timeout_ms = 15000;
+// The whole-request ceiling, against the idle deadline above. Generous because
+// it has to cover the largest thing this accepts — a 128 MiB source upload
+// (ADR 0035) crawling in over a poor link — and bounded because a connection
+// that never completes is a buffer nobody is reading.
+constexpr int http_client_total_timeout_ms = 900000;
 // A ceiling on connections held mid-request. Reached only by a peer opening
 // sockets faster than they time out; past it the listen queue does the refusing,
 // which is the right place for it — unlike the old behaviour, where the queue
@@ -3675,7 +3680,19 @@ int main(int argc, char* argv[]) {
     struct IncomingHttp {
         socket_handle client;
         std::string buffer;
+        // Advanced every time bytes arrive: this is an *idle* deadline, so a
+        // peer that keeps sending keeps its connection and only a silent one is
+        // dropped. It was a total deadline until 2026-08-10, which killed any
+        // request that took longer than http_client_timeout_ms to deliver
+        // however fast it was going — a 105 MiB upload died at 15.08 s having
+        // sent 73 MiB at 5 MB/s. The comment on the socket option beside it had
+        // claimed for months that a live upload "keeps its time"; the socket
+        // option did behave that way and this deadline did not.
         std::chrono::steady_clock::time_point deadline;
+        // And an absolute one, because a pure idle timeout is a slow-loris
+        // licence: a byte every fourteen seconds would hold a connection, and
+        // its buffer, for as long as the sender liked.
+        std::chrono::steady_clock::time_point expires;
     };
     std::vector<IncomingHttp> incoming_http;
     std::cout << "{\"level\":\"info\",\"message\":\"region service listening\",\"httpPort\":"
@@ -3869,7 +3886,8 @@ int main(int argc, char* argv[]) {
                 set_socket_deadline(accepted, http_client_timeout_ms);
                 set_socket_blocking_mode(accepted, false);
                 incoming_http.push_back({accepted, std::string{},
-                    http_now + std::chrono::milliseconds(http_client_timeout_ms)});
+                    http_now + std::chrono::milliseconds(http_client_timeout_ms),
+                    http_now + std::chrono::milliseconds(http_client_total_timeout_ms)});
                 if (incoming_http.size() >= maximum_incoming_http) break;
             }
         }
@@ -3887,6 +3905,9 @@ int main(int argc, char* argv[]) {
                         recv(entry->client, chunk.data(), static_cast<int>(chunk.size()), 0);
                     if (received > 0) {
                         entry->buffer.append(chunk.data(), static_cast<std::size_t>(received));
+                        // Progress is proof of life, so the idle clock restarts.
+                        entry->deadline =
+                            http_now + std::chrono::milliseconds(http_client_timeout_ms);
                         const auto state = http_request_state(entry->buffer);
                         if (state == HttpRequestState::complete) {
                             ready_client = entry->client;
@@ -3911,7 +3932,7 @@ int main(int argc, char* argv[]) {
                     break;
                 }
             }
-            if (!finished && http_now >= entry->deadline) {
+            if (!finished && (http_now >= entry->deadline || http_now >= entry->expires)) {
                 close_socket(entry->client);
                 finished = true;
             }
