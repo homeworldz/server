@@ -50,6 +50,7 @@
 #include "homeworldz/physics_scene.h"
 #include "homeworldz/region_config.h"
 #include "homeworldz/region_storage.h"
+#include "homeworldz/fbx_import.h"
 #include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/mesh_publish.h"
 #include "homeworldz/mesh_convert.h"
@@ -536,7 +537,12 @@ enum class HttpRequestState { need_more, complete, invalid };
 HttpRequestState http_request_state(std::string& request) {
     constexpr std::size_t maximum_header_size = 64 * 1024;
     constexpr std::size_t maximum_body_size = 1024 * 1024;
-    const std::size_t maximum_mesh_body = homeworldz::mesh::max_glb_bytes + 64 * 1024;
+    // The source-format cap, not the GLB one: this route now accepts an FBX as
+    // well (ADR 0035), and a Character Creator body is 19-41 MB against a 32 MB
+    // GLB limit. Capping here at the GLB figure would refuse the file before the
+    // handler ever saw it, and the refusal would come from the transport with no
+    // reason a creator could act on.
+    const std::size_t maximum_mesh_body = homeworldz::mesh::max_source_bytes + 64 * 1024;
     const auto header_end = request.find("\r\n\r\n");
     if (header_end == std::string::npos) {
         return request.size() > maximum_header_size ? HttpRequestState::invalid
@@ -560,10 +566,12 @@ HttpRequestState http_request_state(std::string& request) {
 std::optional<std::string> receive_http_request(socket_handle client) {
     constexpr std::size_t maximum_header_size = 64 * 1024;
     constexpr std::size_t maximum_body_size = 1024 * 1024;
-    // The mesh upload route alone accepts a body up to the published GLB cap
-    // (plus header slack); every other route keeps the tight general bound.
+    // The mesh upload route alone accepts a body up to the published source cap
+    // (plus header slack); every other route keeps the tight general bound. The
+    // source cap rather than the GLB one, since this route now takes an FBX too
+    // — see the note on the other copy of this bound.
     const std::size_t maximum_mesh_body =
-        homeworldz::mesh::max_glb_bytes + 64 * 1024;
+        homeworldz::mesh::max_source_bytes + 64 * 1024;
     std::string request;
     std::array<char, 4096> buffer{};
     std::optional<std::size_t> expected_size;
@@ -3693,7 +3701,18 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
                 const auto response =
-                    done.ok
+                    done.ok && done.source_only
+                        // 202, not 201: the creator's file is stored and safe
+                        // and its import is queued, but no object or inventory
+                        // item exists yet. Saying 201 here would name an item
+                        // that does not exist.
+                        ? homeworldz::http::response_for_content(
+                              waiting->request, 202, "application/json",
+                              "{\"assetId\":" +
+                                  homeworldz::api::json_string(done.published.asset_id) +
+                                  ",\"status\":\"importing\""
+                                  ",\"renditions\":{\"gltf\":\"queued\"}}")
+                    : done.ok
                         ? homeworldz::http::response_for_content(
                               waiting->request, 201, "application/json",
                               "{\"assetId\":" +
@@ -3712,7 +3731,12 @@ int main(int argc, char* argv[]) {
                 static_cast<void>(send_all(waiting->client, response.content));
                 finish_http_response(waiting->client);
                 close_socket(waiting->client);
-                if (done.ok)
+                if (done.ok && done.source_only)
+                    std::cout << "{\"level\":\"info\",\"message\":\"source uploaded\",\"assetId\":"
+                              << homeworldz::api::json_string(done.published.asset_id)
+                              << ",\"creator\":" << homeworldz::api::json_string(waiting->creator)
+                              << "}" << std::endl;
+                else if (done.ok)
                     std::cout << "{\"level\":\"info\",\"message\":\"mesh uploaded\",\"assetId\":"
                               << homeworldz::api::json_string(done.published.asset_id)
                               << ",\"creator\":" << homeworldz::api::json_string(waiting->creator)
@@ -4448,8 +4472,42 @@ int main(int argc, char* argv[]) {
                             const auto body = http_request_body(request);
                             const auto content = std::span(
                                 reinterpret_cast<const std::byte*>(body.data()), body.size());
-                            const auto acceptance = homeworldz::mesh::validate_glb(content);
-                            if (!acceptance.accepted) {
+                            // A source format is stored and imported rather than
+                            // gated as a GLB (ADR 0035). The gate's limits
+                            // describe what an import *produces*, so applying
+                            // them to the file that arrived would refuse a
+                            // Character Creator body for being seventeen
+                            // materials when it imports as six assets of six.
+                            const auto is_source = homeworldz::mesh::looks_like_fbx(content);
+                            if (is_source && content.size() > homeworldz::mesh::max_source_bytes) {
+                                response = homeworldz::http::response_for_content(
+                                    request, 422, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "mesh_refused",
+                                        "source file is " + std::to_string(content.size()) +
+                                            " bytes; the limit is " +
+                                            std::to_string(homeworldz::mesh::max_source_bytes)}));
+                            } else if (is_source && !publish_queue) {
+                                response = homeworldz::http::response_for_content(
+                                    request, 503, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "publish_unavailable",
+                                        "the region is not registered with a grid, so an upload "
+                                        "cannot be stored"}));
+                            } else if (is_source) {
+                                auto name = homeworldz::http::request_header_value(
+                                    request, "X-Homeworldz-Name");
+                                std::vector<std::byte> owned(content.begin(), content.end());
+                                const auto job = publish_queue->submit_source(
+                                    std::move(owned), name, uploader->user_id);
+                                pending_upload_responses.push_back(PendingUploadResponse{
+                                    client, std::string(request), job, 0, 0, uploader->userid,
+                                    std::chrono::steady_clock::now() +
+                                        std::chrono::seconds(publish_response_timeout_s)});
+                                response_deferred = true;
+                            } else if (const auto acceptance =
+                                           homeworldz::mesh::validate_glb(content);
+                                       !acceptance.accepted) {
                                 response = homeworldz::http::response_for_content(
                                     request, 422, "application/json",
                                     homeworldz::api::to_json(homeworldz::api::Error{

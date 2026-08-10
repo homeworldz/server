@@ -40,8 +40,20 @@ std::string acceptance_policy_json() {
         extensions += allowed;
         extensions += '"';
     }
+    std::string imported;
+    for (const auto format : imported_formats) {
+        if (!imported.empty()) imported += ',';
+        imported += '"';
+        imported += format;
+        imported += '"';
+    }
     return "{\"format\":\"glb\",\"uploadPath\":\"" + std::string(upload_path) +
-        "\",\"maxFileBytes\":" + std::to_string(max_glb_bytes) +
+        // Source formats the server imports (ADR 0035). `format` stays "glb"
+        // because that is still what the limits below describe and what an
+        // import produces; these are additional things the upload path accepts.
+        "\",\"importedFormats\":[" + imported + "]" +
+        ",\"maxSourceBytes\":" + std::to_string(max_source_bytes) +
+        ",\"maxFileBytes\":" + std::to_string(max_glb_bytes) +
         ",\"maxTriangles\":" + std::to_string(max_triangles) +
         ",\"maxMaterials\":" + std::to_string(max_materials) +
         ",\"maxTextures\":" + std::to_string(max_textures) +

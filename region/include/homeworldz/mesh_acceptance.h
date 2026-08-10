@@ -129,10 +129,25 @@ inline constexpr std::string_view allowed_extensions[] = {
     "KHR_texture_transform",
 };
 
-// Where a session client uploads: POST, body is the GLB, authorized by the
+// Where a session client uploads: POST, body is the mesh, authorized by the
 // same region ticket the WebSocket authenticates with, as a bearer token —
 // one credential, both transports.
 inline constexpr std::string_view upload_path = "/session/uploads/mesh";
+
+// Source formats this server imports in addition to GLB (ADR 0035), by the
+// extension a creator knows them by. Published rather than mirrored, for the
+// reason the rest of this policy is: a client that guesses the accepted set is
+// a second copy of it.
+//
+// The limits above apply to what an import *produces*, not to the file that
+// arrives. One source file becomes one asset per mesh, so a Character Creator
+// body — 17 materials and 30 textures taken whole, over three of these limits —
+// imports as six assets each of which is comfortably inside them.
+inline constexpr std::string_view imported_formats[] = {"fbx"};
+// A source file may be larger than a GLB of the same content, because it
+// carries its textures uncompressed by any container and, for FBX, often
+// embeds them. Character Creator bodies measure 19-41 MB.
+inline constexpr std::uint64_t max_source_bytes = 96ull << 20;
 
 // The acceptance policy as the JSON object served in the session hello
 // (the read-never-encode contract of ADR 0033).

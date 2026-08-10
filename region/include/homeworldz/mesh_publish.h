@@ -102,6 +102,12 @@ public:
         // The publisher's own reason, for showing the creator verbatim.
         std::string error;
         PublishedMesh published;
+        // True for a source-format upload (ADR 0035): the creator's file has
+        // been stored and its import queued, and no object or inventory item
+        // exists yet. The two answer with different status codes because they
+        // are different promises — 201 is "here is your item", 202 is "your
+        // file is safe and being worked on".
+        bool source_only{};
     };
 
     // `open_storage` and `open_grid` are both called on the worker thread, once,
@@ -117,6 +123,21 @@ public:
     // the handler, and the work does.
     std::uint64_t submit(std::vector<std::byte> glb, std::string name,
                          std::string creator_user_id);
+
+    // A source-format upload (ADR 0035): store the creator's own file as the
+    // canonical blob, register it, write it through to the vault, and queue its
+    // import. Grid I/O throughout, which is why it belongs here and not on the
+    // loop.
+    //
+    // It stops there deliberately. What turns an imported file into objects a
+    // creator owns is one asset per mesh, and where that runs is still open —
+    // the parts are produced either by this worker or by meshsmith, and the two
+    // differ in whether a glTF splitter has to exist. Storing the upload is the
+    // half that is identical under both, and it is the half that must not be
+    // lost: ADR 0035 makes import failure a property of the asset rather than a
+    // failed upload, which is only true if the upload was kept.
+    std::uint64_t submit_source(std::vector<std::byte> source, std::string name,
+                                std::string creator_user_id);
 
     // Everything finished since the last call. Called from the loop, which then
     // writes each result to the socket it kept.

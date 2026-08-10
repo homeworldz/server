@@ -157,6 +157,32 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
     return published;
 }
 
+namespace {
+
+// Store a creator's source file and queue its import (ADR 0035). The upload is
+// canonical and is never rewritten, so this is the step that must succeed even
+// when the import later cannot: a file we could not read is a reportable state
+// of a stored asset, not an upload that vanished.
+PublishedMesh store_source(std::span<const std::byte> source, const std::string& creator_user_id,
+                           storage::RegionStorage& storage, grid::Client& grid,
+                           const std::string& region_public_endpoint) {
+    PublishedMesh published;
+    const auto stored = storage.store_asset(viewer::random_uuid(), creator_user_id, source);
+    if (!grid.register_asset(stored.viewer_id, stored.creator_id, stored.sha256, stored.size,
+                             region_public_endpoint, true))
+        throw std::runtime_error("source asset registration failed");
+    if (!grid.store_vault_asset(stored.viewer_id, source))
+        throw std::runtime_error("source vault write-through failed");
+    // The import itself, on the conversion queue ADR 0035 puts it on. What
+    // happens when it lands is the part still to be decided; the request is
+    // correct either way, and re-requesting is idempotent grid-side.
+    static_cast<void>(grid.request_asset_rendition(stored.viewer_id, "gltf"));
+    published.asset_id = stored.viewer_id;
+    return published;
+}
+
+} // namespace
+
 struct PublishQueue::State {
     std::function<std::unique_ptr<storage::RegionStorage>()> open_storage;
     std::function<std::unique_ptr<grid::Client>()> open_grid;
@@ -167,6 +193,7 @@ struct PublishQueue::State {
         std::vector<std::byte> glb;
         std::string name;
         std::string creator_user_id;
+        bool source_only{};
     };
 
     mutable std::mutex mutex;
@@ -212,13 +239,19 @@ struct PublishQueue::State {
 
             Result result;
             result.id = job.id;
+            result.source_only = job.source_only;
             if (!storage || !grid) {
                 result.error = open_error;
             } else {
                 try {
-                    result.published =
-                        publish_glb(job.glb, job.name, job.creator_user_id, *storage, *grid,
-                                    region_public_endpoint);
+                    if (job.source_only)
+                        result.published =
+                            store_source(job.glb, job.creator_user_id, *storage, *grid,
+                                         region_public_endpoint);
+                    else
+                        result.published =
+                            publish_glb(job.glb, job.name, job.creator_user_id, *storage, *grid,
+                                        region_public_endpoint);
                     result.ok = true;
                 } catch (const std::exception& error) {
                     result.error = error.what();
@@ -263,7 +296,21 @@ std::uint64_t PublishQueue::submit(std::vector<std::byte> glb, std::string name,
         std::lock_guard lock(state_->mutex);
         id = state_->next_id++;
         state_->queue.push_back(
-            {id, std::move(glb), std::move(name), std::move(creator_user_id)});
+            {id, std::move(glb), std::move(name), std::move(creator_user_id), false});
+        ++state_->in_flight;
+    }
+    state_->wake.notify_one();
+    return id;
+}
+
+std::uint64_t PublishQueue::submit_source(std::vector<std::byte> source, std::string name,
+                                          std::string creator_user_id) {
+    std::uint64_t id = 0;
+    {
+        std::lock_guard lock(state_->mutex);
+        id = state_->next_id++;
+        state_->queue.push_back(
+            {id, std::move(source), std::move(name), std::move(creator_user_id), true});
         ++state_->in_flight;
     }
     state_->wake.notify_one();
