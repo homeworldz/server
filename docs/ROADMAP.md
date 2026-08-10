@@ -215,7 +215,7 @@ client family is served a derived rendition by a conversion worker.
 - [ ] V-HACD convex decomposition for mesh physics; the shipped physics block is the conservative bounding-box hull.
 - [x] Regenerate stale renditions.
 - [ ] M4 rigged mesh: glTF skins mapped onto the Bento skeleton (refusing rigs that do not map), attachments and body wearables.
-- [ ] M5 import breadth: client-side FBX/OBJ/DAE import, documented Daz Studio export path, optional web import service on the management site.
+- [ ] M5 import breadth: **server-side** FBX/OBJ/DAE and archive import ([ADR 0035](adr/0035-server-side-source-format-import.md)), so every client uploads the source and gets the same result — and a third-party viewer gains import by uploading a file rather than implementing a converter. Documented Daz Studio export path, optional web import service on the management site.
 - [ ] Rig retargeting, so a creator does not need Blender with Avastar or Bento Buddy to bring a body in.
 - [ ] Possible with M5: retarget a Character Creator rig onto the Bento skeleton.
 
