@@ -22,7 +22,12 @@
 # same inventory folder.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$File,
+    # One file, or several: the password is asked for once and the account token
+    # reused, but a *region ticket* is minted per file. The ticket lives 300
+    # seconds by default and a queue of characters does not fit in that, so
+    # minting one up front and reusing it would fail partway through the batch
+    # for no reason a creator could act on.
+    [Parameter(Mandatory = $true)][string[]]$File,
     [Parameter(Mandatory = $true)][string]$Userid,
     [string]$Api = 'https://api.homeworldz.com',
     # "last" (the default), "home", or a region name with optional coordinates.
@@ -36,9 +41,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Test-Path -LiteralPath $File)) { throw "no such file: $File" }
-$item = Get-Item -LiteralPath $File
-if (-not $Name) { $Name = $item.BaseName }
+$items = foreach ($path in $File) {
+    if (-not (Test-Path -LiteralPath $path)) { throw "no such file: $path" }
+    Get-Item -LiteralPath $path
+}
+if ($Name -and $items.Count -gt 1) {
+    throw '-Name applies to a single file; drop it and each import is named after its own file'
+}
 
 $password = Read-Host -Prompt "Password for $Userid" -AsSecureString
 $plain = [System.Net.NetworkCredential]::new('', $password).Password
@@ -50,14 +59,6 @@ try {
     [System.GC]::Collect()
 }
 if (-not $token) { throw 'no access token in the response' }
-
-$session = Invoke-RestMethod -Method Post -Uri "$Api/v1/client/session" `
-    -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' `
-    -Body (@{ start = $Start } | ConvertTo-Json)
-$region = $session.region.endpoint
-if (-not $region) { throw 'the session response named no region endpoint' }
-"region:  $($session.region.name) at $region"
-"file:    $($item.Name), $([math]::Round($item.Length / 1MB, 1)) MiB, as `"$Name`""
 
 # HttpWebRequest rather than Invoke-RestMethod, for three reasons that all
 # matter at 64 MiB:
@@ -73,40 +74,72 @@ if (-not $region) { throw 'the session response named no region endpoint' }
 # Expect: 100-continue is turned off because it buys nothing here and adds a
 # round trip the region has no reason to answer.
 [System.Net.ServicePointManager]::Expect100Continue = $false
-$request = [System.Net.HttpWebRequest]::CreateHttp("$region/session/uploads/mesh")
-$request.Method = 'POST'
-$request.ContentType = 'application/octet-stream'
-$request.Headers.Add('Authorization', "Bearer $($session.ticket.token)")
-$request.Headers.Add('X-Homeworldz-Name', $Name)
-$request.AllowWriteStreamBuffering = $false
-$request.SendChunked = $false
-$request.ContentLength = $item.Length
-$request.Timeout = $TimeoutSeconds * 1000
-$request.ReadWriteTimeout = $TimeoutSeconds * 1000
-
-$source = [System.IO.File]::OpenRead($item.FullName)
-$sink = $request.GetRequestStream()
-try { $source.CopyTo($sink, 1MB) } finally { $sink.Dispose(); $source.Dispose() }
-"sent:    $($item.Length) bytes; waiting for the import (up to $TimeoutSeconds s)"
 
 $read = {
     param($web)
     $reader = New-Object System.IO.StreamReader($web.GetResponseStream())
     try { $reader.ReadToEnd() } finally { $reader.Dispose() }
 }
-try {
-    $web = $request.GetResponse()
-    try { "status:  $([int]$web.StatusCode)"; & $read $web } finally { $web.Dispose() }
-} catch [System.Net.WebException] {
-    if ($_.Exception.Response) {
-        $web = $_.Exception.Response
-        "status:  $([int]$web.StatusCode)"
-        & $read $web
-        $web.Dispose()
-    } else {
-        # No response at all: the connection went away mid-request. Worth
-        # distinguishing, because it is not a refusal and the file may well have
-        # been stored — the region logs what it received.
-        throw "the region closed the connection without answering ($($_.Exception.Status)): $($_.Exception.Message)"
+
+$failed = 0
+foreach ($item in $items) {
+    $label = if ($Name) { $Name } else { $item.BaseName }
+    ''
+    "file:    $($item.Name), $([math]::Round($item.Length / 1MB, 1)) MiB, as `"$label`""
+    try {
+        # A ticket per file, minted now rather than at the top: see the note on
+        # -File. The account token is what carries across the batch.
+        $session = Invoke-RestMethod -Method Post -Uri "$Api/v1/client/session" `
+            -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' `
+            -Body (@{ start = $Start } | ConvertTo-Json)
+        $region = $session.region.endpoint
+        if (-not $region) { throw 'the session response named no region endpoint' }
+        "region:  $($session.region.name) at $region"
+
+        $request = [System.Net.HttpWebRequest]::CreateHttp("$region/session/uploads/mesh")
+        $request.Method = 'POST'
+        $request.ContentType = 'application/octet-stream'
+        $request.Headers.Add('Authorization', "Bearer $($session.ticket.token)")
+        $request.Headers.Add('X-Homeworldz-Name', $label)
+        $request.AllowWriteStreamBuffering = $false
+        $request.SendChunked = $false
+        $request.ContentLength = $item.Length
+        $request.Timeout = $TimeoutSeconds * 1000
+        $request.ReadWriteTimeout = $TimeoutSeconds * 1000
+
+        $source = [System.IO.File]::OpenRead($item.FullName)
+        $sink = $request.GetRequestStream()
+        try { $source.CopyTo($sink, 1MB) } finally { $sink.Dispose(); $source.Dispose() }
+        "sent:    $($item.Length) bytes; waiting for the region (up to $TimeoutSeconds s)"
+
+        try {
+            $web = $request.GetResponse()
+            try { "status:  $([int]$web.StatusCode)"; & $read $web } finally { $web.Dispose() }
+        } catch [System.Net.WebException] {
+            if ($_.Exception.Response) {
+                $web = $_.Exception.Response
+                "status:  $([int]$web.StatusCode)"
+                & $read $web
+                $web.Dispose()
+                if ([int]$web.StatusCode -ge 400) { $failed++ }
+            } else {
+                # No response at all: the connection went away mid-request. Worth
+                # distinguishing, because it is not a refusal and the file may
+                # well have been stored — the region logs what it received.
+                throw "the region closed the connection without answering ($($_.Exception.Status)): $($_.Exception.Message)"
+            }
+        }
+    } catch {
+        # One bad file does not end the batch: the rest are independent uploads
+        # and stopping would leave the queue half done with no record of which
+        # half.
+        "FAILED:  $($item.Name) - $($_.Exception.Message)"
+        $failed++
     }
 }
+
+if ($items.Count -gt 1) {
+    ''
+    "$($items.Count) file(s), $failed failed"
+}
+if ($failed -gt 0) { exit 1 }
