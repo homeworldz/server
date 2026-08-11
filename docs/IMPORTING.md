@@ -1,6 +1,20 @@
 # Importing a character from Character Creator
 
 Upload the `.fbx` and the server does the rest ([ADR 0035](adr/0035-server-side-source-format-import.md)):
+
+    ./scripts/import-fbx.ps1 -File 'C:\path\to\Character.Fbx' -Userid you.here
+
+A third-party viewer cannot do this — Firestorm's model uploader speaks Collada
+and posts to the viewer's own capability — so until the first-party client
+carries a button, that script is the way in. It is the same three requests any
+client makes: a token, a session (which mints the short-lived region ticket that
+is the only credential a region ever sees), then the file itself.
+
+Re-importing a character that is already in-world gives every part a new asset
+id, which is also the reliable way to see a server-side change: a regenerated
+rendition keeps its id, and a viewer that has the old bytes cached will go on
+drawing them until its cache is cleared.
+
 it stores your file untouched, converts it, and puts one object per mesh in your
 inventory. A Character Creator body arrives as ten to fifteen items — body, eyes,
 teeth, tongue, and each garment and hair piece separately — because that is how
