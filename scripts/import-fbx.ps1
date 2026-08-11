@@ -59,22 +59,54 @@ if (-not $region) { throw 'the session response named no region endpoint' }
 "region:  $($session.region.name) at $region"
 "file:    $($item.Name), $([math]::Round($item.Length / 1MB, 1)) MiB, as `"$Name`""
 
-# -InFile streams the bytes rather than materialising a body string, which
-# matters: these files run to tens of megabytes.
-try {
-    $response = Invoke-RestMethod -Method Post -Uri "$region/session/uploads/mesh" `
-        -Headers @{ Authorization = "Bearer $($session.ticket.token)"; 'X-Homeworldz-Name' = $Name } `
-        -ContentType 'application/octet-stream' -InFile $item.FullName `
-        -TimeoutSec $TimeoutSeconds
-} catch {
-    # The region reports a refusal as JSON with a reason worth reading, and
-    # Invoke-RestMethod hides it behind the status line.
-    $detail = $_.ErrorDetails.Message
-    if (-not $detail -and $_.Exception.Response) {
-        $stream = $_.Exception.Response.GetResponseStream()
-        $detail = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
-    }
-    if ($detail) { throw "upload refused: $detail" }
-    throw
+# HttpWebRequest rather than Invoke-RestMethod, for three reasons that all
+# matter at 64 MiB:
+#
+#   - AllowWriteStreamBuffering = $false streams from disk instead of building
+#     the whole body in memory before the first byte goes out.
+#   - The region answers a *source* upload only when the import finishes, so the
+#     read timeout has to be minutes, separately from the send.
+#   - Invoke-RestMethod turns any non-2xx into a terminating error and drops the
+#     body, which is where the region puts the reason. Here the body is read on
+#     both paths, so a refusal arrives as the sentence it was written as.
+#
+# Expect: 100-continue is turned off because it buys nothing here and adds a
+# round trip the region has no reason to answer.
+[System.Net.ServicePointManager]::Expect100Continue = $false
+$request = [System.Net.HttpWebRequest]::CreateHttp("$region/session/uploads/mesh")
+$request.Method = 'POST'
+$request.ContentType = 'application/octet-stream'
+$request.Headers.Add('Authorization', "Bearer $($session.ticket.token)")
+$request.Headers.Add('X-Homeworldz-Name', $Name)
+$request.AllowWriteStreamBuffering = $false
+$request.SendChunked = $false
+$request.ContentLength = $item.Length
+$request.Timeout = $TimeoutSeconds * 1000
+$request.ReadWriteTimeout = $TimeoutSeconds * 1000
+
+$source = [System.IO.File]::OpenRead($item.FullName)
+$sink = $request.GetRequestStream()
+try { $source.CopyTo($sink, 1MB) } finally { $sink.Dispose(); $source.Dispose() }
+"sent:    $($item.Length) bytes; waiting for the import (up to $TimeoutSeconds s)"
+
+$read = {
+    param($web)
+    $reader = New-Object System.IO.StreamReader($web.GetResponseStream())
+    try { $reader.ReadToEnd() } finally { $reader.Dispose() }
 }
-$response | ConvertTo-Json -Depth 5
+try {
+    $web = $request.GetResponse()
+    try { "status:  $([int]$web.StatusCode)"; & $read $web } finally { $web.Dispose() }
+} catch [System.Net.WebException] {
+    if ($_.Exception.Response) {
+        $web = $_.Exception.Response
+        "status:  $([int]$web.StatusCode)"
+        & $read $web
+        $web.Dispose()
+    } else {
+        # No response at all: the connection went away mid-request. Worth
+        # distinguishing, because it is not a refusal and the file may well have
+        # been stored — the region logs what it received.
+        throw "the region closed the connection without answering ($($_.Exception.Status)): $($_.Exception.Message)"
+    }
+}
