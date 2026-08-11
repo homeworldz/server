@@ -330,8 +330,10 @@ Conversion convert_glb(std::span<const std::byte> glb) {
         slmesh::Skin built;
         // Kept alongside the skin so the joint position overrides can be made
         // parent-relative once every joint's rest position is known.
-        std::vector<const cgltf_node*> joint_nodes;
         std::vector<std::array<float, 3>> joint_world_rest;
+        // Set below, per bound joint: whether the node hierarchy agrees with the
+        // inverse bind matrices about where the skeleton rests.
+        bool node_tree_is_rest_pose = source.joints_count != 0;
         for (cgltf_size index = 0; index < source.joints_count; ++index) {
             const auto* node = source.joints[index];
             const std::string_view name =
@@ -357,10 +359,20 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                     if (up->name == nullptr) continue;
                     if (const auto folded = mesh::retarget_joint(up->name); !folded.empty()) {
                         canonical = folded;
-                        // The ancestor's answer, not this bone's: a bone folded
-                        // into the root inherits the root's inability to say
-                        // where the joint is.
-                        supplies_position = mesh::retarget_supplies_position(up->name);
+                        // A bone folded by ancestry never says where its target
+                        // is. It is not that joint under another name — it is
+                        // something *hanging off* it, at whatever distance the
+                        // creator hung it, and the joint's own position is the
+                        // ancestor's.
+                        //
+                        // Letting it answer put a head at an earring: Ariana's
+                        // `Earring_Flower_0` rests at the character's origin, so
+                        // her earring asserted mHead at z=0.254 against the
+                        // body's 1.634 — 1.43 m out, and competing with the body
+                        // for the same joint on every rez (measured 2026-08-10).
+                        // The ancestor supplies it instead, from the skeleton
+                        // the node tree carries.
+                        supplies_position = false;
                         break;
                     }
                 }
@@ -404,10 +416,38 @@ Conversion convert_glb(std::span<const std::byte> glb) {
             if (!bind_rest_position(mapped, rest))
                 return fail("an inverse bind matrix for joint \"" +
                             std::string(canonical) + "\" cannot be inverted");
+            // Both this and the override below are filled in after the loop,
+            // from one answer per joint: they are inverses of each other, and a
+            // bind matrix framing the geometry on one position while the
+            // override sends the joint to another is the whole rig's error
+            // budget in a single mesh. What is pushed here is a placeholder in
+            // the right slot.
             built.inverse_bind.push_back({1, 0, 0, 0,
                                           0, 1, 0, 0,
                                           0, 0, 1, 0,
                                           -rest[0], -rest[1], -rest[2], 1});
+            // Whether this file's node tree is the rest pose at all, checked
+            // against the joints it binds rather than assumed.
+            //
+            // glTF does not require it to be: the inverse bind matrices alone
+            // fully determine skinning, so a hand-authored or
+            // programmatically-built asset may leave every joint node at
+            // identity and be entirely correct. Reading positions out of such a
+            // tree would put unbound joints at the origin and hand their children
+            // metre-scale overrides — the world-position bug of 0.13 returning
+            // through a different door. So the tree is only consulted where it
+            // agrees with the matrices that do decide the bind pose.
+            if (node == nullptr) {
+                node_tree_is_rest_pose = false;
+            } else {
+                std::array<float, 16> world{};
+                cgltf_node_transform_world(node, world.data());
+                std::array<float, 3> position{world[12], world[13], world[14]};
+                to_region_axes(position);
+                for (int axis = 0; axis < 3; ++axis)
+                    if (std::fabs(position[axis] - rest[axis]) > 0.001f)
+                        node_tree_is_rest_pose = false;
+            }
             // Where this body wants the joint, as a joint position override.
             //
             // This is what lets an imported body keep its own proportions
@@ -447,16 +487,15 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                                                     0, 1, 0, 0,
                                                     0, 0, 1, 0,
                                                     rest[0], rest[1], rest[2], 1});
-            joint_nodes.push_back(node);
             joint_world_rest.push_back(rest);
             int depth = 0;
             for (const cgltf_node* up = node != nullptr ? node->parent : nullptr; up != nullptr;
                  up = up->parent)
                 ++depth;
-            // A source barred from supplying a position is sorted behind every
-            // one that may, so the parent-most rule below still picks among the
-            // sources that can answer and only falls back to this when nothing
-            // else bound the joint at all.
+            // A source barred from supplying a position is recorded as
+            // infinitely deep, which excludes it from the parent-most rule below
+            // — the joint's position comes from a source that can answer, or from
+            // the skeleton the node tree carries, or not at all.
             source_depth.push_back(supplies_position ? depth
                                                      : std::numeric_limits<int>::max());
         }
@@ -465,11 +504,96 @@ Conversion convert_glb(std::span<const std::byte> glb) {
         // mPelvis keeps its world position: it is the root of the skeleton, and
         // the viewer measures it from the avatar's own origin.
         {
-            // Where each joint's target sits in this rig, for measuring against.
-            std::map<std::string_view, std::array<float, 3>> world_of_target;
-            for (std::size_t at = 0; at < built.joints.size(); ++at)
-                world_of_target.emplace(built.joints[at], joint_world_rest[at]);
+            // Where this rig puts each Bento joint, answered once per *target*
+            // rather than once per source.
+            //
+            // Several sources fold onto one joint and they do not agree — a limb
+            // and its twists, a spine segment and the ribs that twist with it.
+            // Taking whichever arrived first left a child measured against one
+            // source while the override actually written for the parent came
+            // from another (compaction keeps the parent-most: b52eb54), and the
+            // two cannot both be right. `Tank_top` and `Biker_Vest` each carried
+            // 44 mm at mChest that way — flagged by mesh-diag's rebuild and
+            // unexplained until now — and the tongue 12 mm from Tongue01 against
+            // Tongue02. So the parent-most source answers, here and in
+            // compaction, and every source folded onto a joint writes that one
+            // answer.
+            std::map<std::string_view, std::pair<int, std::array<float, 3>>> placed;
+            const auto offer = [&placed](std::string_view target, int depth,
+                                         const std::array<float, 3>& world) {
+                const auto found = placed.find(target);
+                if (found == placed.end()) {
+                    placed.emplace(target, std::make_pair(depth, world));
+                } else if (depth < found->second.first) {
+                    found->second = {depth, world};
+                }
+            };
+            for (std::size_t at = 0; at < built.joints.size(); ++at) {
+                const int depth = at < source_depth.size() ? source_depth[at] : 0;
+                // A source barred from supplying a position offers nothing at
+                // all, rather than offering badly and being outvoted.
+                if (depth != std::numeric_limits<int>::max())
+                    offer(built.joints[at], depth, joint_world_rest[at]);
+            }
+            // Then the skeleton *above* what this mesh binds, read from the node
+            // tree the importer carries whether or not the skin binds it
+            // (fbx_import.cpp: "the ancestors are the point").
+            //
+            // A mesh is converted alone, but a joint's position in-world is set
+            // by whichever worn mesh binds it — the body — and every part of one
+            // import agrees about the rig. Assuming Linden's rest for a parent
+            // this mesh does not bind therefore misses by however far the body
+            // moved that parent, and the error compounds down the chain: a
+            // Character Creator jaw sits 31 mm below Linden's, so Caleb's teeth
+            // hung 31 mm through his chin and his tongue, hanging off the teeth
+            // in turn, 39 mm. Ariana, with a smaller head, 69 mm and 115 mm —
+            // her tongue below her jaw and her eyes 49 mm low and 21 mm forward,
+            // out of their sockets (both measured 2026-08-10, in-world and by
+            // mesh-diag).
+            //
+            // Every skeleton node the file carries, not only the ancestors of
+            // what this mesh binds: the two hierarchies disagree about parentage
+            // as well as names, so a part's own ancestry need not mention its
+            // Bento parent at all. Character Creator hangs the tongue off the
+            // jaw where Bento hangs it off the lower teeth.
+            for (cgltf_size at = 0; node_tree_is_rest_pose && at < data->nodes_count; ++at) {
+                const auto* up = &data->nodes[at];
+                if (up->name == nullptr || up->mesh != nullptr) continue;
+                const auto target = mesh::retarget_joint(up->name);
+                if (target.empty()) continue;
+                if (!mesh::retarget_supplies_position(up->name)) continue;
+                int depth = 0;
+                for (const cgltf_node* over = up->parent; over != nullptr; over = over->parent)
+                    ++depth;
+                std::array<float, 16> world{};
+                cgltf_node_transform_world(up, world.data());
+                std::array<float, 3> position{world[12], world[13], world[14]};
+                to_region_axes(position);
+                offer(target, depth, position);
+            }
             for (std::size_t at = 0; at < built.alternate_inverse_bind.size(); ++at) {
+                // Where this rig wants the joint — the answer for the target,
+                // not this source's own rest. A rig that cannot say (every
+                // source barred, no ancestor to ask) asserts the skeleton's own
+                // position, which the viewer's 0.1 mm threshold then skips: a
+                // mesh with nothing to contribute about a joint should leave it
+                // to the mesh that has, not compete for it.
+                std::array<float, 3> here{};
+                if (const auto found = placed.find(built.joints[at]); found != placed.end())
+                    here = found->second.second;
+                else if (!joint_rest(built.joints[at], here[0], here[1], here[2]))
+                    here = joint_world_rest[at];
+                // The bind matrix frames the geometry on that same position, so
+                // the bind pose is identity exactly when the override has been
+                // applied. Using the bound bone's own rest instead only looked
+                // right while the override moved the joint *to* that bone: an
+                // earring folded onto mHead framed itself on the earring, so
+                // once the head stopped following the earring the earring would
+                // have flown 1.38 m up to the head. It also gave a bone weighted
+                // to a joint it hangs below — a twist, a skeleton root — its own
+                // centre of rotation rather than the joint's.
+                for (int axis = 0; axis < 3; ++axis)
+                    built.inverse_bind[at][12 + axis] = -here[axis];
                 // The parent is the *skeleton's*, not the source rig's. The
                 // viewer accumulates world position down its own hierarchy, and
                 // the two do not correspond: Character Creator runs Pelvis ->
@@ -479,40 +603,40 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                 // and head each inheriting the error — while the legs, whose
                 // chains do correspond, stayed correct (in-world, 2026-08-10).
                 const auto parent_name = joint_parent(built.joints[at]);
-                if (parent_name.empty()) continue;  // mPelvis: measured from the origin
                 // Where the viewer will actually put the parent, which is not
-                // always where either skeleton rests it. An unbound joint keeps
-                // the *skeleton's* offset from its own parent, so it hangs off
-                // whatever this mesh did override further up: Bento's inserted
-                // spine joints, which no imported rig has, therefore sit at
-                // Linden's offsets measured from this body's pelvis. Measuring
-                // against Linden's own position instead leaves every chain
-                // carrying the pelvis's displacement — 27 mm here, and 78 mm by
-                // the time it reaches the jaw.
-                std::array<float, 3> parent_rest{};
-                if (const auto found = world_of_target.find(parent_name);
-                    found != world_of_target.end()) {
-                    parent_rest = found->second;
-                } else {
-                    if (!joint_rest(parent_name, parent_rest[0], parent_rest[1], parent_rest[2]))
+                // always where either skeleton rests it. A joint nothing places
+                // keeps the *skeleton's* offset from its own parent, so it hangs
+                // off whatever was placed further up: Bento's inserted spine
+                // joints, which no imported rig has, therefore sit at Linden's
+                // offsets measured from this body's pelvis. Measuring against
+                // Linden's own position instead leaves every chain carrying the
+                // pelvis's displacement — 27 mm here, and 78 mm by the time it
+                // reaches the jaw.
+                std::array<float, 3> parent_rest{};  // mPelvis: from the origin
+                if (!parent_name.empty()) {
+                    if (const auto found = placed.find(parent_name); found != placed.end()) {
+                        parent_rest = found->second.second;
+                    } else if (!joint_rest(parent_name, parent_rest[0], parent_rest[1],
+                                           parent_rest[2])) {
                         continue;
-                    // Walk up to the nearest joint this mesh does place, and
-                    // carry the skeleton's own offsets back down from it.
-                    for (auto above = joint_parent(parent_name); !above.empty();
-                         above = joint_parent(above)) {
-                        const auto bound = world_of_target.find(above);
-                        if (bound == world_of_target.end()) continue;
-                        std::array<float, 3> above_rest{};
-                        if (!joint_rest(above, above_rest[0], above_rest[1], above_rest[2]))
+                    } else {
+                        // Walk up to the nearest joint this rig does place, and
+                        // carry the skeleton's own offsets back down from it.
+                        for (auto above = joint_parent(parent_name); !above.empty();
+                             above = joint_parent(above)) {
+                            const auto found = placed.find(above);
+                            if (found == placed.end()) continue;
+                            std::array<float, 3> above_rest{};
+                            if (!joint_rest(above, above_rest[0], above_rest[1], above_rest[2]))
+                                break;
+                            for (int axis = 0; axis < 3; ++axis)
+                                parent_rest[axis] += found->second.second[axis] - above_rest[axis];
                             break;
-                        for (int axis = 0; axis < 3; ++axis)
-                            parent_rest[axis] += bound->second[axis] - above_rest[axis];
-                        break;
+                        }
                     }
                 }
                 for (int axis = 0; axis < 3; ++axis)
-                    built.alternate_inverse_bind[at][12 + axis] =
-                        joint_world_rest[at][axis] - parent_rest[axis];
+                    built.alternate_inverse_bind[at][12 + axis] = here[axis] - parent_rest[axis];
             }
         }
         joint_names = built.joints;
@@ -746,6 +870,14 @@ Conversion convert_glb(std::span<const std::byte> glb) {
                         // remapped stay valid — but its *position* should come
                         // from the parent-most source that folded here, not
                         // whichever vertex happened to arrive first.
+                        //
+                        // Since 0.16 every source folded onto a joint already
+                        // carries that joint's one answer, so these copies are
+                        // identical and this chooses between equals. It stays
+                        // because it is the same rule stated where a reader of
+                        // the compaction will look for it, and because "they are
+                        // equal" is a property of the block above rather than of
+                        // anything here.
                         //
                         // Character Creator folds a limb's twist bones onto the
                         // limb, and a twist bone sits partway down the segment.

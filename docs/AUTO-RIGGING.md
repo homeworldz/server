@@ -59,6 +59,18 @@ What it needs:
    (`mAlternateBindMatrix`, `pelvis_offset`), which is exactly the mechanism for
    a body that is not Linden-shaped. A retarget should **write** those, not
    flatten them.
+
+   **A part cannot be reconciled on its own** (learned 2026-08-10). An override
+   is a joint's offset *from its parent*, and the parent is placed by whichever
+   worn mesh binds it — the body — not by the mesh being converted and not by
+   Linden. So the teeth of a body whose jaw sits 31 mm below Linden's must be
+   measured against *that* jaw: measured against Linden's they hang 31 mm through
+   the chin, and a tongue hanging off the teeth in turn compounds it. A
+   conversion therefore needs the whole source skeleton in front of it, even for
+   a mesh that binds two joints of it, and the answer to "where does this rig put
+   joint J" must be one answer used everywhere J appears. Nothing about this is
+   visible in a single asset: each mesh is self-consistent and only the worn set
+   is wrong, so the check has to measure the set.
 3. **Extra joints folded away, and the per-mesh budget respected.** Twist bones,
    helper bones and IK targets have no Bento equivalent; their weight merges into
    the nearest mapped ancestor. This is not only tidiness — it is a hard

@@ -663,6 +663,37 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                     index_of_bone.emplace(up, emitted.size());
                     emitted.push_back(up);
                 }
+            // Then the rest of the rig: everything hanging off what is already
+            // emitted, which — the ancestors having reached the skeleton's root —
+            // is the whole skeleton, bound by this mesh or not.
+            //
+            // The ancestors alone are not enough, because the two hierarchies
+            // disagree about more than names. Character Creator hangs the tongue
+            // off the jaw where Bento hangs it off the lower teeth, so the tongue
+            // mesh's ancestry never mentions a tooth: it could not discover where
+            // its own Bento parent goes, assumed Linden's offset for it, and
+            // landed 27 mm out from the teeth the *teeth* mesh had moved. A part
+            // has to be able to ask about any joint the import places, not only
+            // the ones above itself.
+            //
+            // Cost is a few dozen named nodes with a matrix each, against
+            // megabytes of texture in the same file.
+            for (std::size_t at = 0; at < emitted.size(); ++at) {
+                const auto* here = emitted[at];
+                if (here == nullptr) continue;
+                for (std::size_t child = 0; child < here->children.count; ++child) {
+                    const auto* below = here->children.data[child];
+                    // Bones and the null helpers between them. A mesh, camera or
+                    // light under a bone is content hanging off the rig, not part
+                    // of it, and emitting it would put geometry in the skeleton.
+                    if (below == nullptr || below->mesh != nullptr || below->camera != nullptr ||
+                        below->light != nullptr)
+                        continue;
+                    if (index_of_bone.count(below) != 0) continue;
+                    index_of_bone.emplace(below, emitted.size());
+                    emitted.push_back(below);
+                }
+            }
 
             std::vector<std::string> children(emitted.size());
             std::string roots;

@@ -145,7 +145,18 @@ TextureExtraction extract_textures(std::span<const std::byte> glb);
 // Waist -> Spine01 -> Spine02 where Bento runs mPelvis -> mSpine1 -> mSpine2 ->
 // mTorso, so a body came apart from the chest up while its legs stayed correct.
 // Every rendition carrying an override table is superseded.
-inline constexpr const char* generator = "meshsmith/0.15";
+// 0.16 answers "where does this rig put joint J" once per joint, from the whole
+// source skeleton, and writes that one answer everywhere J appears. 0.15 asked
+// each mesh in isolation and each source separately, which was wrong three ways
+// and every one of them moved a face: a parent the mesh did not bind was assumed
+// to rest where Linden rests it, though the body moves it (Caleb's teeth 31 mm
+// below his chin, his tongue 39; Ariana's 69 and 115, her eyes 49 mm low and out
+// of their sockets); a joint several sources fold onto took the first source's
+// position while the override written for it took the parent-most (44 mm at
+// mChest on two garments); and a bone folded by ancestry answered for the joint
+// it merely hangs off (an earring asserting mHead 1.43 m low). Every rendition
+// carrying an override table is superseded.
+inline constexpr const char* generator = "meshsmith/0.16";
 
 } // namespace homeworldz::mesh
 

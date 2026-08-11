@@ -1,3 +1,4 @@
+#include "homeworldz/avatar_joints.h"
 #include "homeworldz/image.h"
 #include "homeworldz/mesh_convert.h"
 #include "homeworldz/slmesh.h"
@@ -395,6 +396,252 @@ int main() {
                              R"({"name":"CC_Base_Spine"})");
         const auto foreign = homeworldz::mesh::convert_glb(glb(foreign_json, bin));
         if (foreign.ok || foreign.error.find("CC_Base_Spine") == std::string::npos) return 34;
+    }
+
+    // One part of a multi-part import, which is how a body actually arrives: a
+    // Character Creator export is one mesh per GLB, so the mesh carrying the
+    // tongue binds two joints and knows the rest of the skeleton only from the
+    // node tree the importer emits alongside it.
+    //
+    // The override for such a joint must be measured against where *this rig*
+    // puts its Bento parent, not where Linden rests it, because at runtime the
+    // parent is placed by whichever worn mesh binds it. Measuring against Linden
+    // put Caleb's teeth 31 mm through his chin and his tongue 39 mm, and
+    // Ariana's tongue 115 mm below her jaw — none of it visible offline, because
+    // each mesh was self-consistent and only the set was wrong (2026-08-10).
+    //
+    // The parent here is deliberately *not* an ancestor: Character Creator hangs
+    // the tongue off the jaw where Bento hangs it off the lower teeth, so a
+    // converter that walked only its own ancestry would still miss it.
+    {
+        std::vector<std::uint8_t> bin;
+        const auto put_float = [&](float value) {
+            std::uint8_t raw[4];
+            std::memcpy(raw, &value, 4);
+            bin.insert(bin.end(), raw, raw + 4);
+        };
+        const auto put_ushort = [&](std::uint16_t value) {
+            bin.push_back(static_cast<std::uint8_t>(value));
+            bin.push_back(static_cast<std::uint8_t>(value >> 8));
+        };
+        for (const auto& corner : {std::array<float, 3>{0, 0, 0},
+                                   std::array<float, 3>{1, 0, 0},
+                                   std::array<float, 3>{0, 1, 0}})
+            for (const auto value : corner) put_float(value);
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            put_ushort(0); put_ushort(0); put_ushort(0); put_ushort(0);
+        }
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            put_float(1.0f); put_float(0.0f); put_float(0.0f); put_float(0.0f);
+        }
+        // Positions in glTF axes, which the region reads as (x,y,z) <- (z,x,y).
+        // The tongue bone rests at region (0.09, 0, 1.60) and the lower tooth it
+        // must be measured against at (0.06, 0, 1.58) — the tooth bound by
+        // another mesh of the same import, present here only as a node.
+        const auto identity_with = [&](float x, float y, float z) {
+            const float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1};
+            std::string out = "[";
+            for (int cell = 0; cell < 16; ++cell) {
+                if (cell != 0) out += ',';
+                char buffer[32];
+                std::snprintf(buffer, sizeof buffer, "%g", m[cell]);
+                out += buffer;
+            }
+            return out + "]";
+        };
+        // inverse(world) for the bound joint, since the geometry is in world
+        // space: a translation to the negated rest.
+        for (const auto value : {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f,
+                                 0.f, -1.60f, -0.09f, 1.f})
+            put_float(value);
+
+        const std::string part_json =
+            R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":172}],)"
+            R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)"
+            R"({"buffer":0,"byteOffset":36,"byteLength":24},)"
+            R"({"buffer":0,"byteOffset":60,"byteLength":48},)"
+            R"({"buffer":0,"byteOffset":108,"byteLength":64}],)"
+            R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
+            R"("min":[0,0,0],"max":[1,1,0]},)"
+            R"({"bufferView":1,"componentType":5123,"count":3,"type":"VEC4"},)"
+            R"({"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"},)"
+            R"({"bufferView":3,"componentType":5126,"count":1,"type":"MAT4"}],)"
+            R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}}]}],)"
+            R"("nodes":[{"mesh":0,"skin":0},)"
+            R"({"name":"CC_Base_Tongue01","matrix":)" + identity_with(0, 1.60f, 0.09f) + "},"
+            R"({"name":"CC_Base_Teeth02","matrix":)" + identity_with(0, 1.58f, 0.06f) + "}],"
+            R"("skins":[{"joints":[1],"inverseBindMatrices":3}],)"
+            R"("scenes":[{"nodes":[0,1,2]}],"scene":0})";
+        const auto part = homeworldz::mesh::convert_glb(glb(part_json, bin));
+        if (!part.ok) return 60;
+        const auto parsed = homeworldz::slmesh::parse(part.sl_mesh);
+        if (!parsed || !parsed->skin) return 61;
+        if (parsed->skin->joints.size() != 1) return 62;
+        if (parsed->skin->joints[0] != "mFaceTongueBase") return 63;
+        if (parsed->skin->alternate_inverse_bind.size() != 1) return 64;
+        // Region axes throughout: (0.09, 0, 1.60) - (0.06, 0, 1.58).
+        const std::array<float, 3> expected_override{0.03f, 0.0f, 0.02f};
+        for (int axis = 0; axis < 3; ++axis)
+            if (std::fabs(parsed->skin->alternate_inverse_bind[0][12 + axis] -
+                          expected_override[axis]) > 1e-3f)
+                return 65;
+        const std::array<float, 3> expected_rest{-0.09f, 0.0f, -1.60f};
+        for (int axis = 0; axis < 3; ++axis)
+            if (std::fabs(parsed->skin->inverse_bind[0][12 + axis] - expected_rest[axis]) > 1e-3f)
+                return 66;
+    }
+
+    // A bone folded onto a joint by ancestry, which is how an accessory arrives:
+    // Character Creator names an earring's bone after the earring, so only its
+    // ancestry says it hangs off the head.
+    //
+    // Such a bone must not answer for the joint's position — it is not the joint
+    // under another name, it is something hanging off it. Ariana's earring rests
+    // at her character origin, and answering put mHead at z=0.254 against the
+    // body's 1.634: an accessory quietly competing to move the wearer's head
+    // 1.43 m down (measured 2026-08-10).
+    //
+    // Both matrices must therefore frame the *head*: the override sends mHead
+    // where this rig puts it, and the inverse bind frames the geometry on that
+    // same point, so the earring rides the head instead of the head chasing the
+    // earring.
+    {
+        std::vector<std::uint8_t> bin;
+        const auto put_float = [&](float value) {
+            std::uint8_t raw[4];
+            std::memcpy(raw, &value, 4);
+            bin.insert(bin.end(), raw, raw + 4);
+        };
+        const auto put_ushort = [&](std::uint16_t value) {
+            bin.push_back(static_cast<std::uint8_t>(value));
+            bin.push_back(static_cast<std::uint8_t>(value >> 8));
+        };
+        for (const auto& corner : {std::array<float, 3>{0, 0, 0},
+                                   std::array<float, 3>{1, 0, 0},
+                                   std::array<float, 3>{0, 1, 0}})
+            for (const auto value : corner) put_float(value);
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            put_ushort(0); put_ushort(0); put_ushort(0); put_ushort(0);
+        }
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            put_float(1.0f); put_float(0.0f); put_float(0.0f); put_float(0.0f);
+        }
+        // The head rests at region (-0.02, 0, 1.66); the earring bone hangs off
+        // it at region (0.10, 0.08, 1.55), and its inverse bind is that.
+        for (const auto value : {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f,
+                                 -0.08f, -1.55f, -0.10f, 1.f})
+            put_float(value);
+
+        const std::string worn_json =
+            R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":172}],)"
+            R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)"
+            R"({"buffer":0,"byteOffset":36,"byteLength":24},)"
+            R"({"buffer":0,"byteOffset":60,"byteLength":48},)"
+            R"({"buffer":0,"byteOffset":108,"byteLength":64}],)"
+            R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
+            R"("min":[0,0,0],"max":[1,1,0]},)"
+            R"({"bufferView":1,"componentType":5123,"count":3,"type":"VEC4"},)"
+            R"({"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"},)"
+            R"({"bufferView":3,"componentType":5126,"count":1,"type":"MAT4"}],)"
+            R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}}]}],)"
+            R"("nodes":[{"mesh":0,"skin":0},)"
+            // Local to the head, so the earring's world translation is the sum.
+            R"({"name":"Earring_Flower_0","matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0.08,-0.11,0.12,1]},)"
+            R"({"name":"CC_Base_Head","matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0,1.66,-0.02,1],)"
+            R"("children":[1]}],)"
+            R"("skins":[{"joints":[1],"inverseBindMatrices":3}],)"
+            R"("scenes":[{"nodes":[0,2]}],"scene":0})";
+        const auto worn = homeworldz::mesh::convert_glb(glb(worn_json, bin));
+        if (!worn.ok) return 70;
+        const auto parsed = homeworldz::slmesh::parse(worn.sl_mesh);
+        if (!parsed || !parsed->skin) return 71;
+        if (parsed->skin->joints.size() != 1) return 72;
+        if (parsed->skin->joints[0] != "mHead") return 73;
+        if (parsed->skin->alternate_inverse_bind.size() != 1) return 74;
+        // mHead's parent is mNeck, which nothing here places, so it keeps the
+        // skeleton's own position — asked of the skeleton rather than copied out
+        // of it, since a number transcribed into a test is a number that can
+        // stop matching.
+        std::array<float, 3> neck{};
+        if (!homeworldz::mesh::joint_rest("mNeck", neck[0], neck[1], neck[2])) return 75;
+        const std::array<float, 3> head{-0.02f, 0.0f, 1.66f};
+        for (int axis = 0; axis < 3; ++axis)
+            if (std::fabs(parsed->skin->alternate_inverse_bind[0][12 + axis] -
+                          (head[axis] - neck[axis])) > 1e-3f)
+                return 76;
+        // The head, not the earring: an inverse bind of -(0.10, 0.08, 1.55)
+        // would send the geometry 1.38 m up the moment the head stopped
+        // following it.
+        for (int axis = 0; axis < 3; ++axis)
+            if (std::fabs(parsed->skin->inverse_bind[0][12 + axis] + head[axis]) > 1e-3f)
+                return 77;
+    }
+
+    // A GLB whose node tree is *not* the rest pose, which glTF permits: the
+    // inverse bind matrices alone determine skinning, so an asset may leave every
+    // joint node at identity and be perfectly correct. Reading joint positions
+    // out of that tree would place every unbound joint at the origin and hand its
+    // children metre-scale overrides.
+    //
+    // So the tree is consulted only where it agrees with the matrices that do
+    // decide the bind pose, and this asset must convert as though it had no tree:
+    // mChest's parent chain is unplaced, so the override is measured against the
+    // skeleton's own mSpine4 — not against an mChest node sitting at the origin.
+    {
+        std::vector<std::uint8_t> bin;
+        const auto put_float = [&](float value) {
+            std::uint8_t raw[4];
+            std::memcpy(raw, &value, 4);
+            bin.insert(bin.end(), raw, raw + 4);
+        };
+        const auto put_ushort = [&](std::uint16_t value) {
+            bin.push_back(static_cast<std::uint8_t>(value));
+            bin.push_back(static_cast<std::uint8_t>(value >> 8));
+        };
+        for (const auto& corner : {std::array<float, 3>{0, 0, 0},
+                                   std::array<float, 3>{1, 0, 0},
+                                   std::array<float, 3>{0, 1, 0}})
+            for (const auto value : corner) put_float(value);
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            put_ushort(0); put_ushort(0); put_ushort(0); put_ushort(0);
+        }
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            put_float(1.0f); put_float(0.0f); put_float(0.0f); put_float(0.0f);
+        }
+        // mChest resting at region (0, 0, 1.20): glTF y is the region's z.
+        for (const auto value : {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f,
+                                 0.f, -1.20f, 0.f, 1.f})
+            put_float(value);
+
+        const std::string flat_json =
+            R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":172}],)"
+            R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)"
+            R"({"buffer":0,"byteOffset":36,"byteLength":24},)"
+            R"({"buffer":0,"byteOffset":60,"byteLength":48},)"
+            R"({"buffer":0,"byteOffset":108,"byteLength":64}],)"
+            R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
+            R"("min":[0,0,0],"max":[1,1,0]},)"
+            R"({"bufferView":1,"componentType":5123,"count":3,"type":"VEC4"},)"
+            R"({"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"},)"
+            R"({"bufferView":3,"componentType":5126,"count":1,"type":"MAT4"}],)"
+            R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}}]}],)"
+            // No transforms anywhere: both nodes sit at the origin.
+            R"("nodes":[{"mesh":0,"skin":0},{"name":"mChest"},{"name":"mTorso"}],)"
+            R"("skins":[{"joints":[1],"inverseBindMatrices":3}],)"
+            R"("scenes":[{"nodes":[0,1,2]}],"scene":0})";
+        const auto flat = homeworldz::mesh::convert_glb(glb(flat_json, bin));
+        if (!flat.ok) return 80;
+        const auto parsed = homeworldz::slmesh::parse(flat.sl_mesh);
+        if (!parsed || !parsed->skin) return 81;
+        if (parsed->skin->joints.size() != 1 || parsed->skin->joints[0] != "mChest") return 82;
+        if (parsed->skin->alternate_inverse_bind.size() != 1) return 83;
+        std::array<float, 3> spine4{};
+        if (!homeworldz::mesh::joint_rest("mSpine4", spine4[0], spine4[1], spine4[2])) return 84;
+        const std::array<float, 3> chest{0.0f, 0.0f, 1.20f};
+        for (int axis = 0; axis < 3; ++axis)
+            if (std::fabs(parsed->skin->alternate_inverse_bind[0][12 + axis] -
+                          (chest[axis] - spine4[axis])) > 1e-3f)
+                return 85;
     }
 
     return 0;
