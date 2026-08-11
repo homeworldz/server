@@ -379,11 +379,24 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 }
                 if (has_texcoords) {
                     const auto uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, corner);
-                    // FBX puts the UV origin at the bottom left and glTF at the
-                    // top left, so V is flipped. Getting this wrong produces a
-                    // texture that is present, plausible and upside down.
+                    // Taken as ufbx reports them, with no V flip.
+                    //
+                    // This flipped V until 2026-08-10, on the stated grounds
+                    // that FBX puts the UV origin at the bottom left and glTF at
+                    // the top left. That was assumed rather than measured, and
+                    // it is wrong here: an imported body wore its skin upside
+                    // down, nipples at the hips and a face across the abdomen.
+                    //
+                    // What settles it is the other path. An uploaded GLB reaches
+                    // a viewer through the same glTF -> sl-mesh conversion,
+                    // which flips nothing, and its textures have been right
+                    // since M1. So whatever the two specifications say, zero
+                    // flips is what renders correctly downstream, and an import
+                    // has to arrive at the same place an upload does. Flipping
+                    // here also left the canonical glTF disagreeing with every
+                    // other glTF we store.
                     streams.texcoords.push_back(
-                        {static_cast<float>(uv.x), 1.0f - static_cast<float>(uv.y)});
+                        {static_cast<float>(uv.x), static_cast<float>(uv.y)});
                 }
                 if (skin != nullptr) {
                     const auto vertex = mesh->vertex_indices.data[corner];
