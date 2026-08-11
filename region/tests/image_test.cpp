@@ -309,7 +309,85 @@ int main() {
         }
     }
 
+    // An opacity map becoming base-colour alpha. White is opaque: an eyelash map
+    // is white lashes on a black card, and inverting it draws a black rectangle
+    // where a lash should be — which reads as a geometry fault, not a channel
+    // one, so it is worth a test rather than a comment.
+    {
+        Image rgba = make_solid(2, 2, 4, {10, 20, 30, 255});
+        Image mask = make_solid(2, 2, 1, {255});
+        mask.pixels[0] = 0;    // one transparent corner
+        mask.pixels[1] = 128;  // and one half-way
+        if (!write_alpha_from_luminance(rgba, mask)) {
+            std::cerr << "write_alpha_from_luminance refused a good pair\n";
+            return 1;
+        }
+        if (rgba.pixels[3] != 0 || rgba.pixels[7] != 128 || rgba.pixels[11] != 255) {
+            std::cerr << "alpha from mask wrong: " << int(rgba.pixels[3]) << ','
+                      << int(rgba.pixels[7]) << ',' << int(rgba.pixels[11]) << '\n';
+            return 1;
+        }
+        // The colour is untouched — only alpha is written.
+        if (rgba.pixels[0] != 10 || rgba.pixels[1] != 20 || rgba.pixels[2] != 30) {
+            std::cerr << "alpha write disturbed the colour channels\n";
+            return 1;
+        }
+    }
+
+    // A colour mask is read as luminance, not as its red channel: a mask
+    // authored as an RGB image must not lose two thirds of itself. Pure green at
+    // Rec. 601 weights is 151/256 of full.
+    {
+        Image rgba = make_solid(1, 1, 4, {0, 0, 0, 255});
+        const Image green = make_solid(1, 1, 3, {0, 255, 0});
+        if (!write_alpha_from_luminance(rgba, green)) return 1;
+        if (!near(rgba.pixels[3], 151, 1)) {
+            std::cerr << "colour mask not read as luminance: " << int(rgba.pixels[3]) << '\n';
+            return 1;
+        }
+    }
+
+    // A mask of a different size than the surface is resampled rather than
+    // refused: Character Creator authors these at whatever size it likes.
+    {
+        Image rgba = make_solid(4, 4, 4, {1, 2, 3, 255});
+        const Image mask = make_solid(2, 2, 1, {64});
+        if (!write_alpha_from_luminance(rgba, mask)) return 1;
+        for (std::size_t at = 0; at < rgba.pixel_count(); ++at)
+            if (rgba.pixels[at * 4 + 3] != 64) {
+                std::cerr << "resampled mask lost a pixel at " << at << '\n';
+                return 1;
+            }
+    }
+
+    // A material with an opacity map and no colour map: one colour everywhere,
+    // the mask carrying the whole of the shape. Character Creator's eye
+    // occlusion is exactly this, and treating it as textureless published the
+    // part with no texture at all — which the viewer draws as opaque white, two
+    // white shells over the eyes (in-world, 2026-08-11).
+    {
+        Image mask = make_solid(2, 1, 1, {255});
+        mask.pixels[1] = 0;
+        const Image out = solid_with_alpha({0, 0, 0}, mask);
+        if (out.width != 2 || out.height != 1 || out.channels != 4) {
+            std::cerr << "solid_with_alpha did not take the mask's shape\n";
+            return 1;
+        }
+        if (out.pixels[0] != 0 || out.pixels[1] != 0 || out.pixels[2] != 0 ||
+            out.pixels[3] != 255 || out.pixels[7] != 0) {
+            std::cerr << "solid_with_alpha wrong: " << int(out.pixels[3]) << ','
+                      << int(out.pixels[7]) << '\n';
+            return 1;
+        }
+        // An empty mask has no shape to take, so there is nothing to publish.
+        if (!solid_with_alpha({0, 0, 0}, Image{}).empty()) {
+            std::cerr << "solid_with_alpha invented an image from an empty mask\n";
+            return 1;
+        }
+    }
+
     std::cerr << "image j2c lossless round-trip OK (" << encoded->size() << " bytes)\n";
     std::cerr << "image composite/resize/tint OK\n";
+    std::cerr << "image opacity-to-alpha OK\n";
     return 0;
 }

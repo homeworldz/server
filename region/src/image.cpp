@@ -470,6 +470,41 @@ Image resize_nearest(const Image& src, std::uint32_t width, std::uint32_t height
     return out;
 }
 
+bool write_alpha_from_luminance(Image& rgba, const Image& mask) {
+    if (rgba.empty() || mask.empty() || rgba.channels != 4 ||
+        rgba.pixels.size() != rgba.expected_size())
+        return false;
+    const Image resampled = resize_nearest(mask, rgba.width, rgba.height);
+    if (resampled.empty()) return false;
+
+    const auto pixels = rgba.pixel_count();
+    for (std::size_t at = 0; at < pixels; ++at) {
+        const std::uint8_t* sample = &resampled.pixels[at * resampled.channels];
+        // A one- or two-channel mask is already the value; a colour one is read
+        // as luminance (Rec. 601 weights, fixed point) rather than by taking red.
+        const std::uint32_t value =
+            resampled.channels >= 3
+                ? (sample[0] * 77u + sample[1] * 151u + sample[2] * 28u) >> 8
+                : sample[0];
+        rgba.pixels[at * 4 + 3] = static_cast<std::uint8_t>(value);
+    }
+    return true;
+}
+
+Image solid_with_alpha(std::array<std::uint8_t, 3> colour, const Image& mask) {
+    if (mask.empty()) return {};
+    Image out;
+    out.width = mask.width;
+    out.height = mask.height;
+    out.channels = 4;
+    out.pixels.resize(out.expected_size());
+    const std::array<std::uint8_t, 4> fill{colour[0], colour[1], colour[2], 255};
+    for (std::size_t at = 0; at < out.pixel_count(); ++at)
+        std::memcpy(&out.pixels[at * 4], fill.data(), fill.size());
+    if (!write_alpha_from_luminance(out, mask)) return {};
+    return out;
+}
+
 Image composite_rgba(std::uint32_t width, std::uint32_t height,
                      const std::vector<Layer>& layers) {
     if (width == 0 || height == 0) return {};

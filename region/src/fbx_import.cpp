@@ -83,6 +83,14 @@ std::vector<std::uint8_t> to_u8(const ufbx_blob& blob) {
 // it — white lashes on a black card, and the lashes are the part you can see.
 // Guessing wrong here inverts every masked surface, which renders as a solid
 // black rectangle where a lash should be and looks like a geometry fault.
+std::optional<std::vector<std::byte>> encoded_png(const image::Image& rgba) {
+    const auto encoded = image::encode_png(rgba);
+    if (!encoded) return std::nullopt;
+    std::vector<std::byte> out(encoded->size());
+    std::memcpy(out.data(), encoded->data(), encoded->size());
+    return out;
+}
+
 std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
                                                       const ufbx_blob& opacity) {
     const auto base = image::decode_png_or_jpeg(to_u8(colour));
@@ -90,31 +98,41 @@ std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
     if (!base || !mask || base->empty() || mask->empty()) return std::nullopt;
 
     auto rgba = image::to_rgba(*base);
+    if (!image::write_alpha_from_luminance(rgba, *mask)) return std::nullopt;
+    return encoded_png(rgba);
+}
+
+// The same, for a material that has an opacity map and *no* colour map: the
+// colour is then a single value on the material, and the surface is that value
+// everywhere with the mask deciding where it shows.
+//
+// Character Creator's eye occlusion is exactly this — a shell over the eyeball
+// that darkens the socket, with its shape entirely in the mask — and so is a
+// tear line on some exports. Treating such a material as textureless dropped
+// the mask with the absent colour, published the part with no texture at all,
+// and left the face on the blank fallback: two opaque white shells over the
+// eyes, which is what it looked like in-world (2026-08-11).
+//
+// The factor is written straight into an sRGB-tagged image without conversion.
+// For the materials this exists to serve the point is moot — Reallusion sets
+// them black or white, where every colour space agrees — and inventing a
+// transfer function for the mid-greys would be a guess about the exporter that
+// nothing here can check.
+std::optional<std::vector<std::byte>> composite_factor_alpha(const ufbx_vec4& colour,
+                                                             const ufbx_blob& opacity) {
+    const auto mask = image::decode_png_or_jpeg(to_u8(opacity));
+    if (!mask || mask->empty()) return std::nullopt;
+
+    const auto channel = [](ufbx_real value) {
+        const auto scaled = value * 255.0;
+        if (!(scaled > 0.0)) return static_cast<std::uint8_t>(0);
+        if (scaled > 255.0) return static_cast<std::uint8_t>(255);
+        return static_cast<std::uint8_t>(scaled + 0.5);
+    };
+    const auto rgba = image::solid_with_alpha(
+        {channel(colour.x), channel(colour.y), channel(colour.z)}, *mask);
     if (rgba.empty()) return std::nullopt;
-    auto resampled = *mask;
-    if (resampled.width != rgba.width || resampled.height != rgba.height)
-        resampled = image::resize_nearest(resampled, rgba.width, rgba.height);
-    if (resampled.empty()) return std::nullopt;
-
-    const auto pixels = rgba.pixel_count();
-    for (std::size_t at = 0; at < pixels; ++at) {
-        const auto* sample = &resampled.pixels[at * resampled.channels];
-        // A one- or two-channel mask is already the value; a colour one is
-        // read as luminance rather than by taking the red channel, so a mask
-        // authored as a coloured image does not silently lose two thirds of
-        // its information.
-        const std::uint32_t value =
-            resampled.channels >= 3
-                ? (sample[0] * 77u + sample[1] * 151u + sample[2] * 28u) >> 8
-                : sample[0];
-        rgba.pixels[at * 4 + 3] = static_cast<std::uint8_t>(value);
-    }
-
-    const auto encoded = image::encode_png(rgba);
-    if (!encoded) return std::nullopt;
-    std::vector<std::byte> out(encoded->size());
-    std::memcpy(out.data(), encoded->data(), encoded->size());
-    return out;
+    return encoded_png(rgba);
 }
 
 // ufbx stores a 3x4 column-major affine; glTF wants a 4x4 column-major one.
@@ -325,6 +343,40 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             }
             const auto slot = image_files.size();
             image_slot.emplace(key, slot);
+            image_files.push_back(std::move(embedded));
+            return static_cast<long long>(slot);
+        };
+
+        // A mask with no colour map to carry it: the colour comes from the
+        // material instead. Keyed on the pair the image is made of, like
+        // slot_for, so two materials sharing a mask and a colour share one
+        // image — Reallusion gives the left and right eye occlusion the same
+        // mask, and their colours match too.
+        std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> factor_slot;
+        const auto slot_for_factor = [&](const ufbx_vec4& colour,
+                                         const ufbx_texture* opacity) -> long long {
+            const auto* mask = carried(opacity);
+            if (mask == nullptr) return -1;
+            const auto packed = static_cast<std::uint32_t>(
+                (static_cast<std::uint32_t>((std::clamp)(colour.x, 0.0, 1.0) * 255.0 + 0.5) << 16) |
+                (static_cast<std::uint32_t>((std::clamp)(colour.y, 0.0, 1.0) * 255.0 + 0.5) << 8) |
+                static_cast<std::uint32_t>((std::clamp)(colour.z, 0.0, 1.0) * 255.0 + 0.5));
+            const std::pair<std::uint32_t, std::uint32_t> key{opacity->file_index, packed};
+            if (const auto found = factor_slot.find(key); found != factor_slot.end())
+                return static_cast<long long>(found->second);
+            auto filled = composite_factor_alpha(colour, mask->content);
+            if (!filled) {
+                // The mask was unreadable, so there is nothing to publish and
+                // the count says a binding was lost. Better than a texture that
+                // states a colour the creator never asked for.
+                ++result.bindings_dropped;
+                return -1;
+            }
+            Embedded embedded;
+            embedded.bytes = std::move(*filled);
+            embedded.mime = "image/png";  // composite_factor_alpha encodes PNG
+            const auto slot = image_files.size();
+            factor_slot.emplace(key, slot);
             image_files.push_back(std::move(embedded));
             return static_cast<long long>(slot);
         };
@@ -553,6 +605,12 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 if (opacity == nullptr) opacity = material->pbr.transmission_color.texture;
 
                 base_colour = slot_for(material->pbr.base_color.texture, opacity);
+                // No colour map, but a mask: the material's own colour is the
+                // surface, and the mask is the whole of its shape. Without this
+                // the mask went out with the missing colour and the part
+                // published untextured, which the viewer draws as opaque white.
+                if (base_colour < 0)
+                    base_colour = slot_for_factor(material->pbr.base_color.value_vec4, opacity);
                 normal_map = slot_for(material->pbr.normal_map.texture, nullptr);
                 masked = opacity != nullptr && carried(opacity) != nullptr && base_colour >= 0;
 

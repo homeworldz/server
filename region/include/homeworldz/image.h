@@ -65,6 +65,31 @@ Image to_rgba(const Image& src);
 // Returns an empty Image on invalid input.
 Image resize_nearest(const Image& src, std::uint32_t width, std::uint32_t height);
 
+// Replace `rgba`'s alpha channel with `mask`'s luminance, resampling the mask to
+// fit. `rgba` must be 4-channel; false is returned and nothing written if either
+// image is empty or the resample fails.
+//
+// This is how an opacity map authored as its own image becomes glTF's
+// base-colour alpha, and it lives here rather than in the importer because the
+// convention it encodes is worth stating once and testing once:
+//
+//   - **White is opaque.** The two names disagree — FBX files these images under
+//     `TransparentColor`, whose semantics are the opposite, while Reallusion
+//     names the file `_Opacity`. An eyelash map settles it: white lashes on a
+//     black card, and the lashes are the part you can see. Inverting this
+//     renders a solid black rectangle where a lash should be, which looks like a
+//     geometry fault rather than a channel one.
+//   - **A colour mask is read as luminance**, not as its red channel, so a mask
+//     authored as an RGB image does not silently lose two thirds of itself.
+bool write_alpha_from_luminance(Image& rgba, const Image& mask);
+
+// An RGBA image of one colour everywhere, with `mask`'s luminance as its alpha.
+//
+// For a material that has an opacity map and no colour map: the colour is then a
+// single value on the material and the mask is the whole of the surface's shape.
+// Returns an empty Image if the mask is empty.
+Image solid_with_alpha(std::array<std::uint8_t, 3> colour, const Image& mask);
+
 // One contribution to a composite: a source image plus an RGB tint multiplied
 // into its color channels (255,255,255 = no tint).
 struct Layer {
