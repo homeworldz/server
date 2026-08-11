@@ -1258,6 +1258,24 @@ int main(int argc, char* argv[]) {
     // messages carries the current setting for the other, not a default.
     homeworldz::terrain::Settings pending_terrain_layers;
     std::unique_ptr<homeworldz::grid::RegistrationLifecycle> registration;
+    // Renew the lease from inside a long startup step.
+    //
+    // The main loop is what normally renews, and it does not run until every
+    // startup step has finished. Those steps are not bounded by anything: the
+    // asset ones make a grid round trip per asset, so they grow with the
+    // region's content. A region that takes longer to start than its lease
+    // announces itself, expires, and shuts down cleanly on its first tick —
+    // and systemd will not restart a clean exit, so it simply stays down.
+    //
+    // tick() renews only when the lease is half spent, so calling this inside a
+    // loop costs a clock read per iteration.
+    const auto keep_lease_alive = [&registration]() {
+        if (!registration) return;
+        if (registration->tick(std::chrono::steady_clock::now())) return;
+        std::cerr << "{\"level\":\"warning\",\"message\":\"region lease renewal failed during "
+                     "startup\",\"reason\":"
+                  << homeworldz::api::json_string(registration->last_error()) << "}" << std::endl;
+    };
     std::unique_ptr<homeworldz::session::Server> session_server;
     std::unique_ptr<homeworldz::grid::Client> viewer_grid;
     // Declared beside viewer_grid because it is built in the same place, once
@@ -1590,6 +1608,9 @@ int main(int argc, char* argv[]) {
         if (viewer_grid) {
             const auto assets = storage->list_assets();
             for (const auto& asset : assets) {
+                // A grid round trip per asset, so this is the other startup step
+                // that outgrows a lease. See keep_lease_alive.
+                keep_lease_alive();
                 if (!viewer_grid->register_asset(asset.viewer_id, asset.creator_id, asset.sha256,
                                                  asset.size, region_public_endpoint, true)) {
                     const auto authoritative = viewer_grid->find_asset(asset.viewer_id);
@@ -1619,6 +1640,20 @@ int main(int argc, char* argv[]) {
                 // and this region's single thread cannot meet (ADR 0026).
                 std::size_t vaulted = 0;
                 for (const auto& asset : assets) {
+                    // Keep the lease alive while doing it. Renewal is otherwise
+                    // driven by the main loop, which does not run until startup
+                    // finishes — and startup is not bounded: this vaults every
+                    // bundled asset with a grid round trip each, so it grows with
+                    // the region's content. Welcome reached 2290 assets and ~120
+                    // seconds against a 60 second lease, announced itself,
+                    // expired, and shut itself down cleanly on its first tick.
+                    // systemd declines to restart a clean exit, so the region
+                    // stayed down and adding content was what did it
+                    // (in-world, 2026-08-11).
+                    //
+                    // tick() is already a no-op until the lease is half spent, so
+                    // calling it per asset costs a clock read and nothing else.
+                    keep_lease_alive();
                     try {
                         const auto bytes = storage->read_asset(asset.viewer_id);
                         if (viewer_grid->store_vault_asset(asset.viewer_id,
@@ -3770,6 +3805,63 @@ int main(int argc, char* argv[]) {
                                   << (done.unresolved_joints.empty() ? "true" : "false")
                                   << ",\"unresolvedJoints\":[" << unresolved << "]"
                                   << ",\"items\":[" << parts << "]}" << std::endl;
+                        // And tell the one person it happened to.
+                        //
+                        // An import is acknowledged with a 202 and answered
+                        // minutes later, so until now this log line was the only
+                        // place the answer existed: a creator whose rig could not
+                        // be retargeted got items that rez, render and cannot be
+                        // worn, with nothing saying so. The first person to hit it
+                        // diagnosed it by walking into an invisible Tyrannosaurus
+                        // (2026-08-11).
+                        //
+                        // The llOwnerSay shape — source type object, chat type
+                        // owner-say — because it is private to them and needs no
+                        // object to have said it.
+                        if (!done.creator_user_id.empty()) {
+                            std::string note = "Imported " +
+                                std::to_string(done.parts.size()) + " part(s).";
+                            if (!done.unresolved_joints.empty()) {
+                                note += " This file's rig is not a " +
+                                    std::string(homeworldz::mesh::rigged_skeleton) +
+                                    " skeleton, so the parts rez and render but cannot be worn."
+                                    " Unrecognised joint(s): ";
+                                for (std::size_t at = 0; at < done.unresolved_joints.size(); ++at) {
+                                    // Chat is bounded at 1023 bytes and a rig can
+                                    // name dozens; the first few identify it.
+                                    if (at == 6) {
+                                        note += ", and " +
+                                            std::to_string(done.unresolved_joints.size() - at) +
+                                            " more";
+                                        break;
+                                    }
+                                    if (at != 0) note += ", ";
+                                    note += done.unresolved_joints[at];
+                                }
+                                note += '.';
+                            }
+                            homeworldz::viewer::ChatFromSimulator told;
+                            told.from_name = region_name;
+                            if (const auto region_uuid =
+                                    homeworldz::viewer::parse_uuid(provisioned_region_id)) {
+                                told.source_id = *region_uuid;
+                                told.owner_id = *region_uuid;
+                            }
+                            told.source_type = 0x02;
+                            told.chat_type = 0x08;
+                            told.audible = 0x01;
+                            told.message = std::move(note);
+                            const auto payload =
+                                homeworldz::viewer::encode_chat_from_simulator(told);
+                            const auto spoken_at = std::chrono::steady_clock::now();
+                            for (const auto& [recipient_endpoint, recipient] : avatars) {
+                                if (recipient.user_id != done.creator_user_id) continue;
+                                if (const auto outgoing = circuits.send(recipient_endpoint, payload,
+                                                                        true, spoken_at))
+                                    static_cast<void>(
+                                        send_udp(viewer_server, recipient_endpoint, *outgoing));
+                            }
+                        }
                     } else {
                         // ADR 0035: import failure is a property of the asset,
                         // not a lost upload. The source is stored and stays

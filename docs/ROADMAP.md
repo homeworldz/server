@@ -13,8 +13,8 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="37">37%</progress>
- <strong>37%</strong>
+  <progress data-color="primary" max="100" value="39">39%</progress>
+ <strong>39%</strong>
 </label>
 </p>
 
@@ -31,7 +31,7 @@ client.
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
 | 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="86" aria-label="Phase 2 progress: 86%">86%</progress> | 86% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
-| 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="42" aria-label="Phase 4 progress: 42%">42%</progress> | 42% |
+| 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="15" aria-label="Phase 5 progress: 15%">15%</progress> | 15% |
 | 6. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 6 progress: 6%">6%</progress> | 6% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="23" aria-label="Phase 7 progress: 23%">23%</progress> | 23% |
@@ -214,13 +214,15 @@ client family is served a derived rendition by a conversion worker.
 - [x] Close the texture pipeline's asymmetry.
 - [ ] V-HACD convex decomposition for mesh physics; the shipped physics block is the conservative bounding-box hull.
 - [x] Regenerate stale renditions.
-- [ ] M4 rigged mesh: glTF skins mapped onto the Bento skeleton (refusing rigs that do not map), attachments and body wearables.
+- [x] M4 rigged mesh: glTF skins mapped onto the Bento skeleton, attachments and body wearables. A rig that does *not* map is no longer refused — an upload is, but an imported file keeps its geometry and converts as static, because refusing produced an asset that drew nothing and still collided.
 - [ ] M5 import breadth: **server-side** FBX/OBJ/DAE and archive import ([ADR 0035](adr/0035-server-side-source-format-import.md)), so every client uploads the source and gets the same result — and a third-party viewer gains import by uploading a file rather than implementing a converter. Documented Daz Studio export path, optional web import service on the management site.
   - [x] **FBX** import, live and proven against the cloud grid: an upload is stored canonically, imported off the region's loop into one asset per mesh, and lands as inventory items. A 105 MB Character Creator character imports as 15 assets carrying 89 textures.
   - [ ] OBJ and DAE, and the archive/bundle layer for sources whose textures are external.
-- [ ] Rig retargeting, so a creator does not need Blender with Avastar or Bento Buddy to bring a body in.
+- [x] Rig retargeting, so a creator does not need Blender with Avastar or Bento Buddy to bring a body in. A Character Creator character is worn and correct in-world; what remains is authoring guidance and one unbuilt case, below.
   - [x] **Character Creator correspondence**, which the design could not assume: all 85 joints a CC skin binds map onto 60 Bento joints, none unmapped, and joints with no equivalent fold into the nearest ancestor that has one. Proportions ride on joint position overrides rather than moving the mesh.
-  - [ ] **Pose reconciliation, which is what still blocks wearing one.** Every Character Creator export measured so far is A-pose, about 30° below horizontal; the Bento skeleton rests in T-pose, and overrides move a joint's rest position while animations rotate from it. A T-pose export sidesteps this; correcting the pose during retarget is the general answer and is not built.
+  - [x] **Joint positions measured against the worn set, not the mesh in hand.** An override is an offset from a parent that another *part* places, so a body converted one mesh at a time measured against Linden's skeleton and missed by however far the body had moved that parent — teeth 31 mm through a chin, a tongue 39, eyes out of their sockets. The question is now answered once per joint from the whole source skeleton, and `mesh-diag` measures a set of files as one worn skeleton rather than each alone.
+  - [ ] **Fixing an A-pose bind during retarget**, which is the one unbuilt case. Exporting with *Use T-Pose As Bind Pose* is the working answer and is documented ([IMPORTING.md](IMPORTING.md)); nine of the ten characters in the reference corpus measure T-pose and wear correctly. An export that arrives A-posed still lands with its arms about 30° low, because overrides move a joint's rest position while animations rotate from it.
+  - [ ] **Carrying two-sidedness**, so hair arrives as authored. Character Creator builds hair from single-sided cards and the viewer culls back faces, which halves a head of hair; nothing carries glTF's `doubleSided` past the glTF stage. Firestorm honours it only for a face with a PBR material.
 
 ### Content creation and inventory breadth
 

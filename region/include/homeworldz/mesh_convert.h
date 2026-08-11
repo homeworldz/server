@@ -21,6 +21,15 @@ struct Conversion {
     std::size_t faces{};
     std::size_t high_triangles{};
     std::size_t lowest_triangles{};
+    // Joints the rig named that no skeleton joint corresponds to. Non-empty
+    // means the skin was dropped and this converted as *static* geometry: it
+    // rezzes and renders, and nobody can wear it. Empty for an unrigged mesh,
+    // which had no rig to fail at.
+    //
+    // Reported rather than refused because failing produced the worst of both:
+    // no rendition, so nothing drew, and a collider anyway, since physics builds
+    // shapes from the prim and never reads the mesh.
+    std::vector<std::string> unmapped_joints;
 };
 
 // convert_glb builds the sl-mesh rendition: one submesh per material face

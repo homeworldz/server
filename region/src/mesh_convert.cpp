@@ -28,6 +28,50 @@ Conversion fail(std::string reason) {
     return result;
 }
 
+// The Bento joint a source joint becomes, and whether it may say where that
+// joint is. `canonical` is empty when neither the joint's own name nor anything
+// in its ancestry corresponds to the skeleton.
+struct ResolvedJoint {
+    std::string_view canonical;
+    bool supplies_position{true};
+};
+
+ResolvedJoint resolve_joint(const cgltf_node* node) {
+    const std::string_view name = node != nullptr && node->name != nullptr ? node->name : "";
+    // Retargeting, not just alias resolution (AUTO-RIGGING.md Case 1).
+    // retarget_joint tries the skeleton's own aliases first, so a rig that
+    // already speaks Bento is untouched, and falls back to the foreign-skeleton
+    // correspondence table. A Character Creator body reaches here naming
+    // CC_Base_* and leaves naming Bento joints.
+    if (const auto direct = mesh::retarget_joint(name); !direct.empty())
+        return {direct, mesh::retarget_supplies_position(name)};
+    // Fold into the nearest ancestor that does correspond (AUTO-RIGGING.md:
+    // "their weight merges into the nearest mapped ancestor"). This is what
+    // carries the joints a source invents rather than shares — Character Creator
+    // rigs an accessory to a bone named after itself, so an earring binds
+    // `Earring_Flower_0` and only its ancestry says that is the head. Naming
+    // every such bone in a table is impossible; the set is whatever a creator
+    // adds.
+    for (const cgltf_node* up = node != nullptr ? node->parent : nullptr; up != nullptr;
+         up = up->parent) {
+        if (up->name == nullptr) continue;
+        if (const auto folded = mesh::retarget_joint(up->name); !folded.empty())
+            // A bone folded by ancestry never says where its target is. It is
+            // not that joint under another name — it is something *hanging off*
+            // it, at whatever distance the creator hung it, and the joint's own
+            // position is the ancestor's.
+            //
+            // Letting it answer put a head at an earring: Ariana's
+            // `Earring_Flower_0` rests at the character's origin, so her earring
+            // asserted mHead at z=0.254 against the body's 1.634 — 1.43 m out,
+            // and competing with the body for the same joint on every rez
+            // (measured 2026-08-10). The ancestor supplies it instead, from the
+            // skeleton the node tree carries.
+            return {folded, false};
+    }
+    return {};
+}
+
 // One material face being accumulated: vertices across every primitive (and
 // node instance) that shares the material, indices into them.
 struct Face {
@@ -323,8 +367,36 @@ Conversion convert_glb(std::span<const std::byte> glb) {
     // twists, so it sits partway down the segment rather than at its origin.
     std::vector<int> source_depth;
     std::optional<slmesh::Skin> skin;
-    const bool rigged = data->skins_count != 0;
+    bool rigged = data->skins_count != 0;
     if (data->skins_count > 1) return fail("the GLB declares more than one skin");
+    // Joints no skeleton joint corresponds to, asked before anything is built.
+    //
+    // A rig that cannot be retargeted used to fail the whole conversion, so the
+    // asset produced no rendition and drew nothing at all — while still getting
+    // a collider from its prim, because physics never reads the mesh. That is how
+    // a Tyrannosaurus became an invisible wall someone walked into
+    // (in-world, 2026-08-11).
+    //
+    // It is the wrong answer twice over. The gate already decided this for an
+    // import — "the file carries whatever skeleton its author used, and that is a
+    // question rather than an offence… Recorded so the asset can say it is not
+    // wearable" (mesh_acceptance.cpp) — and the geometry is not at fault: only
+    // the rig is unusable. So the skin is dropped and the mesh converts as
+    // static. It rezzes, it renders, it cannot be worn. An *upload* never reaches
+    // this, because the gate refuses those by name up front.
+    std::vector<std::string> unmapped_joints;
+    if (rigged) {
+        const auto& source = data->skins[0];
+        for (cgltf_size index = 0; index < source.joints_count; ++index) {
+            if (!resolve_joint(source.joints[index]).canonical.empty()) continue;
+            const auto* node = source.joints[index];
+            std::string name(node != nullptr && node->name != nullptr ? node->name : "");
+            if (std::find(unmapped_joints.begin(), unmapped_joints.end(), name) ==
+                unmapped_joints.end())
+                unmapped_joints.push_back(std::move(name));
+        }
+        if (!unmapped_joints.empty()) rigged = false;
+    }
     if (rigged) {
         const auto& source = data->skins[0];
         slmesh::Skin built;
@@ -336,51 +408,9 @@ Conversion convert_glb(std::span<const std::byte> glb) {
         bool node_tree_is_rest_pose = source.joints_count != 0;
         for (cgltf_size index = 0; index < source.joints_count; ++index) {
             const auto* node = source.joints[index];
-            const std::string_view name =
-                node != nullptr && node->name != nullptr ? node->name : "";
-            // Retargeting, not just alias resolution (AUTO-RIGGING.md Case 1).
-            // retarget_joint tries the skeleton's own aliases first, so a rig
-            // that already speaks Bento is untouched, and falls back to the
-            // foreign-skeleton correspondence table. A Character Creator body
-            // reaches here naming CC_Base_* and leaves naming Bento joints.
-            auto canonical = mesh::retarget_joint(name);
-            bool supplies_position = mesh::retarget_supplies_position(name);
-            if (canonical.empty()) {
-                // Fold into the nearest ancestor that does correspond
-                // (AUTO-RIGGING.md: "their weight merges into the nearest
-                // mapped ancestor"). This is what carries the joints a source
-                // invents rather than shares — Character Creator rigs an
-                // accessory to a bone named after itself, so an earring binds
-                // `Earring_Flower_0` and only its ancestry says that is the
-                // head. Naming every such bone in a table is impossible; the
-                // set is whatever a creator adds.
-                for (const cgltf_node* up = node != nullptr ? node->parent : nullptr;
-                     up != nullptr; up = up->parent) {
-                    if (up->name == nullptr) continue;
-                    if (const auto folded = mesh::retarget_joint(up->name); !folded.empty()) {
-                        canonical = folded;
-                        // A bone folded by ancestry never says where its target
-                        // is. It is not that joint under another name — it is
-                        // something *hanging off* it, at whatever distance the
-                        // creator hung it, and the joint's own position is the
-                        // ancestor's.
-                        //
-                        // Letting it answer put a head at an earring: Ariana's
-                        // `Earring_Flower_0` rests at the character's origin, so
-                        // her earring asserted mHead at z=0.254 against the
-                        // body's 1.634 — 1.43 m out, and competing with the body
-                        // for the same joint on every rez (measured 2026-08-10).
-                        // The ancestor supplies it instead, from the skeleton
-                        // the node tree carries.
-                        supplies_position = false;
-                        break;
-                    }
-                }
-            }
-            if (canonical.empty())
-                return fail("a skin binds joint \"" + std::string(name) +
-                            "\", which is not a joint of the " +
-                            std::string(mesh::rigged_skeleton) + " skeleton");
+            // Every joint resolved in the pre-pass above, which is why this
+            // cannot be empty and there is no refusal here any more.
+            const auto [canonical, supplies_position] = resolve_joint(node);
             // The mapping is checked here and nowhere later, because nothing
             // later can. A joint bound to the wrong target, given that
             // target's inverse bind matrix, produces a correct bind pose - the
@@ -939,6 +969,7 @@ Conversion convert_glb(std::span<const std::byte> glb) {
     // whatever the simplifier genuinely achieves is what ships.
     slmesh::Mesh mesh;
     Conversion result;
+    result.unmapped_joints = std::move(unmapped_joints);
     result.faces = faces.size();
     for (const auto& face : faces) {
         if (face.indices.size() % 3 != 0) return fail("a face's triangle list is ragged");

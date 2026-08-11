@@ -388,14 +388,37 @@ int main() {
         if (std::find(alias_joints.begin(), alias_joints.end(), "hip") != alias_joints.end())
             return 48;
 
-        // A joint from another skeleton is refused by name, not silently
-        // dropped or mapped to something nearby.
+        // A joint from another skeleton keeps its geometry and loses its rig.
+        //
+        // This asserted a *refusal* until 2026-08-11, which was wrong in both
+        // directions: the asset produced no rendition and so drew nothing, while
+        // still colliding, because physics builds shapes from the prim and never
+        // reads the mesh. An invisible Tyrannosaurus is what that looks like from
+        // in-world. The gate had already decided the policy for an import — an
+        // unrecognised skeleton is "a question rather than an offence" — and only
+        // the rig is unusable, never the geometry. So: converts, carries no skin,
+        // and names the joint so the creator can be told.
         std::string foreign_json = rigged_json;
         const auto foreign_at = foreign_json.find(R"({"name":"mTorso"})");
         foreign_json.replace(foreign_at, std::string(R"({"name":"mTorso"})").size(),
                              R"({"name":"CC_Base_Spine"})");
         const auto foreign = homeworldz::mesh::convert_glb(glb(foreign_json, bin));
-        if (foreign.ok || foreign.error.find("CC_Base_Spine") == std::string::npos) return 34;
+        if (!foreign.ok) return 34;
+        if (foreign.unmapped_joints.size() != 1 ||
+            foreign.unmapped_joints[0] != "CC_Base_Spine")
+            return 35;
+        const auto parsed_foreign = homeworldz::slmesh::parse(foreign.sl_mesh);
+        if (!parsed_foreign) return 36;
+        // No skin at all, rather than a partial one: a rig missing a joint its
+        // vertices are weighted to would skin them to nothing, and the viewer
+        // collapses such a vertex to the object origin — a spike from the surface
+        // to a point.
+        if (parsed_foreign->skin) return 37;
+        if (parsed_foreign->high.empty() || parsed_foreign->high.front().positions.empty())
+            return 38;
+        // A mesh that maps cleanly still keeps its rig, so this did not simply
+        // stop rigging everything.
+        if (!rigged.unmapped_joints.empty()) return 39;
     }
 
     // One part of a multi-part import, which is how a body actually arrives: a

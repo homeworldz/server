@@ -391,6 +391,7 @@ struct PublishQueue::State {
                         break;
                     }
                     }
+                    result.creator_user_id = job.creator_user_id;
                     result.ok = true;
                 } catch (const std::exception& error) {
                     result.error = error.what();

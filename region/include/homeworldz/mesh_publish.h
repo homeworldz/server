@@ -158,6 +158,11 @@ public:
         // textures a creator can use and a body nobody can wear yet — the rig
         // question asked and recorded rather than answered (ADR 0035).
         std::vector<std::string> unresolved_joints;
+        // Who uploaded it. Carried back so the region can tell that one person
+        // what became of their file: an import's answer arrives long after the
+        // 202 that acknowledged it, so the log line was the only place it
+        // surfaced and a creator found out by walking into the result.
+        std::string creator_user_id;
     };
 
     // `open_storage` and `open_grid` are both called on the worker thread, once,
