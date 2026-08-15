@@ -587,6 +587,9 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                     : nullptr;
             long long base_colour = -1, normal_map = -1;
             bool masked = false;
+            // A surface made transparent by the material's own opacity value
+            // rather than by a mask. It needs the same BLEND that a mask gets.
+            bool transparent_factor = false;
             std::string name = "part " + std::to_string(part_index);
             if (material != nullptr) {
                 name = std::string(text(material->name));
@@ -631,8 +634,29 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             if (!materials.empty()) materials += ',';
             materials += "{\"name\":" + json_string(name) +
                 ",\"pbrMetallicRoughness\":{\"metallicFactor\":0,\"roughnessFactor\":1";
-            if (base_colour >= 0)
+            if (base_colour >= 0) {
                 materials += ",\"baseColorTexture\":{\"index\":" + std::to_string(base_colour) + "}";
+            } else if (material != nullptr) {
+                // No map of any kind, so the material's own colour is the whole
+                // surface. Without this the material said nothing at all and
+                // glTF's default — opaque white — stood in for it, which is how
+                // a tinted or semitransparent surface with no texture came out
+                // as a solid white slab.
+                //
+                // Opacity is read from its own slot rather than from the
+                // colour's alpha, because FBX carries it separately and a phong
+                // material's diffuse alpha is routinely 1 while the surface is
+                // half transparent.
+                const auto& colour = material->pbr.base_color.value_vec4;
+                const double alpha = material->pbr.opacity.has_value
+                                         ? (std::clamp)(material->pbr.opacity.value_real, 0.0, 1.0)
+                                         : 1.0;
+                materials += ",\"baseColorFactor\":[" +
+                    number((std::clamp)(colour.x, 0.0, 1.0)) + ',' +
+                    number((std::clamp)(colour.y, 0.0, 1.0)) + ',' +
+                    number((std::clamp)(colour.z, 0.0, 1.0)) + ',' + number(alpha) + ']';
+                if (alpha < 1.0) transparent_factor = true;
+            }
             materials += "}";
             if (normal_map >= 0)
                 materials += ",\"normalTexture\":{\"index\":" + std::to_string(normal_map) + "}";
@@ -642,6 +666,8 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             if (masked) {
                 materials += ",\"alphaMode\":\"BLEND\"";
                 ++result.opacity_composited;
+            } else if (transparent_factor) {
+                materials += ",\"alphaMode\":\"BLEND\"";
             }
             materials += ",\"doubleSided\":true}";
 

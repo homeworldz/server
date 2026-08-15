@@ -200,6 +200,41 @@ int main() {
         // as JPEG2000 is a real image rather than bytes that merely survived.
         const auto decoded = homeworldz::image::decode_png_or_jpeg(png);
         if (!decoded || decoded->width != 1 || decoded->height != 1) return 28;
+        // Neither material states a factor, so both faces take glTF's default —
+        // opaque white, which is also the identity for the multiply.
+        if (extraction.face_colours.size() != 2) return 29;
+        for (const auto& colour : extraction.face_colours)
+            if (colour != std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}) return 30;
+    }
+
+    // A material carrying its colour in the factor rather than in a map. This is
+    // the case that rendered as an opaque white slab: with no map the face fell
+    // back to the blank texture, and the colour that should have replaced it was
+    // hardcoded white too, so nothing carried the material at all.
+    {
+        const std::string factored_json =
+            std::string(R"({"asset":{"version":"2.0"},)") +
+            R"("buffers":[{"byteLength":)" + std::to_string(bin.size()) + R"(}],)" +
+            R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},)" +
+            R"({"buffer":0,"byteOffset":36,"byteLength":6}],)" +
+            R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)" +
+            R"("min":[0,0,0],"max":[1,1,0]},)" +
+            R"({"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],)" +
+            R"("materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0,0,0,0.5]}}],)" +
+            R"("meshes":[{"primitives":[)" +
+            R"({"attributes":{"POSITION":0},"indices":1,"material":0}]}],)" +
+            R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+        const auto factored = glb(factored_json, bin);
+        const auto extraction = homeworldz::mesh::extract_textures(factored);
+        if (!extraction.ok) return 31;
+        // No image to carry, but the surface is still fully described.
+        if (!extraction.textures.empty()) return 32;
+        if (extraction.face_textures.size() != 1 || extraction.face_textures[0] != -1) return 33;
+        if (extraction.face_colours.size() != 1) return 34;
+        const auto& colour = extraction.face_colours[0];
+        if (colour[0] != 0.0f || colour[1] != 0.0f || colour[2] != 0.0f) return 35;
+        // The alpha is what makes it semitransparent rather than a black slab.
+        if (colour[3] < 0.49f || colour[3] > 0.51f) return 36;
     }
 
     // A rigged mesh, built here rather than loaded, because a fixture in the

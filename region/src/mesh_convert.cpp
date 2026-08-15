@@ -321,6 +321,15 @@ TextureExtraction extract_textures(std::span<const std::byte> glb) {
             }
         }
         result.face_textures.push_back(texture);
+        // The factor rides with the face whether or not there is a map, because
+        // glTF multiplies the two and a TextureEntry colour does the same.
+        std::array<float, 4> colour{1.0f, 1.0f, 1.0f, 1.0f};
+        if (material != nullptr && material->has_pbr_metallic_roughness) {
+            const auto* factor = material->pbr_metallic_roughness.base_color_factor;
+            for (std::size_t channel = 0; channel < 4; ++channel)
+                colour[channel] = std::clamp(factor[channel], 0.0f, 1.0f);
+        }
+        result.face_colours.push_back(colour);
     }
     result.ok = true;
     return result;

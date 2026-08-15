@@ -102,6 +102,15 @@ struct TextureExtraction {
     // face. Both orders come from one shared traversal, so a face index means
     // the same thing to the converter and to the TextureEntry built from this.
     std::vector<int> face_textures;
+    // Per face, the material's baseColorFactor as RGBA.
+    //
+    // glTF multiplies this into the base-colour map, and where there is no map
+    // it *is* the surface. A TextureEntry carries a per-face colour that means
+    // the same thing, so this is what lets a material whose colour or
+    // transparency lives in the factor render as itself rather than as the
+    // opaque white the fallback texture draws. Defaults to opaque white, which
+    // is both glTF's default and the identity for the multiply.
+    std::vector<std::array<float, 4>> face_colours;
 };
 
 // Extract the base-colour images a GLB references. Cheap enough for the upload

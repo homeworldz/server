@@ -124,14 +124,30 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
     // from one shared traversal, so face N means the same face to both
     // (ADR 0033 M3). Until the j2c-texture rendition exists a viewer asking for
     // one of these gets not-yet, which is the same contract mesh has.
-    if (texture_assets.empty()) {
+    //
+    // The per-face colour is the material's baseColorFactor, not a fixed white.
+    // Where a face has a map the two multiply, exactly as glTF says, and white
+    // is the identity — so a textured face is unchanged. Where a face has *no*
+    // map the factor is the entire surface, and sending white instead was how a
+    // tinted or semitransparent material arrived as an opaque white slab: the
+    // fallback texture is opaque white and so was the colour multiplying it, so
+    // nothing carried the material at all.
+    if (texture_assets.empty() && std::all_of(extracted.face_colours.begin(),
+                                              extracted.face_colours.end(),
+                                              [](const std::array<float, 4>& colour) {
+                                                  return colour == std::array<float, 4>{
+                                                             1.0f, 1.0f, 1.0f, 1.0f};
+                                              })) {
         wrapper.texture_entry = blank_prim_texture_entry();
     } else {
         std::vector<mesh_model::Face> faces;
         std::vector<std::optional<viewer::Uuid>> images;
         for (const auto& asset : texture_assets) images.push_back(viewer::parse_uuid(asset));
-        for (const auto index : extracted.face_textures)
-            faces.push_back({index, {1.0f, 1.0f, 1.0f, 1.0f}});
+        for (std::size_t at = 0; at < extracted.face_textures.size(); ++at)
+            faces.push_back({extracted.face_textures[at],
+                             at < extracted.face_colours.size()
+                                 ? extracted.face_colours[at]
+                                 : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}});
         wrapper.texture_entry =
             mesh_model::instance_texture_entry(blank_texture_id(), faces, images);
     }
