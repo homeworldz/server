@@ -102,6 +102,21 @@ struct TextureExtraction {
     // face. Both orders come from one shared traversal, so a face index means
     // the same thing to the converter and to the TextureEntry built from this.
     std::vector<int> face_textures;
+    // Per face, whether the material asks to be drawn from both sides, and
+    // whether it blends.
+    //
+    // These are the two things a legacy TextureEntry has nowhere to put, and
+    // they are why a face needs a glTF material asset of its own (ADR 0033 M3).
+    // Character Creator builds hair from single-sided cards; the viewer culls
+    // back faces, so half of every head of hair is missing until something
+    // carries `doubleSided` all the way to the face. Firestorm reads it from a
+    // material and nowhere else — `LLGLDisable cull_face(mat->mDoubleSided ...)`
+    // in both the opaque and the alpha draw pools.
+    std::vector<bool> face_double_sided;
+    // "OPAQUE", "MASK" or "BLEND", as the glTF states it. Carried with the
+    // material because a material that blends and a material that does not are
+    // drawn by different pools, and hair is in the alpha one.
+    std::vector<std::string> face_alpha_modes;
     // Per face, the material's baseColorFactor as RGBA.
     //
     // glTF multiplies this into the base-colour map, and where there is no map

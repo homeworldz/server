@@ -1113,6 +1113,52 @@ bool static_object_codec() {
            std::equal(agent.begin(), agent.end(), avatar.begin() + 17);
 }
 
+// The render material ExtraParams block (0x80), which is the only way a face
+// gets a glTF material and therefore the only way two-sidedness reaches a
+// viewer. The layout is Firestorm's `LLRenderMaterialParams::pack`: a u8 count
+// followed by a u8 face index and a UUID per entry, inside the usual
+// u16 type / u32 size parameter envelope.
+//
+// Worth pinning byte-for-byte because it cannot be checked any other way here:
+// the reader is a viewer, so a reader and writer built together would agree with
+// each other and still be wrong on the wire.
+bool render_material_extra_params() {
+    const auto material = *parse_uuid("abcdabcd-1111-4222-8333-444455556666");
+    StaticObject object;
+    object.sculpt_id = *parse_uuid("12345678-1234-4234-8234-123456789abc");
+    object.sculpt_type = 5;
+    object.face_materials = {{3, "abcdabcd-1111-4222-8333-444455556666"}};
+    const auto encoded = encode_static_object_update(0x0102030405060708ULL, object);
+
+    // Find the parameter count byte: it precedes the mesh parameter (0x60),
+    // which the sculpt id above guarantees is present.
+    std::size_t at = 0;
+    for (; at + 1 < encoded.size(); ++at)
+        if (encoded[at] == std::byte{2} && encoded[at + 1] == std::byte{0x60}) break;
+    if (at + 1 >= encoded.size()) return false;   // two parameters, mesh first
+    // mesh parameter: type 0x60, size 17, then the uuid and the type byte.
+    std::size_t material_at = at + 1 + 2 + 4 + 17;
+    if (material_at + 6 + 17 > encoded.size()) return false;
+    if (encoded[material_at] != std::byte{0x80} || encoded[material_at + 1] != std::byte{0}) return false;
+    // payload size = 1 count byte + one 17-byte entry
+    if (encoded[material_at + 2] != std::byte{18} || encoded[material_at + 3] != std::byte{0} ||
+        encoded[material_at + 4] != std::byte{0} || encoded[material_at + 5] != std::byte{0})
+        return false;
+    if (encoded[material_at + 6] != std::byte{1}) return false;   // one entry
+    if (encoded[material_at + 7] != std::byte{3}) return false;   // face 3
+    if (!std::equal(material.begin(), material.end(), encoded.begin() + material_at + 8))
+        return false;
+
+    // A prim with no materials emits exactly what it always did: one parameter.
+    StaticObject plain;
+    plain.sculpt_id = object.sculpt_id;
+    plain.sculpt_type = 5;
+    const auto without = encode_static_object_update(0x0102030405060708ULL, plain);
+    // type (2) + size (4) + count (1) + one entry (17)
+    if (without.size() + 24 != encoded.size()) return false;
+    return true;
+}
+
 bool object_relationship_codecs() {
     const auto agent = *parse_uuid("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
     const auto session = *parse_uuid("11111111-2222-4333-8444-555555555555");
@@ -1615,6 +1661,7 @@ int main() {
     if (!flat_terrain_codec()) return 10;
     if (!extended_terrain_codec()) return 21;
     if (!static_object_codec()) return 11;
+    if (!render_material_extra_params()) return 42;
     if (!object_relationship_codecs()) return 19;
     if (!object_flag_codec()) return 14;
     if (!object_interaction_codecs()) return 15;

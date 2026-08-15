@@ -978,6 +978,7 @@ std::optional<homeworldz::viewer::StaticObject> static_object_from_entity(
             object.sculpt_type = entity.sculpt_type;
         }
     }
+    object.face_materials = entity.face_materials;
     object.path_curve = entity.path_curve;
     object.profile_curve = entity.profile_curve;
     object.path_begin = entity.path_begin;
@@ -1039,6 +1040,7 @@ void apply_object_asset(
     entity.task_inventory = asset.task_inventory;
     entity.sculpt_id = asset.sculpt_id;
     entity.sculpt_type = asset.sculpt_type;
+    entity.face_materials = asset.face_materials;
     regenerate_task_inventory_item_ids(entity);
 }
 

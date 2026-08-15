@@ -57,6 +57,11 @@ struct ObjectAsset {
     // (5 = mesh, ADR 0033). Empty id is an ordinary parametric prim.
     std::string sculpt_id;
     std::uint8_t sculpt_type{};
+    // glTF materials by face, as (face index, material asset id). Stored with
+    // the object because publishing assigns them and this asset is written
+    // immediately afterwards — a field the asset cannot hold is a field that
+    // never survives to be sent.
+    std::vector<std::pair<std::uint8_t, std::string>> face_materials;
 };
 
 struct LinksetAsset {

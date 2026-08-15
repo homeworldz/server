@@ -3100,21 +3100,48 @@ std::vector<std::byte> encode_static_object_update(std::uint64_t region_handle, 
     // carrying sculpt type 5 is not treated as mesh — while true sculpts use
     // 0x30. Both carry the same 17-byte payload: shaping asset UUID + type
     // byte. Everything else sends an empty parameter list, as before.
-    if (object.sculpt_id != Uuid{}) {
+    //
+    // A second parameter rides here when faces carry glTF materials: the render
+    // material block (0x80), which is `u8 count` then `u8 face` + UUID per
+    // entry, capped at fourteen by the viewer's own packer. It is the only way a
+    // face gets a material — `LLViewerObject::parameterChanged` routes
+    // PARAMS_RENDER_MATERIAL to `setRenderMaterialIDs` — and the material is
+    // what carries two-sidedness, which the TextureEntry has no field for.
+    {
         std::vector<std::byte> extra;
-        extra.push_back(std::byte{1}); // parameter count
-        const std::uint8_t parameter =
-            object.sculpt_type == 5 ? std::uint8_t{0x60} : std::uint8_t{0x30};
-        extra.push_back(static_cast<std::byte>(parameter)); // u16, little-endian
-        extra.push_back(std::byte{0});
-        extra.push_back(std::byte{17}); // payload size, u32 little-endian
-        extra.insert(extra.end(), 3, std::byte{});
-        append_uuid(extra, object.sculpt_id);
-        extra.push_back(static_cast<std::byte>(object.sculpt_type));
+        std::uint8_t parameters = 0;
+        if (object.sculpt_id != Uuid{}) ++parameters;
+        if (!object.face_materials.empty()) ++parameters;
+        extra.push_back(static_cast<std::byte>(parameters));
+        if (object.sculpt_id != Uuid{}) {
+            const std::uint8_t parameter =
+                object.sculpt_type == 5 ? std::uint8_t{0x60} : std::uint8_t{0x30};
+            extra.push_back(static_cast<std::byte>(parameter)); // u16, little-endian
+            extra.push_back(std::byte{0});
+            extra.push_back(std::byte{17}); // payload size, u32 little-endian
+            extra.insert(extra.end(), 3, std::byte{});
+            append_uuid(extra, object.sculpt_id);
+            extra.push_back(static_cast<std::byte>(object.sculpt_type));
+        }
+        if (!object.face_materials.empty()) {
+            const auto entries = static_cast<std::uint8_t>(
+                (std::min<std::size_t>)(object.face_materials.size(), 14));
+            extra.push_back(std::byte{0x80}); // u16, little-endian
+            extra.push_back(std::byte{0});
+            const auto payload = static_cast<std::uint32_t>(1 + entries * 17);
+            extra.push_back(static_cast<std::byte>(payload & 0xff)); // u32, little-endian
+            extra.push_back(static_cast<std::byte>((payload >> 8) & 0xff));
+            extra.push_back(static_cast<std::byte>((payload >> 16) & 0xff));
+            extra.push_back(static_cast<std::byte>((payload >> 24) & 0xff));
+            extra.push_back(static_cast<std::byte>(entries));
+            for (std::uint8_t at = 0; at < entries; ++at) {
+                const auto& [face, material] = object.face_materials[at];
+                extra.push_back(static_cast<std::byte>(face));
+                if (const auto id = parse_uuid(material)) append_uuid(extra, *id);
+                else extra.insert(extra.end(), 16, std::byte{});
+            }
+        }
         if (!append_binary(output, extra, 1)) return {};
-    } else {
-        const std::array<std::byte, 1> no_extra_params{std::byte{0}};
-        if (!append_binary(output, no_extra_params, 1)) return {};
     }
     Uuid zero{};
     append_uuid(output, zero); append_uuid(output, object.owner_id); // sound and owner

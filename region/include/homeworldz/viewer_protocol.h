@@ -992,6 +992,10 @@ struct StaticObject {
     // id emits no extra params, exactly as before.
     Uuid sculpt_id{};
     std::uint8_t sculpt_type{};
+    // glTF materials by face, carried in the same ExtraParams list as the render
+    // material block (0x80). Empty means the faces are described by the
+    // TextureEntry alone, which is every prim that predates ADR 0033 M3.
+    std::vector<std::pair<std::uint8_t, std::string>> face_materials;
     std::uint32_t local_id{1};
     std::uint32_t parent_local_id{};
     // ObjectUpdate's State byte. Zero for ordinary prims; for an attachment it

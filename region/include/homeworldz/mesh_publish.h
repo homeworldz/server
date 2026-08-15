@@ -41,6 +41,23 @@ namespace homeworldz::mesh {
 const std::vector<std::byte>& blank_prim_texture_entry();
 viewer::Uuid blank_texture_id();
 
+// One glTF material document, as a viewer stores an `AT_MATERIAL` (type 57)
+// asset (ADR 0033 M3).
+//
+// This is a glTF document carrying exactly one material, and its one departure
+// from the format is the one Second Life made: **an image's `uri` is a bare
+// asset UUID** rather than a path or a data URI. `LLGLTFMaterial::setFromTexture`
+// reads it with `texture_id.set(uri)`, so the string is parsed as a UUID and
+// nothing fetches it as a URL.
+//
+// It exists because a TextureEntry has nowhere to say "draw both sides". A face
+// that names a material is drawn from that material — textures included — so the
+// document must carry the base-colour texture too, or a hair card would gain its
+// back faces and lose its picture in the same step.
+std::string material_document(const std::optional<viewer::Uuid>& base_colour_texture,
+                              const std::array<float, 4>& base_colour_factor,
+                              std::string_view alpha_mode, bool double_sided);
+
 struct PublishedMesh {
     // The canonical mesh blob, as stored.
     std::string asset_id;

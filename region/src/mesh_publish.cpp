@@ -9,12 +9,17 @@
 #include "homeworldz/viewer_capabilities.h"
 
 #include <algorithm>
+#include <array>
 #include <condition_variable>
 #include <deque>
+#include <iomanip>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -53,6 +58,36 @@ viewer::Uuid blank_texture_id() {
     static const auto id =
         viewer::parse_uuid("5748decc-f629-461c-9a36-a35a221fe21f").value();
     return id;
+}
+
+std::string material_document(const std::optional<viewer::Uuid>& base_colour_texture,
+                              const std::array<float, 4>& base_colour_factor,
+                              std::string_view alpha_mode, bool double_sided) {
+    const auto number = [](float value) {
+        std::ostringstream text;
+        text << std::setprecision(6) << std::noshowpoint << value;
+        return text.str();
+    };
+    std::string document = "{\"asset\":{\"version\":\"2.0\"}";
+    std::string texture_reference;
+    if (base_colour_texture) {
+        // The uri *is* the asset id. See material_document's declaration.
+        document += ",\"images\":[{\"uri\":\"" + viewer::format_uuid(*base_colour_texture) +
+            "\"}],\"textures\":[{\"source\":0}]";
+        texture_reference = ",\"baseColorTexture\":{\"index\":0}";
+    }
+    document += ",\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[" +
+        number(base_colour_factor[0]) + ',' + number(base_colour_factor[1]) + ',' +
+        number(base_colour_factor[2]) + ',' + number(base_colour_factor[3]) + ']' +
+        texture_reference +
+        // The converter states these rather than leaving them to the
+        // specification's default, for the same reason the derived glTF does:
+        // an unstated metallicFactor defaults to 1 and draws the surface as
+        // metal.
+        ",\"metallicFactor\":0,\"roughnessFactor\":1}";
+    if (alpha_mode != "OPAQUE") document += ",\"alphaMode\":\"" + std::string(alpha_mode) + "\"";
+    document += ",\"doubleSided\":" + std::string(double_sided ? "true" : "false") + "}]}";
+    return document;
 }
 
 PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
@@ -109,12 +144,81 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
               << "}" << std::endl;
     published.textures = extracted.textures.size();
 
+    // A glTF material asset for every face that needs one (ADR 0033 M3).
+    //
+    // "Needs one" means the face says something a TextureEntry cannot carry, and
+    // today that is `doubleSided`: Character Creator builds hair from
+    // single-sided cards and the viewer culls back faces, so half of a head of
+    // hair is missing. Firestorm reads two-sidedness from a material and nowhere
+    // else.
+    //
+    // Only those faces get a material, deliberately. A face that a TextureEntry
+    // already describes completely is left alone rather than given a material
+    // that repeats it — a material overrides the face's textures wholesale, so
+    // every one issued is a second place the same surface is written, and a
+    // wrong one hides its own cause.
+    //
+    // Materials are deduplicated by document: a body's fifteen faces sharing one
+    // two-sided material is one asset, not fifteen.
+    std::vector<std::pair<std::uint8_t, std::string>> face_materials;
+    std::map<std::string, std::string> material_assets;
+    for (std::size_t face = 0; face < extracted.face_textures.size(); ++face) {
+        if (face >= extracted.face_double_sided.size() || !extracted.face_double_sided[face])
+            continue;
+        // The rule is simply what the source declares, and the narrower rule
+        // that suggests itself does not work.
+        //
+        // Restricting this to *blended* faces looks right — a hair card is a
+        // flat alpha sheet and a body is closed — and it is wrong. Kevin's hair
+        // blends because its opacity arrived as a separate map; Alika's hair is
+        // OPAQUE because hers is baked into the texture's own alpha, and she
+        // needs two-sidedness every bit as much. alphaMode does not tell you
+        // whether a surface has a back worth drawing.
+        //
+        // The honest discriminator is geometric — a mesh whose edges do not each
+        // join exactly two triangles is open, and only an open surface can show
+        // its back — but that is a different piece of work. Until then this
+        // follows the file: Character Creator marks its materials two-sided, and
+        // taking it at its word is defensible where second-guessing it is not.
+        // A prim carries at most 14 render-material entries on the wire, and a
+        // face beyond that simply keeps its TextureEntry.
+        if (face_materials.size() >= 14 || face > 255) break;
+        std::optional<viewer::Uuid> texture;
+        const auto index = extracted.face_textures[face];
+        if (index >= 0 && static_cast<std::size_t>(index) < texture_assets.size())
+            texture = viewer::parse_uuid(texture_assets[static_cast<std::size_t>(index)]);
+        const auto colour = face < extracted.face_colours.size()
+                                ? extracted.face_colours[face]
+                                : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f};
+        const auto alpha_mode = face < extracted.face_alpha_modes.size()
+                                    ? extracted.face_alpha_modes[face]
+                                    : std::string("OPAQUE");
+        const auto document = material_document(texture, colour, alpha_mode, true);
+        auto known = material_assets.find(document);
+        if (known == material_assets.end()) {
+            const auto bytes = std::span(reinterpret_cast<const std::byte*>(document.data()),
+                                         document.size());
+            const auto asset = storage.store_asset(viewer::random_uuid(), creator_user_id, bytes);
+            if (!grid.register_asset(asset.viewer_id, asset.creator_id, asset.sha256, asset.size,
+                                     region_public_endpoint, true) ||
+                !grid.store_vault_asset(asset.viewer_id, bytes))
+                throw std::runtime_error("material asset registration failed");
+            known = material_assets.emplace(document, asset.viewer_id).first;
+        }
+        face_materials.emplace_back(static_cast<std::uint8_t>(face), known->second);
+    }
+    if (!face_materials.empty())
+        std::cout << "{\"level\":\"info\",\"message\":\"mesh materials published\",\"faces\":"
+                  << face_materials.size() << ",\"assets\":" << material_assets.size()
+                  << "}" << std::endl;
+
     scene::Entity wrapper;
     wrapper.name = name;
     wrapper.creator_id = creator_user_id;
     wrapper.owner_id = creator_user_id;
     wrapper.sculpt_id = stored.viewer_id;
     wrapper.sculpt_type = 5; // mesh
+    wrapper.face_materials = std::move(face_materials);
     // A face with no texture entry renders transparent (verified live on
     // Firestorm, 2026-07-29); the default entry is a bundled asset the startup
     // write-through keeps vault-held, so the commit closure stays deadlock-free.

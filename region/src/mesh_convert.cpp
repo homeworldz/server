@@ -330,6 +330,13 @@ TextureExtraction extract_textures(std::span<const std::byte> glb) {
                 colour[channel] = std::clamp(factor[channel], 0.0f, 1.0f);
         }
         result.face_colours.push_back(colour);
+        result.face_double_sided.push_back(material != nullptr && material->double_sided);
+        const char* alpha_mode = "OPAQUE";
+        if (material != nullptr) {
+            if (material->alpha_mode == cgltf_alpha_mode_blend) alpha_mode = "BLEND";
+            else if (material->alpha_mode == cgltf_alpha_mode_mask) alpha_mode = "MASK";
+        }
+        result.face_alpha_modes.emplace_back(alpha_mode);
     }
     result.ok = true;
     return result;

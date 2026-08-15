@@ -116,6 +116,14 @@ struct Entity {
     // parametric prim.
     std::string sculpt_id;
     std::uint8_t sculpt_type{};
+    // glTF materials assigned per face, as (face index, material asset id).
+    //
+    // This is what carries the things a TextureEntry cannot say — two-sidedness
+    // above all, without which single-sided hair cards lose half their faces to
+    // backface culling. It rides ObjectUpdate's ExtraParams as the render
+    // material block (0x80), which holds at most fourteen entries, and a face
+    // with no entry keeps the TextureEntry alone.
+    std::vector<std::pair<std::uint8_t, std::string>> face_materials;
     // Worn on an avatar. `attachment_point` is the viewer's point number with
     // ATTACHMENT_ADD already stripped; zero means this entity is not an
     // attachment, which is the only test any caller should make. When it is

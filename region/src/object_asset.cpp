@@ -293,6 +293,20 @@ std::string object_json(const scene::Entity& entity, bool child) {
     if (!entity.sculpt_id.empty())
         result += ",\"sculptId\":" + json_string(entity.sculpt_id) +
             ",\"sculptType\":" + std::to_string(entity.sculpt_type);
+    // Face materials, without which two-sidedness is lost the moment the object
+    // is stored: publish assigns them and this serialisation is the very next
+    // step, so a field missing here is a field that never reaches anybody.
+    if (!entity.face_materials.empty()) {
+        result += ",\"faceMaterials\":[";
+        bool first = true;
+        for (const auto& [face, material] : entity.face_materials) {
+            if (!first) result += ',';
+            first = false;
+            result += "{\"face\":" + std::to_string(static_cast<unsigned>(face)) +
+                ",\"id\":" + json_string(material) + '}';
+        }
+        result += ']';
+    }
     if (child)
         result += ",\"localPosition\":[" + std::to_string(entity.local_position.x) + ',' +
             std::to_string(entity.local_position.y) + ',' +
@@ -504,6 +518,25 @@ std::optional<ObjectAsset> parse_object_asset(std::span<const std::byte> content
         if (!sculpt_type || *sculpt_type > 255 || sculpt_id->size() > 128) return std::nullopt;
         result.sculpt_id = *sculpt_id;
         result.sculpt_type = static_cast<std::uint8_t>(*sculpt_type);
+    }
+    if (const auto list = text.find(R"("faceMaterials":[)"); list != std::string_view::npos) {
+        auto rest = text.substr(list + 17);
+        const auto end = rest.find(']');
+        if (end != std::string_view::npos) rest = rest.substr(0, end);
+        while (true) {
+            const auto entry = rest.find(R"("face":)");
+            if (entry == std::string_view::npos) break;
+            const auto face = integer_after<unsigned>(rest.substr(entry), R"("face":)");
+            const auto id = string_after(rest.substr(entry), R"("id":")");
+            if (!face || !id || *face > 255 || id->size() > 128) return std::nullopt;
+            // Fourteen is the viewer's own cap on the wire; a file naming more
+            // is malformed rather than merely generous.
+            if (result.face_materials.size() >= 14) return std::nullopt;
+            result.face_materials.emplace_back(static_cast<std::uint8_t>(*face), *id);
+            const auto next = rest.find('}', entry);
+            if (next == std::string_view::npos) break;
+            rest = rest.substr(next + 1);
+        }
     }
     return result;
 }
