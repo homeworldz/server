@@ -8631,16 +8631,50 @@ int main(int argc, char* argv[]) {
                             // re-bake loop is ever seen again, log the outcome
                             // here first — it is where the answer was.
                             std::size_t stored = 0;
+                            std::size_t placeholders = 0;
                             for (const auto& entry : appearance->cache_entries) {
                                 if (entry.texture_index >= appearance->texture_ids.size()) continue;
                                 const auto asset_id = homeworldz::viewer::format_uuid(
                                     appearance->texture_ids[entry.texture_index]);
                                 if (!storage->find_asset(asset_id)) continue;
+                                // A placeholder is not a bake, and caching one
+                                // poisons the hash for good.
+                                //
+                                // These ids pass the find_asset check above —
+                                // this region deliberately serves IMG_INVISIBLE
+                                // (see the synthesis at the top of main) — so
+                                // "we hold it" was never enough to mean "it is
+                                // somebody's baked texture". A viewer that is
+                                // still baking presents the sentinel, and
+                                // recording it binds that appearance hash to
+                                // "unfinished" permanently: every later
+                                // AgentCachedTexture for the same outfit gets a
+                                // *hit* carrying the placeholder, so the bake
+                                // that would have replaced it is never asked
+                                // for. ADR 0029 says exactly what each one
+                                // does — IMG_INVISIBLE reads as an unfinished
+                                // bake and leaves a cloud, IMG_WHITE draws a
+                                // solid grey slab — and neither is what the
+                                // wearer put on.
+                                //
+                                // Found 2026-08-15 on the live grid, where all
+                                // five slots of one avatar were bound to
+                                // IMG_INVISIBLE and stayed there.
+                                if (asset_id.starts_with("3a367d1c") ||   // IMG_INVISIBLE
+                                    asset_id.starts_with("c228d1cf") ||   // IMG_DEFAULT_AVATAR
+                                    asset_id.starts_with("5748decc")) {   // IMG_WHITE ("Blank")
+                                    ++placeholders;
+                                    continue;
+                                }
                                 storage->store_baked_texture(
                                     homeworldz::viewer::format_uuid(entry.cache_id),
                                     entry.texture_index, asset_id);
                                 ++stored;
                             }
+                            if (placeholders != 0)
+                                std::cout << "{\"level\":\"info\",\"message\":\"wearable cache"
+                                             " placeholder ignored\",\"count\":" << placeholders
+                                          << "}" << std::endl;
                             if (stored != 0)
                                 std::cout << "{\"level\":\"info\",\"message\":\"wearable cache updated\","
                                              "\"count\":" << stored << "}" << std::endl;
