@@ -97,12 +97,35 @@ int main(int argc, char** argv) {
         for (std::size_t at = 0; at < raw.size(); ++at)
             bytes[at] = static_cast<std::byte>(raw[at]);
 
-        const auto result = homeworldz::mesh::validate_glb(bytes);
-        std::cout << argv[index] << ": " << (result.accepted ? "accepted" : "REFUSED");
-        if (!result.accepted) {
-            std::cout << " - " << result.reason;
-            refused = 1;
+        // Both verdicts, because there are two ways for a GLB to arrive and they
+        // differ on exactly one thing — the rig. A part produced by importing a
+        // Character Creator file binds `CC_Base_*`, which is a refusal for an
+        // upload (the creator sent a rig claiming to be ours) and an unanswered
+        // question for an import (ADR 0035).
+        //
+        // Reporting only the upload verdict called such a part REFUSED and exited
+        // 1, so a perfectly good imported asset read as broken — and this is the
+        // tool reached for to find out whether it *is* broken. The tool cannot
+        // know which door a file came through, so it says what each would make of
+        // it and fails only when neither would take it.
+        const auto as_upload =
+            homeworldz::mesh::validate_glb(bytes, homeworldz::mesh::Origin::Upload);
+        const auto as_import =
+            homeworldz::mesh::validate_glb(bytes, homeworldz::mesh::Origin::Import);
+        const auto& result = as_upload.accepted ? as_upload : as_import;
+        std::cout << argv[index] << ": ";
+        if (as_upload.accepted == as_import.accepted) {
+            std::cout << (as_upload.accepted ? "accepted" : "REFUSED");
+            if (!as_upload.accepted) {
+                std::cout << " - " << as_upload.reason;
+                refused = 1;
+            }
         } else {
+            // Only ever this way round: Import is Upload's rules minus the rig
+            // refusal, so it cannot refuse what Upload accepts.
+            std::cout << "accepted as an import, REFUSED as an upload - " << as_upload.reason;
+        }
+        if (result.accepted) {
             std::cout << " (" << result.triangles << " triangles, " << result.materials
                       << " materials, " << result.textures << " textures)";
         }
