@@ -53,6 +53,17 @@ std::string acceptance_policy_json() {
         // because that is still what the limits below describe and what an
         // import produces; these are additional things the upload path accepts.
         "\",\"importedFormats\":[" + imported + "]" +
+        // How a client learns what became of a file it uploaded. A source format
+        // is answered 202 — stored, and being worked on — because there is no
+        // inventory item yet; the answer arrives minutes later as this event.
+        // Named here for the same reason terrain and water name theirs: a client
+        // reading the block that says "you may send FBX" is exactly the client
+        // that needs to know how it will be told the FBX landed, and it should
+        // not have to find that in a document.
+        //
+        // The event reports failure too, so a client that handles it never has
+        // to treat silence as either outcome.
+        ",\"importedEvent\":\"sourceImported\"" +
         ",\"maxSourceBytes\":" + std::to_string(max_source_bytes) +
         ",\"maxFileBytes\":" + std::to_string(max_glb_bytes) +
         ",\"maxTriangles\":" + std::to_string(max_triangles) +

@@ -299,6 +299,11 @@ struct PublishQueue::State {
             Result result;
             result.id = job.id;
             result.kind = job.kind;
+            // Who this is for, recorded before the work rather than after it.
+            // It used to be set only on the success path, so a failed import
+            // knew the reason and not the person — which is exactly the case
+            // that most needs telling someone.
+            result.creator_user_id = job.creator_user_id;
             // Set when a stored source needs its import raising, which cannot
             // be done while the result lock is held below.
             std::optional<Job> follow_on;
@@ -350,6 +355,7 @@ struct PublishQueue::State {
                                                            *objects, source_folder_name(job.name),
                                                            -1))
                             throw std::runtime_error("could not create a folder for the parts");
+                        result.folder_id = parts_folder;
                         // Body and outfit apart, because they are changed at
                         // different rates — the point of importing a body with
                         // its hidden faces intact is to put a different outfit
@@ -415,7 +421,6 @@ struct PublishQueue::State {
                         break;
                     }
                     }
-                    result.creator_user_id = job.creator_user_id;
                     result.ok = true;
                 } catch (const std::exception& error) {
                     result.error = error.what();

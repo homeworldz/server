@@ -3766,6 +3766,54 @@ int main(int argc, char* argv[]) {
         // (the wait below timed out) is dropped here rather than chased: the
         // assets it made are real and registered, and there is no longer anyone
         // listening for the receipt.
+        // What became of a source file, for the client that sent it.
+        //
+        // An import is acknowledged with a 202 — "stored, and being worked on" —
+        // and answered minutes later. Until now that answer reached LLUDP
+        // viewers only, as an llOwnerSay, so a session client's 202 was the end
+        // of the story; and a *failed* import reached nobody on any transport,
+        // because the reason went to the log and stopped there.
+        //
+        // One event for both outcomes rather than two. A client that handles
+        // `sourceImported` handles the failure too, where a separate
+        // `sourceImportFailed` is one more thing to forget to subscribe to — and
+        // forgetting it means silently never learning that a creator's file died.
+        //
+        // `folderId` rides alongside `items` rather than replacing them: the ids
+        // say what arrived, the folder is what a client re-reads to show it as a
+        // person sees it, including the Body and Outfit split a flat list cannot
+        // express.
+        const auto tell_importer = [&](const homeworldz::mesh::PublishQueue::Result& done) {
+            if (!session_server || done.creator_user_id.empty()) return;
+            const auto list = [](const std::vector<std::string>& values) {
+                std::string out;
+                for (const auto& value : values) {
+                    if (!out.empty()) out += ',';
+                    out += homeworldz::api::json_string(value);
+                }
+                return out;
+            };
+            std::vector<std::string> item_ids;
+            item_ids.reserve(done.parts.size());
+            for (const auto& part : done.parts) item_ids.push_back(part.item_id);
+            const auto notice = homeworldz::session::encode_envelope(
+                "sourceImported", {},
+                "{\"sourceAssetId\":" + homeworldz::api::json_string(done.source_asset_id) +
+                    ",\"ok\":" + (done.ok ? "true" : "false") +
+                    ",\"folderId\":" + homeworldz::api::json_string(done.folder_id) +
+                    ",\"items\":[" + list(item_ids) + "]" +
+                    ",\"refusedParts\":[" + list(done.refused_parts) + "]" +
+                    ",\"unresolvedJoints\":[" + list(done.unresolved_joints) + "]" +
+                    ",\"wearable\":" + (done.ok && done.unresolved_joints.empty() ? "true" : "false") +
+                    ",\"texturesDownscaled\":" + std::to_string(done.textures_downscaled) +
+                    ",\"error\":" + homeworldz::api::json_string(done.error) + "}");
+            for (const auto& [recipient_key, recipient] : avatars) {
+                static_cast<void>(recipient_key);
+                if (recipient.transport != AvatarTransport::session) continue;
+                if (recipient.user_id != done.creator_user_id) continue;
+                session_server->send_to(recipient.session_id, notice);
+            }
+        };
         if (publish_queue) {
             for (auto& done : publish_queue->take_completed()) {
                 // An import has no socket waiting on it: the creator was
@@ -3893,12 +3941,14 @@ int main(int argc, char* argv[]) {
                             const auto spoken_at = std::chrono::steady_clock::now();
                             for (const auto& [recipient_endpoint, recipient] : avatars) {
                                 if (recipient.user_id != done.creator_user_id) continue;
+                                if (recipient.transport != AvatarTransport::lludp) continue;
                                 if (const auto outgoing = circuits.send(recipient_endpoint, payload,
                                                                         true, spoken_at))
                                     static_cast<void>(
                                         send_udp(viewer_server, recipient_endpoint, *outgoing));
                             }
                         }
+                        tell_importer(done);
                     } else {
                         // ADR 0035: import failure is a property of the asset,
                         // not a lost upload. The source is stored and stays
@@ -3908,6 +3958,11 @@ int main(int argc, char* argv[]) {
                                   << homeworldz::api::json_string(done.source_asset_id)
                                   << ",\"error\":" << homeworldz::api::json_string(done.error)
                                   << "}" << std::endl;
+                        // A failed import told nobody at all until now — not a
+                        // session client, not a viewer. The 202 was the whole
+                        // story and the reason lived only in this log line,
+                        // which no creator reads.
+                        tell_importer(done);
                     }
                     continue;
                 }

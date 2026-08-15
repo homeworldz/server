@@ -148,6 +148,12 @@ public:
         // Import: the source it came from, and one entry per mesh published.
         std::string source_asset_id;
         std::vector<PublishedMesh> parts;
+        // Import: the folder the parts were placed in, named after the source
+        // file. Reported alongside the item ids rather than instead of them:
+        // the ids say what arrived, and the folder is what a client re-reads to
+        // see it in the shape a person will — including the Body and Outfit
+        // subfolders, which the flat id list cannot show.
+        std::string folder_id;
         // Import: what the importer reported about the file, for the log line
         // that is the only place this surfaces.
         std::size_t textures{};

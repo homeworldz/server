@@ -268,6 +268,12 @@ int main() {
     if (policy.find("\"uploadPath\":\"/session/uploads/mesh\"") == std::string::npos ||
         policy.find("\"maxTriangles\":262144") == std::string::npos ||
         policy.find("\"maxRigInfluences\":4") == std::string::npos ||
+        // An accepted source format is answered 202 and the outcome arrives
+        // later as an event, so the block that says a client may send FBX has to
+        // say how it will be told what happened. A client cannot be expected to
+        // subscribe to an event it was never offered.
+        policy.find("\"importedFormats\":[\"fbx\"]") == std::string::npos ||
+        policy.find("\"importedEvent\":\"sourceImported\"") == std::string::npos ||
         // A rig limit published beside "rigged": false reads as a contradiction
         // unless the payload says which limits are not yet in force. It is named
         // rather than removed, because an importer should read the number instead
