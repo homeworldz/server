@@ -3794,6 +3794,15 @@ int main(int argc, char* argv[]) {
                             }
                             unresolved += homeworldz::api::json_string(joint);
                         }
+                        std::string refused;
+                        for (const auto& part : done.refused_parts) {
+                            if (!refused.empty()) refused += ',';
+                            if (refused.size() > 400) {
+                                refused += "\"...\"";
+                                break;
+                            }
+                            refused += homeworldz::api::json_string(part);
+                        }
                         std::cout << "{\"level\":\"info\",\"message\":\"source imported\","
                                      "\"sourceAssetId\":"
                                   << homeworldz::api::json_string(done.source_asset_id)
@@ -3801,9 +3810,11 @@ int main(int argc, char* argv[]) {
                                   << ",\"textures\":" << done.textures
                                   << ",\"opacityComposited\":" << done.opacity_composited
                                   << ",\"influencesPruned\":" << done.influences_pruned
+                                  << ",\"texturesDownscaled\":" << done.textures_downscaled
                                   << ",\"wearable\":"
                                   << (done.unresolved_joints.empty() ? "true" : "false")
                                   << ",\"unresolvedJoints\":[" << unresolved << "]"
+                                  << ",\"refusedParts\":[" << refused << "]"
                                   << ",\"items\":[" << parts << "]}" << std::endl;
                         // And tell the one person it happened to.
                         //
@@ -3821,6 +3832,32 @@ int main(int argc, char* argv[]) {
                         if (!done.creator_user_id.empty()) {
                             std::string note = "Imported " +
                                 std::to_string(done.parts.size()) + " part(s).";
+                            // A part the gate refused is the one thing inventory
+                            // cannot show, because what is missing leaves no
+                            // trace there. Named, with the gate's own reason, so
+                            // a creator can act on it — every one of these so far
+                            // has been a texture too large for the limit, which
+                            // is a re-export away from fixed.
+                            if (!done.refused_parts.empty()) {
+                                note += " " + std::to_string(done.refused_parts.size()) +
+                                    " part(s) were refused and are not in your inventory: ";
+                                for (std::size_t at = 0; at < done.refused_parts.size(); ++at) {
+                                    if (at == 3) {
+                                        note += ", and " +
+                                            std::to_string(done.refused_parts.size() - at) +
+                                            " more";
+                                        break;
+                                    }
+                                    if (at != 0) note += "; ";
+                                    note += done.refused_parts[at];
+                                }
+                                note += '.';
+                            }
+                            if (done.textures_downscaled > 0) {
+                                note += " " + std::to_string(done.textures_downscaled) +
+                                    " texture(s) were reduced to fit the size limit, so they are"
+                                    " not pixel-for-pixel what you exported.";
+                            }
                             if (!done.unresolved_joints.empty()) {
                                 note += " This file's rig is not a " +
                                     std::string(homeworldz::mesh::rigged_skeleton) +

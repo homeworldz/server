@@ -65,6 +65,31 @@ Image to_rgba(const Image& src);
 // Returns an empty Image on invalid input.
 Image resize_nearest(const Image& src, std::uint32_t width, std::uint32_t height);
 
+// Box-filter (area-average) resample to width x height, preserving channel
+// count. Returns an empty Image on invalid input.
+//
+// Separate from resize_nearest rather than replacing it, because the two are
+// wanted for different things. Nearest is right for reading a mask, where the
+// values mean something and averaging two of them invents a third. This is right
+// for *shrinking a photograph*: dropping three of every four pixels of a skin
+// map aliases into visible speckle, and averaging them does not. Every source
+// pixel contributes exactly once, so a 4:1 reduction reads all 16 pixels rather
+// than one of them.
+//
+// Enlarging is not what this is for and falls back to nearest, since a box that
+// covers less than one source pixel has nothing to average.
+Image resize_box(const Image& src, std::uint32_t width, std::uint32_t height);
+
+// Encode an Image as a baseline JPEG at `quality` (1..100).
+//
+// The counterpart to encode_png, and the reason both exist: glTF permits PNG and
+// JPEG only, PNG is the one that can carry alpha, and JPEG is the one that does
+// not inflate a photograph. Re-encoding an opaque JPEG skin map as PNG can make
+// it *larger* than the original it was meant to shrink, which defeats a
+// downscale entirely. Alpha is dropped — JPEG cannot carry it — so this must not
+// be handed an image whose alpha matters.
+std::optional<std::vector<std::uint8_t>> encode_jpeg(const Image& image, int quality);
+
 // Replace `rgba`'s alpha channel with `mask`'s luminance, resampling the mask to
 // fit. `rgba` must be 4-channel; false is returned and nothing written if either
 // image is empty or the resample fails.

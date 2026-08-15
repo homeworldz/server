@@ -566,6 +566,9 @@ bool report(const fs::path& path, const fs::path& write_to) {
                   << " opacity map(s) composited into base-colour alpha";
     if (imported.bindings_dropped > 0)
         std::cout << ", " << imported.bindings_dropped << " texture binding(s) glTF cannot carry";
+    if (imported.textures_downscaled > 0)
+        std::cout << ", " << imported.textures_downscaled
+                  << " texture(s) downscaled to fit the gate";
     std::cout << '\n';
 
     bool import_clean = true;

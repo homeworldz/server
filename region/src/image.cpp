@@ -470,6 +470,89 @@ Image resize_nearest(const Image& src, std::uint32_t width, std::uint32_t height
     return out;
 }
 
+Image resize_box(const Image& src, std::uint32_t width, std::uint32_t height) {
+    if (src.empty() || width == 0 || height == 0 || src.channels < 1 ||
+        src.pixels.size() != src.expected_size()) {
+        return {};
+    }
+    if (src.width == width && src.height == height) return src;
+    // A box smaller than a source pixel has nothing to average; nearest is both
+    // the honest answer and the one already tested.
+    if (width > src.width || height > src.height) return resize_nearest(src, width, height);
+
+    Image out;
+    out.width = width;
+    out.height = height;
+    out.channels = src.channels;
+    out.pixels.resize(out.expected_size());
+    const std::uint8_t c = src.channels;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        // Half-open source rows [y0, y1) for this destination row, so the boxes
+        // tile the source exactly and no pixel is read twice or skipped.
+        const auto y0 = static_cast<std::uint32_t>(
+            (static_cast<std::uint64_t>(y) * src.height) / height);
+        auto y1 = static_cast<std::uint32_t>(
+            (static_cast<std::uint64_t>(y + 1) * src.height) / height);
+        if (y1 <= y0) y1 = y0 + 1;
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const auto x0 = static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(x) * src.width) / width);
+            auto x1 = static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(x + 1) * src.width) / width);
+            if (x1 <= x0) x1 = x0 + 1;
+            std::uint32_t total[4] = {0, 0, 0, 0};
+            std::uint32_t counted = 0;
+            for (std::uint32_t sy = y0; sy < y1; ++sy) {
+                for (std::uint32_t sx = x0; sx < x1; ++sx) {
+                    const std::uint8_t* s =
+                        &src.pixels[(static_cast<std::size_t>(sy) * src.width + sx) * c];
+                    for (std::uint8_t k = 0; k < c; ++k) total[k] += s[k];
+                    ++counted;
+                }
+            }
+            std::uint8_t* d = &out.pixels[(static_cast<std::size_t>(y) * width + x) * c];
+            for (std::uint8_t k = 0; k < c; ++k)
+                d[k] = static_cast<std::uint8_t>((total[k] + counted / 2) / counted);
+        }
+    }
+    return out;
+}
+
+std::optional<std::vector<std::uint8_t>> encode_jpeg(const Image& image, int quality) {
+    if (image.empty() || image.channels < 1 || image.channels > 4 ||
+        image.pixels.size() != image.expected_size())
+        return std::nullopt;
+    if (quality < 1) quality = 1;
+    if (quality > 100) quality = 100;
+    // stb writes an alpha channel's bytes as if they were colour, so a 4-channel
+    // image has to lose its alpha here rather than silently corrupt.
+    const Image* source = &image;
+    Image opaque;
+    if (image.channels == 2 || image.channels == 4) {
+        const std::uint8_t keep = image.channels == 2 ? 1 : 3;
+        opaque.width = image.width;
+        opaque.height = image.height;
+        opaque.channels = keep;
+        opaque.pixels.resize(opaque.expected_size());
+        for (std::size_t at = 0; at < image.pixel_count(); ++at)
+            for (std::uint8_t k = 0; k < keep; ++k)
+                opaque.pixels[at * keep + k] = image.pixels[at * image.channels + k];
+        source = &opaque;
+    }
+    std::vector<std::uint8_t> out;
+    const auto sink = [](void* context, void* data, int size) {
+        auto* target = static_cast<std::vector<std::uint8_t>*>(context);
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        target->insert(target->end(), bytes, bytes + size);
+    };
+    if (stbi_write_jpg_to_func(sink, &out, static_cast<int>(source->width),
+                               static_cast<int>(source->height), source->channels,
+                               source->pixels.data(), quality) == 0)
+        return std::nullopt;
+    if (out.empty()) return std::nullopt;
+    return out;
+}
+
 bool write_alpha_from_luminance(Image& rgba, const Image& mask) {
     if (rgba.empty() || mask.empty() || rgba.channels != 4 ||
         rgba.pixels.size() != rgba.expected_size())

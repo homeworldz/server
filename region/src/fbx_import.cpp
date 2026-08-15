@@ -4,6 +4,7 @@
 #include "homeworldz/fbx_import.h"
 
 #include "homeworldz/image.h"
+#include "homeworldz/mesh_acceptance.h"
 #include "homeworldz/mesh_convert.h"
 
 #include "fbx_load.h"
@@ -809,9 +810,83 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                         ",\"joints\":[" + joint_list + "]}]";
         }
 
-        // Images, embedded as buffer views. The creator's bytes, verbatim: an
-        // import re-encoding them would change the file the creator sent while
-        // claiming to have imported it.
+        // Bring this part's images within what the gate and the viewer will
+        // take, before they are embedded.
+        //
+        // The creator's bytes are still preferred verbatim — an import that
+        // re-encodes changes the file it claims to have imported — but "verbatim
+        // or nothing" was costing whole characters. One export's four 4096²
+        // PNG normal maps came to 100.7 MiB on a body whose geometry is
+        // trivial, so the part measured 133.9 MiB against a 32 MiB limit and
+        // the import produced nothing at all.
+        //
+        // Two rules, in order:
+        //
+        //   1. **Nothing wider than 2048.** That is the viewer's own ceiling
+        //      (`MAX_IMAGE_SIZE_DEFAULT` in llgltexture.h), the size every
+        //      Firestorm upload path scales to, so a 4096 map is detail no
+        //      viewer in this pipeline was ever going to draw.
+        //   2. **Then halve the largest until the set fits `max_image_bytes`.**
+        //      A cap alone is not enough: four 2048 normal maps still come to
+        //      about 25 MiB. This is what makes the outcome a guarantee rather
+        //      than a size that happened to be lucky, and it takes from the
+        //      biggest image each round, so one heavy map is reduced before a
+        //      small one is touched at all.
+        //
+        // Re-encoding follows the alpha, not the source format: PNG only where
+        // there is alpha to keep, JPEG otherwise. Re-encoding an opaque skin
+        // JPEG as PNG can come out *larger* than the original, which would make
+        // a downscale into an increase.
+        const auto shrink = [&](Embedded& file, std::uint32_t limit) -> bool {
+            const std::vector<std::uint8_t> source(
+                reinterpret_cast<const std::uint8_t*>(file.bytes.data()),
+                reinterpret_cast<const std::uint8_t*>(file.bytes.data()) + file.bytes.size());
+            auto decoded = image::decode_png_or_jpeg(source);
+            if (!decoded) return false;
+            const auto widest = (std::max)(decoded->width, decoded->height);
+            if (widest <= limit) return false;
+            // Halving rather than scaling straight to the limit: powers of two
+            // are what the texture pipeline wants, and an exact quartering of
+            // the pixels is what the box filter is cleanest at.
+            std::uint32_t width = decoded->width, height = decoded->height;
+            while ((std::max)(width, height) > limit && width > 1 && height > 1) {
+                width = (std::max)(1u, width / 2);
+                height = (std::max)(1u, height / 2);
+            }
+            const auto scaled = image::resize_box(*decoded, width, height);
+            if (scaled.empty()) return false;
+            const bool keeps_alpha = scaled.channels == 2 || scaled.channels == 4;
+            auto encoded = keeps_alpha ? image::encode_png(scaled)
+                                       : image::encode_jpeg(scaled, 90);
+            if (!encoded) return false;
+            file.bytes.assign(reinterpret_cast<const std::byte*>(encoded->data()),
+                              reinterpret_cast<const std::byte*>(encoded->data()) +
+                                  encoded->size());
+            file.mime = keeps_alpha ? "image/png" : "image/jpeg";
+            ++result.textures_downscaled;
+            return true;
+        };
+
+        constexpr std::uint32_t viewer_texture_limit = 2048;
+        for (auto& file : image_files) static_cast<void>(shrink(file, viewer_texture_limit));
+
+        const auto total_image_bytes = [&] {
+            std::size_t total = 0;
+            for (const auto& file : image_files) total += file.bytes.size();
+            return total;
+        };
+        std::uint32_t budget_limit = viewer_texture_limit;
+        while (total_image_bytes() > max_image_bytes && budget_limit > 64) {
+            budget_limit /= 2;
+            // Every image over the new limit comes down, not just the largest:
+            // taking one at a time converges too slowly when a body carries four
+            // maps of the same size, and leaves them at mismatched resolutions.
+            bool reduced = false;
+            for (auto& file : image_files) reduced = shrink(file, budget_limit) || reduced;
+            if (!reduced) break;
+        }
+
+        // Images, embedded as buffer views.
         std::string images, textures;
         for (std::size_t at = 0; at < image_files.size(); ++at) {
             const auto& file = image_files[at];

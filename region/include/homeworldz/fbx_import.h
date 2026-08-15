@@ -97,6 +97,14 @@ struct FbxImport {
     // carry. Counted and reported rather than dropped in silence, so a material
     // that looks wrong in-world can be told apart from one that arrived wrong.
     std::size_t bindings_dropped{};
+
+    // Images re-encoded smaller so their part would fit the acceptance gate and
+    // the viewer's 2048 ceiling. Counted because it is the one step that changes
+    // the creator's own bytes: everything else this importer does is a
+    // translation, and this is a reduction. A number here means the file as
+    // published is not pixel-for-pixel what was sent, and a creator comparing
+    // the two deserves to know that from the log rather than from their eyes.
+    std::size_t textures_downscaled{};
 };
 
 // True when these bytes begin like an FBX, binary or ASCII.

@@ -357,6 +357,7 @@ struct PublishQueue::State {
                         result.textures = imported.textures_embedded;
                         result.opacity_composited = imported.opacity_composited;
                         result.influences_pruned = imported.influences_pruned;
+                        result.textures_downscaled = imported.textures_downscaled;
                         for (const auto& mesh : imported.meshes) {
                             // The gate, on what the import produced. ADR 0035:
                             // "import is not a side door into the asset store",
@@ -370,9 +371,14 @@ struct PublishQueue::State {
                             // that is an unanswered question and not an
                             // offence (mesh_acceptance.h).
                             const auto accepted = validate_glb(mesh.glb, Origin::Import);
-                            if (!accepted.accepted)
-                                throw std::runtime_error("mesh \"" + mesh.name +
-                                                         "\" was refused: " + accepted.reason);
+                            // A refused part is named and skipped rather than
+                            // thrown: the rest of the file is still worth
+                            // having, and the creator is told which part they
+                            // did not get. See Result::refused_parts.
+                            if (!accepted.accepted) {
+                                result.refused_parts.push_back(mesh.name + ": " + accepted.reason);
+                                continue;
+                            }
                             for (const auto& joint : accepted.unresolved_joints)
                                 if (std::find(result.unresolved_joints.begin(),
                                               result.unresolved_joints.end(),
@@ -380,14 +386,16 @@ struct PublishQueue::State {
                                     result.unresolved_joints.push_back(joint);
                             // The mesh's own name, which is the author's naming
                             // and the one they will recognise in inventory.
-                            // A part that fails takes the whole import with it
-                            // rather than leaving a creator half a body with no
-                            // way to tell which half.
                             result.parts.push_back(publish_glb(
                                 mesh.glb, mesh.name, job.creator_user_id, *storage, *grid,
                                 region_public_endpoint,
                                 is_avatar_body_mesh(mesh.name) ? body_folder : outfit_folder));
                         }
+                        // Nothing survived the gate, so there is no inventory to
+                        // find and the refusal has to be the answer.
+                        if (result.parts.empty() && !result.refused_parts.empty())
+                            throw std::runtime_error("every mesh was refused: " +
+                                                     result.refused_parts.front());
                         break;
                     }
                     }

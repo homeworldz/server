@@ -153,11 +153,29 @@ public:
         std::size_t textures{};
         std::size_t opacity_composited{};
         std::size_t influences_pruned{};
+        // Images the importer re-encoded smaller to fit the gate. Reported
+        // because it is the one thing an import does that a creator could
+        // otherwise only discover by looking closely at their own texture.
+        std::size_t textures_downscaled{};
         // Import: joint names the skeleton did not recognise, deduplicated
         // across every part. Non-empty means the parts are geometry and
         // textures a creator can use and a body nobody can wear yet — the rig
         // question asked and recorded rather than answered (ADR 0035).
         std::vector<std::string> unresolved_joints;
+        // Import: parts the gate refused, as "name: reason", one per part.
+        //
+        // A refused part used to take the whole import with it, on the reasoning
+        // that half a body with no way to tell which half is worse than nothing.
+        // The second half of that stopped being true once an import reports to
+        // its uploader: the casualty can be *named*. Meanwhile the first half
+        // was costing whole characters — one 133.9 MiB body part sank a
+        // nine-part import whose other eight were fine. So the parts that pass
+        // are published and the ones that do not are listed here.
+        //
+        // An import where *nothing* passed is still a failure rather than an
+        // empty success: there is no inventory for the creator to look at, so
+        // the reason has to arrive as an error.
+        std::vector<std::string> refused_parts;
         // Who uploaded it. Carried back so the region can tell that one person
         // what became of their file: an import's answer arrives long after the
         // 202 that acknowledged it, so the log line was the only place it

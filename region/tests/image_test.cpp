@@ -9,7 +9,10 @@
 
 using homeworldz::image::composite_rgba;
 using homeworldz::image::decode_j2c;
+using homeworldz::image::decode_png_or_jpeg;
 using homeworldz::image::encode_j2c;
+using homeworldz::image::encode_jpeg;
+using homeworldz::image::resize_box;
 using homeworldz::image::Image;
 using homeworldz::image::Layer;
 using homeworldz::image::resize_nearest;
@@ -386,7 +389,81 @@ int main() {
         }
     }
 
+    // resize_box averages what it covers rather than picking one of them, which
+    // is the whole reason it exists next to resize_nearest. A 2x2 of four known
+    // values down to 1x1 has exactly one right answer, and nearest gets it
+    // wrong: it would return a corner.
+    {
+        Image quad;
+        quad.width = 2;
+        quad.height = 2;
+        quad.channels = 1;
+        quad.pixels = {0, 100, 200, 255};
+        const Image one = resize_box(quad, 1, 1);
+        if (one.width != 1 || one.height != 1 || one.channels != 1) {
+            std::cerr << "resize_box did not produce a 1x1\n";
+            return 1;
+        }
+        // (0 + 100 + 200 + 255 + 2) / 4 == 139
+        if (one.pixels[0] != 139) {
+            std::cerr << "resize_box averaged wrong: " << int(one.pixels[0]) << " (want 139)\n";
+            return 1;
+        }
+        // Every source pixel contributes exactly once: a 4x1 halved must be the
+        // two pairwise means, not two of the four originals.
+        Image row;
+        row.width = 4;
+        row.height = 1;
+        row.channels = 1;
+        row.pixels = {10, 20, 30, 40};
+        const Image half = resize_box(row, 2, 1);
+        if (half.width != 2 || half.pixels[0] != 15 || half.pixels[1] != 35) {
+            std::cerr << "resize_box pairwise wrong: " << int(half.pixels[0]) << ','
+                      << int(half.pixels[1]) << " (want 15,35)\n";
+            return 1;
+        }
+        // Enlarging has nothing to average and must not come back empty.
+        if (resize_box(quad, 4, 4).width != 4) {
+            std::cerr << "resize_box refused to enlarge\n";
+            return 1;
+        }
+        if (!resize_box(Image{}, 2, 2).empty()) {
+            std::cerr << "resize_box invented an image from an empty one\n";
+            return 1;
+        }
+    }
+
+    // encode_jpeg has to drop alpha rather than write it as colour, and has to
+    // actually shrink a photograph — the reason it is used instead of PNG.
+    {
+        Image rgba = make_solid(64, 64, 4, {200, 50, 25, 128});
+        const auto jpeg = encode_jpeg(rgba, 90);
+        if (!jpeg) {
+            std::cerr << "encode_jpeg refused an RGBA image\n";
+            return 1;
+        }
+        const auto back = decode_png_or_jpeg(*jpeg);
+        if (!back) {
+            std::cerr << "encode_jpeg produced something undecodable\n";
+            return 1;
+        }
+        if (back->channels != 3) {
+            std::cerr << "encode_jpeg kept " << int(back->channels)
+                      << " channels; alpha must be dropped, not written as colour\n";
+            return 1;
+        }
+        if (back->width != 64 || back->height != 64) {
+            std::cerr << "encode_jpeg changed the dimensions\n";
+            return 1;
+        }
+        if (encode_jpeg(Image{}, 90)) {
+            std::cerr << "encode_jpeg accepted an empty image\n";
+            return 1;
+        }
+    }
+
     std::cerr << "image j2c lossless round-trip OK (" << encoded->size() << " bytes)\n";
+    std::cerr << "image box resample and jpeg encode OK\n";
     std::cerr << "image composite/resize/tint OK\n";
     std::cerr << "image opacity-to-alpha OK\n";
     return 0;
