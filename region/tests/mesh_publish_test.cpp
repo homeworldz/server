@@ -43,6 +43,37 @@ std::vector<PublishQueue::Result> drain(PublishQueue& queue, std::size_t expecte
 } // namespace
 
 int main() {
+    // The glTF material document a face is given when a TextureEntry cannot
+    // describe it. `publish_glb` needs a grid and a vault, but this part of it
+    // is a pure function and the format has one detail that must not drift: an
+    // image's `uri` is a bare asset UUID, because that is what Firestorm parses
+    // it as (`texture_id.set(uri)`). A path, a data URI, or a "urn:" prefix
+    // would all read as a null id and the face would lose its texture.
+    {
+        const auto textured = homeworldz::mesh::material_document(
+            homeworldz::viewer::parse_uuid("abcdabcd-1111-4222-8333-444455556666"),
+            {1.0f, 1.0f, 1.0f, 1.0f}, "BLEND", true);
+        if (textured.find(R"("uri":"abcdabcd-1111-4222-8333-444455556666")") == std::string::npos)
+            return 20;
+        if (textured.find(R"("baseColorTexture":{"index":0})") == std::string::npos) return 21;
+        if (textured.find(R"("doubleSided":true)") == std::string::npos) return 22;
+        if (textured.find(R"("alphaMode":"BLEND")") == std::string::npos) return 23;
+        // Stated rather than defaulted: an unstated metallicFactor is 1, which
+        // draws the surface as metal.
+        if (textured.find(R"("metallicFactor":0)") == std::string::npos) return 24;
+
+        // No texture: no images or textures arrays at all, and the colour is the
+        // whole surface.
+        const auto bare = homeworldz::mesh::material_document(
+            std::nullopt, {0.0f, 0.5f, 1.0f, 0.25f}, "OPAQUE", false);
+        if (bare.find("\"images\"") != std::string::npos) return 25;
+        if (bare.find("\"baseColorTexture\"") != std::string::npos) return 26;
+        if (bare.find(R"("doubleSided":false)") == std::string::npos) return 27;
+        // OPAQUE is glTF's default and is left unsaid rather than restated.
+        if (bare.find("\"alphaMode\"") != std::string::npos) return 28;
+        if (bare.find("[0,0.5,1,0.25]") == std::string::npos) return 29;
+    }
+
     const auto failing_storage = [] -> std::unique_ptr<homeworldz::storage::RegionStorage> {
         throw std::runtime_error("storage deliberately unavailable in this test");
     };
