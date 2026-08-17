@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -170,6 +171,47 @@ int main(int argc, char** argv) {
         // normalization the converter applies has to be carried back out by
         // bind_shape; if these disagree the body still parses and still reports
         // sane joints, and explodes the moment anything skins it.
+        // What each joint actually ends up carrying, summed over every vertex of
+        // the highest level.
+        //
+        // The point is the *total*: a correctly skinned vertex's weights sum to
+        // one, so the grand total must equal the vertex count. Anything less is
+        // weight that went missing between the glTF and here — and missing
+        // weight does not fail, parse badly or look wrong in the bind pose. It
+        // shows up only once something animates, as vertices that lag behind
+        // their neighbours, which is a fan of long thin triangles rather than
+        // anything a reader would call a rig fault.
+        //
+        // Per joint as well as in total, because Character Creator folds a
+        // limb's twist bones onto the limb: `UpperarmTwist01` and its siblings
+        // all become mShoulderLeft, and the weight they carried has to arrive
+        // there rather than be dropped on the way.
+        {
+            std::map<std::string, double> carried;
+            double total = 0.0;
+            std::size_t vertices = 0;
+            for (const auto& submesh : parsed->high) {
+                vertices += submesh.positions.size();
+                for (const auto& vertex : submesh.influences)
+                    for (const auto& influence : vertex) {
+                        if (influence.joint >= parsed->skin->joints.size()) continue;
+                        carried[parsed->skin->joints[influence.joint]] += influence.weight;
+                        total += influence.weight;
+                    }
+            }
+            const auto shortfall = static_cast<double>(vertices) - total;
+            std::cout << "  weights:    " << total << " over " << vertices << " vertices";
+            if (std::fabs(shortfall) > static_cast<double>(vertices) * 0.005)
+                std::cout << "  ** " << shortfall << " MISSING **";
+            std::cout << '\n';
+            std::vector<std::pair<std::string, double>> ranked(carried.begin(), carried.end());
+            std::sort(ranked.begin(), ranked.end(),
+                      [](const auto& a, const auto& b) { return a.second > b.second; });
+            for (std::size_t at = 0; at < ranked.size() && at < 6; ++at)
+                std::cout << "     " << std::setw(22) << std::left << ranked[at].first
+                          << std::right << std::setw(10) << ranked[at].second << '\n';
+        }
+
         const auto& shape = parsed->skin->bind_shape;
         std::cout << "  bind shape: scale (" << shape[0] << ", " << shape[5] << ", " << shape[10]
                   << ") offset (" << shape[12] << ", " << shape[13] << ", " << shape[14] << ")\n";
