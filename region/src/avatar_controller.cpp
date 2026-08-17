@@ -233,9 +233,28 @@ void AvatarController::synchronize_physics(
 }
 
 scene::Vector3 AvatarController::viewer_position() const {
-    auto position = state_.position;
-    position.z -= state_.hip_offset;
-    return position;
+    // The capsule's centre, unadjusted, because that is what a viewer expects to
+    // be handed.
+    //
+    // `LLVOAvatar` converts the position it receives into a pelvis position
+    // itself: `root_pos.z -= (0.5 * mBodySize.z) - mPelvisToFoot`
+    // (llvoavatar.cpp). Solving that for feet-on-ground gives
+    // `sent = ground + 0.5 * mBodySize`, which is exactly `position.z` above —
+    // so any further offset here is added on top of a correction the viewer has
+    // already made.
+    //
+    // This used to subtract `hip_offset`, which comes from the Halcyon visual
+    // parameter formula in avatar_geometry() above. That formula is right about
+    // *height*; the hip term belongs to Halcyon's own physics convention, where
+    // the body origin is not the capsule centre. Ours is centred, under Jolt, so
+    // importing one half of that convention raised every avatar by the offset:
+    // about 66 mm for a shape 1.78 m tall, and 64 mm for the seeded default. It
+    // showed up as imported bodies standing above the ground, and as an avatar
+    // measuring nearer 1.87 m than the 1.805 m its mesh actually is.
+    //
+    // hip_offset is still computed and logged, because it is a real quantity and
+    // reports the shape's leg proportion; it simply is not this.
+    return state_.position;
 }
 
 std::array<float, 3> AvatarController::look_direction() const {

@@ -73,8 +73,13 @@ int main() {
     avatar.set_avatar_geometry(2.0, -0.075);
     avatar.set_ground_height(26.0);
     avatar.step(0.1);
+    // The position sent to a viewer is the capsule centre, with no hip offset
+    // applied: the viewer converts to a pelvis position itself, so anything
+    // added here lands on top of a correction already made and lifts the avatar
+    // off the ground. This asserted 27.075 while the code subtracted the offset —
+    // written from the implementation rather than from what a viewer expects.
     if (!avatar.state().grounded || avatar.state().height != 2.0 || avatar.state().position.z != 27.0 ||
-        std::abs(avatar.viewer_position().z - 27.075) > 1e-9)
+        std::abs(avatar.viewer_position().z - 27.0) > 1e-9)
         return 6;
 
     update.control_flags = homeworldz::viewer::control_fly | homeworldz::viewer::control_up |
