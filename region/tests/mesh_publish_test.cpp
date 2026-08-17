@@ -53,6 +53,15 @@ int main() {
         const auto textured = homeworldz::mesh::material_document(
             homeworldz::viewer::parse_uuid("abcdabcd-1111-4222-8333-444455556666"),
             {1.0f, 1.0f, 1.0f, 1.0f}, "BLEND", true);
+        // The LLSD envelope, which is the part whose absence is silent: without
+        // it the viewer answers 200, fails its version/type check, and renders
+        // the default white material with no textures at all.
+        if (!textured.starts_with("<llsd>")) return 15;
+        if (textured.find("<key>type</key><string>GLTF 2.0</string>") == std::string::npos)
+            return 16;
+        if (textured.find("<key>version</key><string>1.1</string>") == std::string::npos)
+            return 17;
+        if (textured.find("<key>data</key><string>{") == std::string::npos) return 18;
         if (textured.find(R"("uri":"abcdabcd-1111-4222-8333-444455556666")") == std::string::npos)
             return 20;
         if (textured.find(R"("baseColorTexture":{"index":0})") == std::string::npos) return 21;

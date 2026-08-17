@@ -41,14 +41,25 @@ namespace homeworldz::mesh {
 const std::vector<std::byte>& blank_prim_texture_entry();
 viewer::Uuid blank_texture_id();
 
-// One glTF material document, as a viewer stores an `AT_MATERIAL` (type 57)
-// asset (ADR 0033 M3).
+// The asset envelope a viewer's material asset carries, checked exactly:
+// `version` must be an accepted one and `type` must match, or
+// `LLGLTFMaterialList::onAssetLoadComplete` gives up and the face keeps the
+// default material.
+inline constexpr std::string_view material_asset_version = "1.1";
+inline constexpr std::string_view material_asset_type = "GLTF 2.0";
+
+// One `AT_MATERIAL` (type 57) asset, as a viewer stores it (ADR 0033 M3).
 //
-// This is a glTF document carrying exactly one material, and its one departure
-// from the format is the one Second Life made: **an image's `uri` is a bare
-// asset UUID** rather than a path or a data URI. `LLGLTFMaterial::setFromTexture`
-// reads it with `texture_id.set(uri)`, so the string is parsed as a UUID and
-// nothing fetches it as a URL.
+// **The asset is not the glTF document.** It is an LLSD map with `version`,
+// `type` and a `data` string, and the glTF lives inside `data`. Serving the bare
+// document instead is silent: the viewer answers 200, fails the envelope check,
+// and falls back to its default material — opaque white with no textures — so
+// the model renders flat grey and nothing anywhere reports an error.
+//
+// Within `data`, the one departure from glTF is Second Life's: **an image's
+// `uri` is a bare asset UUID** rather than a path or a data URI.
+// `LLGLTFMaterial::setFromTexture` reads it with `texture_id.set(uri)`, so the
+// string is parsed as a UUID and nothing fetches it as a URL.
 //
 // It exists because a TextureEntry has nowhere to say "draw both sides". A face
 // that names a material is drawn from that material — textures included — so the

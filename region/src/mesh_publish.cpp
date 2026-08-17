@@ -87,7 +87,40 @@ std::string material_document(const std::optional<viewer::Uuid>& base_colour_tex
         ",\"metallicFactor\":0,\"roughnessFactor\":1}";
     if (alpha_mode != "OPAQUE") document += ",\"alphaMode\":\"" + std::string(alpha_mode) + "\"";
     document += ",\"doubleSided\":" + std::string(double_sided ? "true" : "false") + "}]}";
-    return document;
+
+    // The asset is not the glTF document. It is an LLSD map *carrying* the glTF
+    // document as a string, and a viewer that cannot read the envelope does not
+    // report an error — it applies its default material, which is opaque white
+    // with no textures. That is exactly what shipping the bare document looked
+    // like: every face of two whole characters drew flat grey, every material
+    // was fetched and answered 200, and no texture was ever requested, because
+    // the material the viewer ended up holding named none.
+    //
+    // `LLGLTFMaterialList::onAssetLoadComplete` deserialises the buffer as LLSD,
+    // requires `version` to be an accepted one and `type` to be exactly
+    // "GLTF 2.0", and only then hands `data` to tinygltf.
+    //
+    // Written as LLSD XML opening with `<llsd>`, which `LLSDSerialize::deserialize`
+    // accepts without any `<?llsd/...?>` header — it is that function's
+    // LEGACY_NON_HEADER case.
+    const auto escaped = [](std::string_view value) {
+        std::string out;
+        out.reserve(value.size());
+        for (const char character : value) {
+            switch (character) {
+                case '&': out += "&amp;"; break;
+                case '<': out += "&lt;"; break;
+                case '>': out += "&gt;"; break;
+                default: out += character;
+            }
+        }
+        return out;
+    };
+    return "<llsd><map>"
+           "<key>version</key><string>" + std::string(material_asset_version) + "</string>"
+           "<key>type</key><string>" + std::string(material_asset_type) + "</string>"
+           "<key>data</key><string>" + escaped(document) + "</string>"
+           "</map></llsd>";
 }
 
 PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
