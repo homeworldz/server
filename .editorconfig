@@ -1,0 +1,34 @@
+# Editor settings that match what .gitattributes enforces, so a file is written
+# the way it will be stored and nothing is reformatted on its way into a commit.
+# https://editorconfig.org — VS Code needs the EditorConfig extension.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Two trailing spaces are a hard line break in Markdown, so trimming them
+# silently changes how a paragraph renders.
+[*.md]
+trim_trailing_whitespace = false
+
+# gofmt's output is tab-indented and is not negotiable.
+[*.go]
+indent_style = tab
+
+[Makefile]
+indent_style = tab
+
+[*.{c,cc,cpp,h,hpp}]
+indent_style = space
+indent_size = 4
+
+[*.{json,yml,yaml,jsx,js,ts,tsx,svg}]
+indent_style = space
+indent_size = 2
+
+[*.{sh,ps1,cmd}]
+indent_style = space
+indent_size = 2

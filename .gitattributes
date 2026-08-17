@@ -1,10 +1,45 @@
-*.sh text eol=lf
-*.service text eol=lf
-*.tsv text eol=lf
-Caddyfile* text eol=lf
+# Line endings are LF, in the repository and in every working tree.
+#
+# `eol=lf` rather than bare `text=auto` on purpose: `text=auto` alone normalises
+# to LF in the repository but leaves the checkout to each machine's
+# `core.autocrlf`, which is how a tree ends up half CRLF without anyone choosing
+# it. This states the answer once, in the repository, so a fresh clone is the
+# same on Windows, Linux and the cloud build box.
+#
+# The one file type where LF can genuinely bite is a Windows batch file: cmd.exe
+# has historically mishandled LF-only `.cmd` around labels and multi-line
+# blocks. The two in this tree are already LF and work, so they are not carved
+# out; if one ever misbehaves, `*.cmd text eol=crlf` here is the fix.
+* text=auto eol=lf
 
-# Binary assets — never apply text/EOL normalization.
-*.tga binary
-*.j2c binary
-*.ogg binary
-*.raw binary
+# Binary assets — never normalised, never diffed as text. Getting this wrong is
+# not cosmetic: EOL translation inside a JPEG2000 or a heightmap corrupts it.
+*.j2c  binary
+*.tga  binary
+*.ogg  binary
+*.raw  binary
+*.r32  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.gz   binary
+*.fbx  binary
+*.glb  binary
+*.pdb  binary
+*.exe  binary
+*.dll  binary
+
+# The bundled default-avatar assets are exempt from *everything* above, and the
+# reason is not style. They are content-addressed: a region registers each one
+# with the grid by SHA256, so their bytes are their identity. Rewriting a line
+# ending changes the hash, and a region whose bundled assets no longer match what
+# the grid registered cannot serve the default avatar — four of these have
+# already drifted from the cloud once, which is how the hazard is known.
+#
+# They are wearable *text* (`LLWearable version 22` and a parameter list), which
+# is exactly why they would otherwise be normalised. `-text` says: leave these
+# bytes alone.
+assets/region/default-avatar/** -text
