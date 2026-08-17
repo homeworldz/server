@@ -32,8 +32,8 @@ client.
 | 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="86" aria-label="Phase 2 progress: 86%">86%</progress> | 86% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
-| 5. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="15" aria-label="Phase 5 progress: 15%">15%</progress> | 15% |
-| 6. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 6 progress: 6%">6%</progress> | 6% |
+| 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
+| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="15" aria-label="Phase 6 progress: 15%">15%</progress> | 15% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="23" aria-label="Phase 7 progress: 23%">23%</progress> | 23% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="3" aria-label="Phase 8 progress: 3%">3%</progress> | 3% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="66" aria-label="Phase 9 progress: 66%">66%</progress> | 66% |
@@ -234,7 +234,33 @@ client family is served a derived rendition by a conversion worker.
 - [x] Add viewer-authored wearable creation, editing, and named outfit saving beyond the initial default-avatar flow.
 - [ ] Provide bulk inventory, search, copy, transfer, export-policy, recovery, and large-inventory performance behavior.
 
-## Phase 5: LSL Scripting
+## Phase 5: Social Communications
+
+Who people are to each other, and how they reach each other: identity and
+profiles, direct and group messaging, voice, friendship, and the group and
+role machinery that shared ownership rests on.
+
+This comes before scripting, having previously followed it. It is the smaller
+and safer body of work of the two, and it is worth more to the first people on a
+grid: they can find and talk to each other long before anyone needs a script to
+run.
+
+### Identity, profiles, and communication
+
+- [ ] Implement user-visible names, profiles, interests, images, privacy, and account administration.
+- [ ] Implement direct messages, offline messages, group chat, conference chat, mute/block behavior, and delivery history where appropriate.
+- [ ] Provide voice via **WebRTC**.
+- [ ] Implement friendship, calling cards, presence permissions, and offers.
+- [ ] Add abuse reporting and the minimum moderation evidence needed by grid operators.
+
+### Groups, roles, and shared ownership
+
+- [ ] Implement groups, roles, powers, membership, invitations, notices, and group communication.
+- [ ] Support group-owned land and objects without weakening creator provenance or transfer permissions.
+- [ ] Apply group powers consistently to parcels, estates, object editing, inventory sharing, and moderation.
+- [ ] Audit sensitive group and ownership changes.
+
+## Phase 6: LSL Scripting
 
 ### Language and compiler
 
@@ -284,27 +310,6 @@ client family is served a derived rendition by a conversion worker.
 - [ ] Synchronize driver controls, vehicle motion, cameras, passengers, and seated-avatar transforms.
 - [ ] Preserve object, linkset, inventory, permission, passenger, and physical state as one transferable vehicle bundle.
 - [ ] Add load, tunneling, stacking, recovery, and abusive-object safeguards.
-
-## Phase 6: Social Communications
-
-Who people are to each other, and how they reach each other: identity and
-profiles, direct and group messaging, voice, friendship, and the group and
-role machinery that shared ownership rests on.
-
-### Identity, profiles, and communication
-
-- [ ] Implement user-visible names, profiles, interests, images, privacy, and account administration.
-- [ ] Implement direct messages, offline messages, group chat, conference chat, mute/block behavior, and delivery history where appropriate.
-- [ ] Provide voice via **WebRTC**.
-- [ ] Implement friendship, calling cards, presence permissions, and offers.
-- [ ] Add abuse reporting and the minimum moderation evidence needed by grid operators.
-
-### Groups, roles, and shared ownership
-
-- [ ] Implement groups, roles, powers, membership, invitations, notices, and group communication.
-- [ ] Support group-owned land and objects without weakening creator provenance or transfer permissions.
-- [ ] Apply group powers consistently to parcels, estates, object editing, inventory sharing, and moderation.
-- [ ] Audit sensitive group and ownership changes.
 
 ## Phase 7: Reliable Operations and Distribution
 

@@ -235,7 +235,7 @@ Parcel enforcement is authoritative for build/rez (`CreateObjects`), script
 execution (`AllowOtherScripts`), teleport entry and continuous walk-in ejection
 (ban/access lists plus landing-point routing), viewer-initiated object return,
 and periodic `OtherCleanTime` auto-return. Group-scoped flags currently fall back
-to owner-only behaviour because groups are not yet modelled (Phase 6). The damage
+to owner-only behaviour because groups are not yet modelled (Phase 5). The damage
 (`AllowDamage`) and push (`RestrictPushObject`) flags are carried but inert until
 the combat/health and `llPushObject` systems exist.
 

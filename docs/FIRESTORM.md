@@ -158,7 +158,7 @@ uploader stores a fresh asset with the editor's creator UUID, registers that
 origin with the Grid, and atomically relinks the personal inventory item.
 Notecard and gesture completion returns the new asset UUID. LSL source is
 preserved now but compilation is intentionally reported as unavailable until
-the Phase 5 Homeworldz compiler and runtime are implemented.
+the Phase 6 Homeworldz compiler and runtime are implemented.
 
 Each region registers its viewer UDP port with the grid. Login advertises that
 stored port, while `region.viewer_port` controls the matching region listener
@@ -993,7 +993,7 @@ Each request must identify an owned, modifiable object and a matching
 modifiable task item. Its upload creates an immutable creator-attributed asset,
 updates only that task item's asset reference, increments the task-inventory
 serial, and persists the complete scene snapshot. LSL source is stored but is
-reported as not compiled until the Phase 5 Homeworldz runtime is available.
+reported as not compiled until the Phase 6 Homeworldz runtime is available.
 Live Firestorm save-and-restart acceptance remains pending.
 
 Dynamic physical-object synchronization now combines the previously accepted
