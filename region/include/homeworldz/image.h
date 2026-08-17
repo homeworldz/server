@@ -108,6 +108,18 @@ std::optional<std::vector<std::uint8_t>> encode_jpeg(const Image& image, int qua
 //     authored as an RGB image does not silently lose two thirds of itself.
 bool write_alpha_from_luminance(Image& rgba, const Image& mask);
 
+// The share of pixels whose alpha is at least `at_least`, 0..1. A 3-channel or
+// 1-channel image has no alpha and counts as fully opaque. Returns 0 for an
+// empty image.
+//
+// This is how a *cutout* mask is told from a *soft* one, which decides whether a
+// surface is alpha-tested or alpha-blended. Measured across the reference corpus
+// the two populations do not overlap: eye occlusion, tearlines, a scalp cap and
+// a soft eyelash map all sit at or below 0.004 above alpha 0.9, while hair,
+// beards, brows and a crisp eyelash map sit at 0.044 and above — a tenfold gap
+// with nothing in between.
+double opaque_fraction(const Image& image, std::uint8_t at_least);
+
 // An RGBA image of one colour everywhere, with `mask`'s luminance as its alpha.
 //
 // For a material that has an opacity map and no colour map: the colour is then a

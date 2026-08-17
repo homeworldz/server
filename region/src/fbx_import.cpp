@@ -92,14 +92,24 @@ std::optional<std::vector<std::byte>> encoded_png(const image::Image& rgba) {
     return out;
 }
 
+// Alpha at or above this counts as "solid" when deciding whether a mask is a
+// cutout, and a mask with more than `cutout_share` of its pixels that solid is
+// one. Both come from measuring the reference corpus rather than from taste:
+// see image::opaque_fraction for the two populations and the gap between them.
+constexpr std::uint8_t solid_alpha = 230;   // 0.9
+constexpr double cutout_share = 0.02;
+
 std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
-                                                      const ufbx_blob& opacity) {
+                                                      const ufbx_blob& opacity,
+                                                      bool* cutout) {
     const auto base = image::decode_png_or_jpeg(to_u8(colour));
     const auto mask = image::decode_png_or_jpeg(to_u8(opacity));
     if (!base || !mask || base->empty() || mask->empty()) return std::nullopt;
 
     auto rgba = image::to_rgba(*base);
     if (!image::write_alpha_from_luminance(rgba, *mask)) return std::nullopt;
+    if (cutout != nullptr)
+        *cutout = image::opaque_fraction(rgba, solid_alpha) > cutout_share;
     return encoded_png(rgba);
 }
 
@@ -120,7 +130,8 @@ std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
 // transfer function for the mid-greys would be a guess about the exporter that
 // nothing here can check.
 std::optional<std::vector<std::byte>> composite_factor_alpha(const ufbx_vec4& colour,
-                                                             const ufbx_blob& opacity) {
+                                                             const ufbx_blob& opacity,
+                                                             bool* cutout) {
     const auto mask = image::decode_png_or_jpeg(to_u8(opacity));
     if (!mask || mask->empty()) return std::nullopt;
 
@@ -133,6 +144,8 @@ std::optional<std::vector<std::byte>> composite_factor_alpha(const ufbx_vec4& co
     const auto rgba = image::solid_with_alpha(
         {channel(colour.x), channel(colour.y), channel(colour.z)}, *mask);
     if (rgba.empty()) return std::nullopt;
+    if (cutout != nullptr)
+        *cutout = image::opaque_fraction(rgba, solid_alpha) > cutout_share;
     return encoded_png(rgba);
 }
 
@@ -297,6 +310,9 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
         struct Embedded {
             std::vector<std::byte> bytes;
             const char* mime{};
+            // Whether the mask composited into this image is a cutout rather
+            // than a soft overlay, which decides MASK against BLEND below.
+            bool cutout{};
         };
         // Keyed on the *pair*, because a colour map composited with two
         // different opacity maps is two different images while the same pair
@@ -327,7 +343,8 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
 
             Embedded embedded;
             if (mask != nullptr) {
-                if (auto merged = composite_alpha(file->content, mask->content)) {
+                if (auto merged = composite_alpha(file->content, mask->content,
+                                                  &embedded.cutout)) {
                     embedded.bytes = std::move(*merged);
                     embedded.mime = "image/png";  // composite_alpha encodes PNG
                 } else {
@@ -365,7 +382,8 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             const std::pair<std::uint32_t, std::uint32_t> key{opacity->file_index, packed};
             if (const auto found = factor_slot.find(key); found != factor_slot.end())
                 return static_cast<long long>(found->second);
-            auto filled = composite_factor_alpha(colour, mask->content);
+            Embedded embedded;
+            auto filled = composite_factor_alpha(colour, mask->content, &embedded.cutout);
             if (!filled) {
                 // The mask was unreadable, so there is nothing to publish and
                 // the count says a binding was lost. Better than a texture that
@@ -373,7 +391,6 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 ++result.bindings_dropped;
                 return -1;
             }
-            Embedded embedded;
             embedded.bytes = std::move(*filled);
             embedded.mime = "image/png";  // composite_factor_alpha encodes PNG
             const auto slot = image_files.size();
@@ -660,12 +677,33 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             materials += "}";
             if (normal_map >= 0)
                 materials += ",\"normalTexture\":{\"index\":" + std::to_string(normal_map) + "}";
-            // BLEND rather than MASK: a lash map is soft-edged and a cutoff
-            // would leave it either jagged or square. The cost is draw order,
-            // which is the renderer's problem and not one we can decide here.
+            // MASK for a cutout, BLEND for a soft overlay, decided by measuring
+            // the composited alpha rather than by the material's name.
+            //
+            // This was BLEND for everything, on the reasoning that a lash map is
+            // soft-edged and a cutoff would leave it jagged. That is true of
+            // *some* lash maps and false of others, which is exactly why the
+            // name cannot decide it: in the reference corpus Alika's eyelash map
+            // is a crisper cutout (17.1% of it fully opaque) than the hair that
+            // needed this (10.8%), while Talking-Kevin's eyelash map is soft
+            // (0.4%) and sits with eye occlusion, tearlines and scalp caps at or
+            // below 0.4%. The two populations are ten times apart with nothing
+            // between them.
+            //
+            // It matters because blending is what made hair look thin: a soft
+            // mask blended over itself never accumulates to solid, so strands
+            // that are 60% opaque in the texture read as haze. A cutoff snaps
+            // them to solid and doubles the covered area, and on a mask that is
+            // already a hard cutout it changes nothing at all — which is why it
+            // is safe on Alika's lashes and wrong on Talking-Kevin's.
+            const auto cutout = masked && base_colour >= 0 &&
+                                static_cast<std::size_t>(base_colour) < image_files.size() &&
+                                image_files[static_cast<std::size_t>(base_colour)].cutout;
             if (masked) {
-                materials += ",\"alphaMode\":\"BLEND\"";
+                materials += cutout ? ",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.4"
+                                    : ",\"alphaMode\":\"BLEND\"";
                 ++result.opacity_composited;
+                if (cutout) ++result.masks_cut_out;
             } else if (transparent_factor) {
                 materials += ",\"alphaMode\":\"BLEND\"";
             }

@@ -105,6 +105,13 @@ struct FbxImport {
     // published is not pixel-for-pixel what was sent, and a creator comparing
     // the two deserves to know that from the log rather than from their eyes.
     std::size_t textures_downscaled{};
+
+    // Of the opacity maps composited above, how many were judged *cutouts* and
+    // so alpha-tested rather than alpha-blended. Counted separately because the
+    // judgement is made from the pixels and can be wrong on a mask nobody has
+    // looked at: a number that moves when a character is re-exported is the
+    // first sign the threshold needs revisiting.
+    std::size_t masks_cut_out{};
 };
 
 // True when these bytes begin like an FBX, binary or ASCII.

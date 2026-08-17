@@ -470,6 +470,16 @@ Image resize_nearest(const Image& src, std::uint32_t width, std::uint32_t height
     return out;
 }
 
+double opaque_fraction(const Image& image, std::uint8_t at_least) {
+    if (image.empty() || image.pixels.size() != image.expected_size()) return 0.0;
+    if (image.channels != 2 && image.channels != 4) return 1.0;  // no alpha to be less than opaque
+    const std::uint8_t alpha_at = image.channels - 1;
+    std::size_t counted = 0;
+    for (std::size_t pixel = 0; pixel < image.pixel_count(); ++pixel)
+        if (image.pixels[pixel * image.channels + alpha_at] >= at_least) ++counted;
+    return static_cast<double>(counted) / static_cast<double>(image.pixel_count());
+}
+
 Image resize_box(const Image& src, std::uint32_t width, std::uint32_t height) {
     if (src.empty() || width == 0 || height == 0 || src.channels < 1 ||
         src.pixels.size() != src.expected_size()) {

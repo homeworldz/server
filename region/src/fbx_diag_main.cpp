@@ -569,6 +569,8 @@ bool report(const fs::path& path, const fs::path& write_to) {
     if (imported.textures_downscaled > 0)
         std::cout << ", " << imported.textures_downscaled
                   << " texture(s) downscaled to fit the gate";
+    if (imported.masks_cut_out > 0)
+        std::cout << ", " << imported.masks_cut_out << " of them cutouts (alpha-tested)";
     std::cout << '\n';
 
     bool import_clean = true;

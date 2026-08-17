@@ -12,6 +12,7 @@ using homeworldz::image::decode_j2c;
 using homeworldz::image::decode_png_or_jpeg;
 using homeworldz::image::encode_j2c;
 using homeworldz::image::encode_jpeg;
+using homeworldz::image::opaque_fraction;
 using homeworldz::image::resize_box;
 using homeworldz::image::Image;
 using homeworldz::image::Layer;
@@ -459,6 +460,30 @@ int main() {
         if (encode_jpeg(Image{}, 90)) {
             std::cerr << "encode_jpeg accepted an empty image\n";
             return 1;
+        }
+    }
+
+    // opaque_fraction is what separates a cutout mask from a soft one, and the
+    // separation is only meaningful if the count is exact at the boundary.
+    {
+        Image half = make_solid(2, 2, 4, {0, 0, 0, 255});
+        half.pixels[3] = 255;   // one pixel opaque
+        half.pixels[7] = 230;   // one exactly at the threshold: counts
+        half.pixels[11] = 229;  // one just below: does not
+        half.pixels[15] = 0;    // clear
+        const auto share = opaque_fraction(half, 230);
+        if (share < 0.49 || share > 0.51) {
+            std::cerr << "opaque_fraction wrong: " << share << " (want 0.5)\n";
+            return 40;
+        }
+        // An image with no alpha channel cannot be less than opaque.
+        if (opaque_fraction(make_solid(2, 2, 3, {1, 2, 3, 0}), 230) != 1.0) {
+            std::cerr << "opaque_fraction treated an RGB image as transparent\n";
+            return 41;
+        }
+        if (opaque_fraction(Image{}, 230) != 0.0) {
+            std::cerr << "opaque_fraction invented coverage for an empty image\n";
+            return 42;
         }
     }
 
