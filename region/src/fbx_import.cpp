@@ -92,12 +92,37 @@ std::optional<std::vector<std::byte>> encoded_png(const image::Image& rgba) {
     return out;
 }
 
-// Alpha at or above this counts as "solid" when deciding whether a mask is a
-// cutout, and a mask with more than `cutout_share` of its pixels that solid is
-// one. Both come from measuring the reference corpus rather than from taste:
-// see image::opaque_fraction for the two populations and the gap between them.
+// What makes a mask a cutout, in two parts: it has solid pixels *and* it is
+// mostly empty.
+//
+// The second half was missing and it cost a garment. A cutout is a shape cut out
+// of nothing — a hair atlas is three quarters transparent with solid strands in
+// it — and alpha-testing one is right because there is barely anything partial
+// to lose. A leather vest with a feathered shoulder is the opposite: 87% solid,
+// 8% clear, and the soft part is the whole of the one feature that needs to stay
+// soft. Judging it on "has solid pixels" alone called it a cutout, because the
+// statistic is dominated by the leather and cannot see the fringe, and the
+// cutoff then chopped the feathers into flat black shards (operator screenshots,
+// 2026-08-17, against the same vest imported before the change and correct).
+//
+// Measured, both thresholds sitting in a gap rather than at a preference:
+//
+//   hair atlas   11% solid, 75% clear  -> cutout
+//   this vest    87% solid,  8% clear  -> not
+//
+// So the emptiness test is what distinguishes them, and the solidity test still
+// keeps soft overlays — eye occlusion, tearlines, a soft lash map — off it.
 constexpr std::uint8_t solid_alpha = 230;   // 0.9
+constexpr std::uint8_t clear_alpha = 26;    // 0.1
 constexpr double cutout_share = 0.02;
+constexpr double empty_share = 0.30;
+
+// Whether a composited mask is a cutout by both tests above.
+bool is_cutout(const image::Image& rgba) {
+    const auto solid = image::opaque_fraction(rgba, solid_alpha);
+    const auto clear = 1.0 - image::opaque_fraction(rgba, clear_alpha);
+    return solid > cutout_share && clear > empty_share;
+}
 
 std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
                                                       const ufbx_blob& opacity,
@@ -108,8 +133,7 @@ std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
 
     auto rgba = image::to_rgba(*base);
     if (!image::write_alpha_from_luminance(rgba, *mask)) return std::nullopt;
-    if (cutout != nullptr)
-        *cutout = image::opaque_fraction(rgba, solid_alpha) > cutout_share;
+    if (cutout != nullptr) *cutout = is_cutout(rgba);
     return encoded_png(rgba);
 }
 
@@ -144,8 +168,7 @@ std::optional<std::vector<std::byte>> composite_factor_alpha(const ufbx_vec4& co
     const auto rgba = image::solid_with_alpha(
         {channel(colour.x), channel(colour.y), channel(colour.z)}, *mask);
     if (rgba.empty()) return std::nullopt;
-    if (cutout != nullptr)
-        *cutout = image::opaque_fraction(rgba, solid_alpha) > cutout_share;
+    if (cutout != nullptr) *cutout = is_cutout(rgba);
     return encoded_png(rgba);
 }
 
