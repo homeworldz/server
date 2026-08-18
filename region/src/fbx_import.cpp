@@ -610,24 +610,25 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 }
                 if (has_texcoords) {
                     const auto uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, corner);
-                    // Taken as ufbx reports them, with no V flip.
+                    // FBX UVs use a bottom-left origin; glTF uses top-left.
                     //
-                    // This flipped V until 2026-08-10, on the stated grounds
-                    // that FBX puts the UV origin at the bottom left and glTF at
-                    // the top left. That was assumed rather than measured, and
-                    // it is wrong here: an imported body wore its skin upside
-                    // down, nipples at the hips and a face across the abdomen.
+                    // This conversion was removed on 2026-08-10 after comparing
+                    // the FBX path with a native GLB upload. That comparison was
+                    // invalid: a native GLB's coordinates are already in glTF's
+                    // convention, while ufbx reports the FBX coordinates as
+                    // authored. Passing those through unchanged made the biker
+                    // vest sample skin and armour from the opposite half of its
+                    // shared atlas; detached arm-hole cards then appeared as a
+                    // ring of unrelated black shards.
                     //
-                    // What settles it is the other path. An uploaded GLB reaches
-                    // a viewer through the same glTF -> sl-mesh conversion,
-                    // which flips nothing, and its textures have been right
-                    // since M1. So whatever the two specifications say, zero
-                    // flips is what renders correctly downstream, and an import
-                    // has to arrive at the same place an upload does. Flipping
-                    // here also left the canonical glTF disagreeing with every
-                    // other glTF we store.
+                    // The real-file check is direct: render the generated GLB in
+                    // Blender. Without this flip its leather shell contains face
+                    // and armour fragments; with it the shell maps to the black
+                    // vest islands in both diffuse and opacity atlases. No later
+                    // stage flips UVs, so this is the format boundary where the
+                    // conversion belongs.
                     streams.texcoords.push_back(
-                        {static_cast<float>(uv.x), static_cast<float>(uv.y)});
+                        {static_cast<float>(uv.x), static_cast<float>(1.0 - uv.y)});
                 }
                 if (skin != nullptr) {
                     const auto vertex = mesh->vertex_indices.data[corner];
