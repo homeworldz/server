@@ -247,6 +247,123 @@ struct Streams {
     std::vector<std::array<float, 4>> weights;
 };
 
+struct AlphaComponentSplit {
+    std::vector<std::uint32_t> solid;
+    std::vector<std::uint32_t> soft;
+};
+
+// A mostly-solid garment can still carry soft trim in the same FBX material.
+// Character Creator's biker vest is the concrete case: its leather shell is one
+// connected surface, while the fur around the arm holes is made from hundreds
+// of detached cards whose UVs cross the opacity map's feathered strips. Drawing
+// the whole material with MASK turns those cards into hard black shards;
+// drawing the whole thing with BLEND stops the leather from writing depth and
+// makes the back of the vest visible through its front.
+//
+// Split only detached components that actually sample non-solid mask pixels.
+// Opaque detached details stay with the depth-writing face, and the largest
+// connected component always stays there even if an antialiased seam gives it
+// a few soft samples. The two groups can then share the same image while using
+// the two draw modes the authoring material folded together.
+AlphaComponentSplit split_soft_components(
+    const ufbx_mesh* mesh, std::span<const std::uint32_t> corners,
+    std::span<const std::uint32_t> indices,
+    std::span<const std::array<float, 2>> texcoords, const image::Image& mask) {
+    AlphaComponentSplit out;
+    const auto triangles = corners.size() / 3;
+    if (triangles == 0 || indices.size() != corners.size() || mask.empty() ||
+        texcoords.empty()) {
+        out.solid.assign(indices.begin(), indices.end());
+        return out;
+    }
+
+    std::vector<std::size_t> parent(triangles);
+    for (std::size_t at = 0; at < triangles; ++at) parent[at] = at;
+    const auto root = [&](std::size_t value, auto&& self) -> std::size_t {
+        if (parent[value] != value) parent[value] = self(parent[value], self);
+        return parent[value];
+    };
+    const auto join = [&](std::size_t left, std::size_t right) {
+        left = root(left, root);
+        right = root(right, root);
+        if (left != right) parent[right] = left;
+    };
+
+    // A polygon vertex names its geometric control point through
+    // vertex_indices. Using that rather than the generated glTF index keeps UV
+    // and normal seams from falsely breaking one piece into several.
+    std::map<std::uint32_t, std::size_t> first_triangle;
+    for (std::size_t triangle = 0; triangle < triangles; ++triangle) {
+        for (std::size_t corner = 0; corner < 3; ++corner) {
+            const auto polygon_vertex = corners[triangle * 3 + corner];
+            if (polygon_vertex >= mesh->vertex_indices.count) continue;
+            const auto control = mesh->vertex_indices.data[polygon_vertex];
+            const auto [found, inserted] = first_triangle.emplace(control, triangle);
+            if (!inserted) join(found->second, triangle);
+        }
+    }
+
+    std::map<std::size_t, std::vector<std::size_t>> components;
+    for (std::size_t triangle = 0; triangle < triangles; ++triangle)
+        components[root(triangle, root)].push_back(triangle);
+    auto largest = components.begin();
+    for (auto at = components.begin(); at != components.end(); ++at)
+        if (at->second.size() > largest->second.size()) largest = at;
+
+    const auto luminance = [&](float u, float v) -> std::uint8_t {
+        u = (std::clamp)(u, 0.0f, 1.0f);
+        v = (std::clamp)(v, 0.0f, 1.0f);
+        const auto x = static_cast<std::uint32_t>(u * (mask.width - 1) + 0.5f);
+        const auto y = static_cast<std::uint32_t>(v * (mask.height - 1) + 0.5f);
+        const auto* sample = &mask.pixels[
+            (static_cast<std::size_t>(y) * mask.width + x) * mask.channels];
+        if (mask.channels < 3) return sample[0];
+        return static_cast<std::uint8_t>(
+            (sample[0] * 77u + sample[1] * 151u + sample[2] * 28u) >> 8);
+    };
+    constexpr std::array<std::array<float, 3>, 7> samples{{
+        {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f},
+        {0.5f, 0.5f, 0.0f}, {0.5f, 0.0f, 0.5f}, {0.0f, 0.5f, 0.5f},
+        {1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f},
+    }};
+
+    for (const auto& [component, members] : components) {
+        bool blend = false;
+        if (component != largest->first) {
+            std::size_t non_solid = 0, measured = 0;
+            for (const auto triangle : members) {
+                std::array<std::array<float, 2>, 3> uv{};
+                bool readable = true;
+                for (std::size_t corner = 0; corner < 3; ++corner) {
+                    const auto vertex = indices[triangle * 3 + corner];
+                    if (vertex >= texcoords.size()) {
+                        readable = false;
+                        break;
+                    }
+                    uv[corner] = texcoords[vertex];
+                }
+                if (!readable) continue;
+                for (const auto& weight : samples) {
+                    const float u = uv[0][0] * weight[0] + uv[1][0] * weight[1] +
+                                    uv[2][0] * weight[2];
+                    const float v = uv[0][1] * weight[0] + uv[1][1] * weight[1] +
+                                    uv[2][1] * weight[2];
+                    if (luminance(u, v) < solid_alpha) ++non_solid;
+                    ++measured;
+                }
+            }
+            blend = measured > 0 &&
+                    static_cast<double>(non_solid) / static_cast<double>(measured) >
+                        cutout_share;
+        }
+        auto& destination = blend ? out.soft : out.solid;
+        for (const auto triangle : members)
+            destination.insert(destination.end(), indices.begin() + triangle * 3,
+                               indices.begin() + triangle * 3 + 3);
+    }
+    return out;
+}
+
 } // namespace
 
 bool looks_like_fbx(std::span<const std::byte> content) {
@@ -629,23 +746,27 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 attributes += ",\"WEIGHTS_0\":" + std::to_string(accessor_count++);
             }
 
-            pad_to_four(binary);
-            const auto index_offset = binary.size();
             const bool wide = unique > (std::numeric_limits<std::uint16_t>::max)();
-            for (const auto index : indices)
-                if (wide) glb::append_u32(binary, index);
-                else append_u16(binary, static_cast<std::uint16_t>(index));
-            const auto index_view = add_view(index_offset, binary.size() - index_offset, 34963);
-            accessors += ",{\"bufferView\":" + std::to_string(index_view) +
-                ",\"componentType\":" + (wide ? "5125" : "5123") +
-                ",\"count\":" + std::to_string(indices.size()) + ",\"type\":\"SCALAR\"}";
-            const auto index_accessor = accessor_count++;
+            const auto write_indices = [&](std::span<const std::uint32_t> values) {
+                pad_to_four(binary);
+                const auto offset = binary.size();
+                for (const auto index : values)
+                    if (wide) glb::append_u32(binary, index);
+                    else append_u16(binary, static_cast<std::uint16_t>(index));
+                const auto view = add_view(offset, binary.size() - offset, 34963);
+                accessors += ",{\"bufferView\":" + std::to_string(view) +
+                    ",\"componentType\":" + (wide ? "5125" : "5123") +
+                    ",\"count\":" + std::to_string(values.size()) +
+                    ",\"type\":\"SCALAR\"}";
+                return accessor_count++;
+            };
 
             // The material for this part, with the maps glTF has a place for.
             const ufbx_material* material =
                 part != nullptr && part_index < mesh->materials.count
                     ? mesh->materials.data[part_index]
                     : nullptr;
+            const ufbx_texture* opacity = nullptr;
             long long base_colour = -1, normal_map = -1;
             bool masked = false;
             // A surface made transparent by the material's own opacity value
@@ -666,7 +787,7 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 // format. Reallusion puts an opacity map there anyway. Both
                 // are consulted, opacity first, so a file that means what it
                 // says still works.
-                const ufbx_texture* opacity = material->pbr.opacity.texture;
+                opacity = material->pbr.opacity.texture;
                 if (opacity == nullptr) opacity = material->pbr.transmission_color.texture;
 
                 base_colour = slot_for(material->pbr.base_color.texture, opacity);
@@ -693,6 +814,7 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 }
             }
             if (!materials.empty()) materials += ',';
+            const auto material_json_begin = materials.size();
             materials += "{\"name\":" + json_string(name) +
                 ",\"pbrMetallicRoughness\":{\"metallicFactor\":0,\"roughnessFactor\":1";
             if (base_colour >= 0) {
@@ -766,11 +888,59 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             }
             materials += ",\"doubleSided\":true}";
 
-            if (!primitives.empty()) primitives += ',';
-            primitives += "{\"attributes\":{" + attributes + "},\"indices\":" +
-                std::to_string(index_accessor) + ",\"mode\":4,\"material\":" +
-                std::to_string(material_count++) + "}";
-            imported.primitives += 1;
+            AlphaComponentSplit split;
+            split.solid = indices;
+            // Reserve one material for every remaining authored part before
+            // spending a face on the soft-card split. An FBX that already uses
+            // all eight faces must still import rather than becoming invalid
+            // merely because its opacity map is mixed.
+            const auto remaining_parts = part_count - part_index - 1;
+            const bool has_face_budget =
+                material_count + 2 + remaining_parts <= max_materials;
+            if (draw == AlphaDraw::MaskSolid && has_texcoords && opacity != nullptr &&
+                has_face_budget) {
+                if (const auto* file = carried(opacity)) {
+                    if (const auto mask = image::decode_png_or_jpeg(to_u8(file->content));
+                        mask && !mask->empty())
+                        split = split_soft_components(mesh, corners, indices,
+                                                      std::span(streams.texcoords.data(), unique),
+                                                      *mask);
+                }
+            }
+
+            const auto solid_material = material_count++;
+            if (split.soft.empty()) {
+                const auto index_accessor = write_indices(indices);
+                if (!primitives.empty()) primitives += ',';
+                primitives += "{\"attributes\":{" + attributes + "},\"indices\":" +
+                    std::to_string(index_accessor) + ",\"mode\":4,\"material\":" +
+                    std::to_string(solid_material) + "}";
+                imported.primitives += 1;
+            } else {
+                // Duplicate only the material declaration, not its image. The
+                // detached cards and the shell still sample the same authored
+                // atlas; they differ solely in whether partial alpha blends or
+                // is thresholded.
+                std::string blended = materials.substr(material_json_begin);
+                constexpr std::string_view masked_mode =
+                    "\"alphaMode\":\"MASK\",\"alphaCutoff\":0.05";
+                const auto mode = blended.find(masked_mode);
+                if (mode != std::string::npos)
+                    blended.replace(mode, masked_mode.size(), "\"alphaMode\":\"BLEND\"");
+                materials += ',' + blended;
+                const auto blend_material = material_count++;
+
+                const auto solid_accessor = write_indices(split.solid);
+                const auto soft_accessor = write_indices(split.soft);
+                if (!primitives.empty()) primitives += ',';
+                primitives += "{\"attributes\":{" + attributes + "},\"indices\":" +
+                    std::to_string(solid_accessor) + ",\"mode\":4,\"material\":" +
+                    std::to_string(solid_material) + "},";
+                primitives += "{\"attributes\":{" + attributes + "},\"indices\":" +
+                    std::to_string(soft_accessor) + ",\"mode\":4,\"material\":" +
+                    std::to_string(blend_material) + "}";
+                imported.primitives += 2;
+            }
             imported.vertices += unique;
             imported.triangles += indices.size() / 3;
         }
