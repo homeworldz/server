@@ -268,7 +268,8 @@ struct AlphaComponentSplit {
 AlphaComponentSplit split_soft_components(
     const ufbx_mesh* mesh, std::span<const std::uint32_t> corners,
     std::span<const std::uint32_t> indices,
-    std::span<const std::array<float, 2>> texcoords, const image::Image& mask) {
+    std::span<const std::array<float, 2>> texcoords, const image::Image& mask,
+    bool mask_is_alpha = false) {
     AlphaComponentSplit out;
     const auto triangles = corners.size() / 3;
     if (triangles == 0 || indices.size() != corners.size() || mask.empty() ||
@@ -317,6 +318,8 @@ AlphaComponentSplit split_soft_components(
         const auto y = static_cast<std::uint32_t>(v * (mask.height - 1) + 0.5f);
         const auto* sample = &mask.pixels[
             (static_cast<std::size_t>(y) * mask.width + x) * mask.channels];
+        if (mask_is_alpha && (mask.channels == 2 || mask.channels == 4))
+            return sample[mask.channels - 1];
         if (mask.channels < 3) return sample[0];
         return static_cast<std::uint8_t>(
             (sample[0] * 77u + sample[1] * 151u + sample[2] * 28u) >> 8);
@@ -503,7 +506,21 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                 return static_cast<long long>(found->second);
 
             Embedded embedded;
-            if (mask != nullptr) {
+            bool uses_packed_alpha = false;
+            // Character Creator's "Merge Opacity to Diffuse Texture" export
+            // writes the mask into the diffuse PNG's alpha channel, but keeps
+            // that same file bound to both DiffuseColor and TransparentColor.
+            // Treating the latter as a separate greyscale image overwrites the
+            // correct alpha with diffuse luminance, making leather colour and
+            // highlights control transparency instead of the authored mask.
+            if (mask != nullptr && texture->file_index == opacity->file_index) {
+                if (const auto decoded = image::decode_png_or_jpeg(to_u8(file->content));
+                    decoded && (decoded->channels == 2 || decoded->channels == 4)) {
+                    embedded.draw = alpha_draw(*decoded);
+                    uses_packed_alpha = true;
+                }
+            }
+            if (mask != nullptr && !uses_packed_alpha) {
                 if (auto merged = composite_alpha(file->content, mask->content,
                                                   &embedded.draw)) {
                     embedded.bytes = std::move(*merged);
@@ -904,7 +921,11 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
                         mask && !mask->empty())
                         split = split_soft_components(mesh, corners, indices,
                                                       std::span(streams.texcoords.data(), unique),
-                                                      *mask);
+                                                      *mask,
+                                                      material != nullptr &&
+                                                          material->pbr.base_color.texture != nullptr &&
+                                                          material->pbr.base_color.texture->file_index ==
+                                                              opacity->file_index);
                 }
             }
 
