@@ -177,7 +177,8 @@ int main() {
             R"({"bufferView":1,"componentType":5123,"count":6,"type":"SCALAR"}],)" +
             R"("images":[{"bufferView":2,"mimeType":"image/png"}],)" +
             R"("samplers":[{}],"textures":[{"source":0,"sampler":0}],)" +
-            R"("materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}},{}],)" +
+            R"("materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}},)" +
+            R"("alphaMode":"MASK","alphaCutoff":0.05},{}],)" +
             R"("meshes":[{"primitives":[)" +
             R"({"attributes":{"POSITION":0},"indices":1,"material":0},)" +
             R"({"attributes":{"POSITION":0},"indices":1,"material":1}]}],)" +
@@ -205,6 +206,12 @@ int main() {
         if (extraction.face_colours.size() != 2) return 29;
         for (const auto& colour : extraction.face_colours)
             if (colour != std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}) return 30;
+        if (extraction.face_alpha_modes.size() != 2 ||
+            extraction.face_alpha_modes[0] != "MASK" ||
+            extraction.face_alpha_modes[1] != "OPAQUE") return 37;
+        if (extraction.face_alpha_cutoffs.size() != 2 ||
+            std::fabs(extraction.face_alpha_cutoffs[0] - 0.05f) > 0.0001f ||
+            std::fabs(extraction.face_alpha_cutoffs[1] - 0.5f) > 0.0001f) return 38;
     }
 
     // A material carrying its colour in the factor rather than in a map. This is

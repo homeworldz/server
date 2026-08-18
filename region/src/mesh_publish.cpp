@@ -62,7 +62,8 @@ viewer::Uuid blank_texture_id() {
 
 std::string material_document(const std::optional<viewer::Uuid>& base_colour_texture,
                               const std::array<float, 4>& base_colour_factor,
-                              std::string_view alpha_mode, bool double_sided) {
+                              std::string_view alpha_mode, float alpha_cutoff,
+                              bool double_sided) {
     const auto number = [](float value) {
         std::ostringstream text;
         text << std::setprecision(6) << std::noshowpoint << value;
@@ -86,6 +87,8 @@ std::string material_document(const std::optional<viewer::Uuid>& base_colour_tex
         // metal.
         ",\"metallicFactor\":0,\"roughnessFactor\":1}";
     if (alpha_mode != "OPAQUE") document += ",\"alphaMode\":\"" + std::string(alpha_mode) + "\"";
+    if (alpha_mode == "MASK")
+        document += ",\"alphaCutoff\":" + number(std::clamp(alpha_cutoff, 0.0f, 1.0f));
     document += ",\"doubleSided\":" + std::string(double_sided ? "true" : "false") + "}]}";
 
     // The asset is not the glTF document. It is an LLSD map *carrying* the glTF
@@ -226,7 +229,11 @@ PublishedMesh publish_glb(std::span<const std::byte> glb, std::string name,
         const auto alpha_mode = face < extracted.face_alpha_modes.size()
                                     ? extracted.face_alpha_modes[face]
                                     : std::string("OPAQUE");
-        const auto document = material_document(texture, colour, alpha_mode, true);
+        const auto alpha_cutoff = face < extracted.face_alpha_cutoffs.size()
+                                    ? extracted.face_alpha_cutoffs[face]
+                                    : 0.5f;
+        const auto document = material_document(texture, colour, alpha_mode,
+                                                alpha_cutoff, true);
         auto known = material_assets.find(document);
         if (known == material_assets.end()) {
             const auto bytes = std::span(reinterpret_cast<const std::byte*>(document.data()),

@@ -117,23 +117,44 @@ constexpr std::uint8_t clear_alpha = 26;    // 0.1
 constexpr double cutout_share = 0.02;
 constexpr double empty_share = 0.30;
 
-// Whether a composited mask is a cutout by both tests above.
-bool is_cutout(const image::Image& rgba) {
+// How a composited mask should be drawn. Three cases, because two were not
+// enough and the corpus says why.
+//
+// BLEND cannot be the answer for anything with solid area in it. Alpha-blended
+// geometry does not write depth, so it cannot occlude — a leather vest rendered
+// that way shows its own back panel through its front however opaque the texture
+// says the leather is (operator, 2026-08-17). That is not a texture fault and no
+// alpha value fixes it.
+//
+// But BLEND is still right for a mask with *no* solid area: an eye-occlusion
+// shell or a tearline is a soft shadow with nothing to occlude and nothing to
+// test against, and a cutoff would give it a hard edge it should not have.
+//
+// Between those, the cutoff differs by what the mask is. A hair atlas is mostly
+// empty, its strands are already near-binary, and 0.4 is what made it read as
+// hair. A mostly-solid mask with a soft feature in it — the vest's fur fringe —
+// needs the low cutoff instead: the level barely changes how much survives
+// (92.4% at 0.05 against 91.1% at 0.4), but taking the soft tips away is what
+// chopped the fur into shards, so keep them and let them be opaque.
+enum class AlphaDraw { Blend, MaskCutout, MaskSolid };
+
+AlphaDraw alpha_draw(const image::Image& rgba) {
     const auto solid = image::opaque_fraction(rgba, solid_alpha);
     const auto clear = 1.0 - image::opaque_fraction(rgba, clear_alpha);
-    return solid > cutout_share && clear > empty_share;
+    if (solid <= cutout_share) return AlphaDraw::Blend;
+    return clear > empty_share ? AlphaDraw::MaskCutout : AlphaDraw::MaskSolid;
 }
 
 std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
                                                       const ufbx_blob& opacity,
-                                                      bool* cutout) {
+                                                      AlphaDraw* draw) {
     const auto base = image::decode_png_or_jpeg(to_u8(colour));
     const auto mask = image::decode_png_or_jpeg(to_u8(opacity));
     if (!base || !mask || base->empty() || mask->empty()) return std::nullopt;
 
     auto rgba = image::to_rgba(*base);
     if (!image::write_alpha_from_luminance(rgba, *mask)) return std::nullopt;
-    if (cutout != nullptr) *cutout = is_cutout(rgba);
+    if (draw != nullptr) *draw = alpha_draw(rgba);
     return encoded_png(rgba);
 }
 
@@ -155,7 +176,7 @@ std::optional<std::vector<std::byte>> composite_alpha(const ufbx_blob& colour,
 // nothing here can check.
 std::optional<std::vector<std::byte>> composite_factor_alpha(const ufbx_vec4& colour,
                                                              const ufbx_blob& opacity,
-                                                             bool* cutout) {
+                                                             AlphaDraw* draw) {
     const auto mask = image::decode_png_or_jpeg(to_u8(opacity));
     if (!mask || mask->empty()) return std::nullopt;
 
@@ -168,7 +189,7 @@ std::optional<std::vector<std::byte>> composite_factor_alpha(const ufbx_vec4& co
     const auto rgba = image::solid_with_alpha(
         {channel(colour.x), channel(colour.y), channel(colour.z)}, *mask);
     if (rgba.empty()) return std::nullopt;
-    if (cutout != nullptr) *cutout = is_cutout(rgba);
+    if (draw != nullptr) *draw = alpha_draw(rgba);
     return encoded_png(rgba);
 }
 
@@ -335,7 +356,7 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             const char* mime{};
             // Whether the mask composited into this image is a cutout rather
             // than a soft overlay, which decides MASK against BLEND below.
-            bool cutout{};
+            AlphaDraw draw{AlphaDraw::Blend};
         };
         // Keyed on the *pair*, because a colour map composited with two
         // different opacity maps is two different images while the same pair
@@ -367,7 +388,7 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             Embedded embedded;
             if (mask != nullptr) {
                 if (auto merged = composite_alpha(file->content, mask->content,
-                                                  &embedded.cutout)) {
+                                                  &embedded.draw)) {
                     embedded.bytes = std::move(*merged);
                     embedded.mime = "image/png";  // composite_alpha encodes PNG
                 } else {
@@ -406,7 +427,7 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             if (const auto found = factor_slot.find(key); found != factor_slot.end())
                 return static_cast<long long>(found->second);
             Embedded embedded;
-            auto filled = composite_factor_alpha(colour, mask->content, &embedded.cutout);
+            auto filled = composite_factor_alpha(colour, mask->content, &embedded.draw);
             if (!filled) {
                 // The mask was unreadable, so there is nothing to publish and
                 // the count says a binding was lost. Better than a texture that
@@ -719,14 +740,27 @@ FbxImport gltf_from_fbx(std::span<const std::byte> fbx) {
             // them to solid and doubles the covered area, and on a mask that is
             // already a hard cutout it changes nothing at all — which is why it
             // is safe on Alika's lashes and wrong on Talking-Kevin's.
-            const auto cutout = masked && base_colour >= 0 &&
-                                static_cast<std::size_t>(base_colour) < image_files.size() &&
-                                image_files[static_cast<std::size_t>(base_colour)].cutout;
+            const auto draw = (masked && base_colour >= 0 &&
+                               static_cast<std::size_t>(base_colour) < image_files.size())
+                                  ? image_files[static_cast<std::size_t>(base_colour)].draw
+                                  : AlphaDraw::Blend;
             if (masked) {
-                materials += cutout ? ",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.4"
-                                    : ",\"alphaMode\":\"BLEND\"";
+                switch (draw) {
+                    case AlphaDraw::MaskCutout:
+                        materials += ",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.4";
+                        break;
+                    case AlphaDraw::MaskSolid:
+                        // Low, so the soft edge survives as opaque rather than
+                        // being cut away: what shredded the fur was losing the
+                        // tips, not testing them.
+                        materials += ",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.05";
+                        break;
+                    case AlphaDraw::Blend:
+                        materials += ",\"alphaMode\":\"BLEND\"";
+                        break;
+                }
                 ++result.opacity_composited;
-                if (cutout) ++result.masks_cut_out;
+                if (draw != AlphaDraw::Blend) ++result.masks_cut_out;
             } else if (transparent_factor) {
                 materials += ",\"alphaMode\":\"BLEND\"";
             }

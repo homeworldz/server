@@ -52,7 +52,7 @@ int main() {
     {
         const auto textured = homeworldz::mesh::material_document(
             homeworldz::viewer::parse_uuid("abcdabcd-1111-4222-8333-444455556666"),
-            {1.0f, 1.0f, 1.0f, 1.0f}, "BLEND", true);
+            {1.0f, 1.0f, 1.0f, 1.0f}, "BLEND", 0.05f, true);
         // The LLSD envelope, which is the part whose absence is silent: without
         // it the viewer answers 200, fails its version/type check, and renders
         // the default white material with no textures at all.
@@ -67,6 +67,8 @@ int main() {
         if (textured.find(R"("baseColorTexture":{"index":0})") == std::string::npos) return 21;
         if (textured.find(R"("doubleSided":true)") == std::string::npos) return 22;
         if (textured.find(R"("alphaMode":"BLEND")") == std::string::npos) return 23;
+        // A cutoff has no meaning for BLEND and must not leak into the asset.
+        if (textured.find("\"alphaCutoff\"") != std::string::npos) return 30;
         // Stated rather than defaulted: an unstated metallicFactor is 1, which
         // draws the surface as metal.
         if (textured.find(R"("metallicFactor":0)") == std::string::npos) return 24;
@@ -74,13 +76,21 @@ int main() {
         // No texture: no images or textures arrays at all, and the colour is the
         // whole surface.
         const auto bare = homeworldz::mesh::material_document(
-            std::nullopt, {0.0f, 0.5f, 1.0f, 0.25f}, "OPAQUE", false);
+            std::nullopt, {0.0f, 0.5f, 1.0f, 0.25f}, "OPAQUE", 0.5f, false);
         if (bare.find("\"images\"") != std::string::npos) return 25;
         if (bare.find("\"baseColorTexture\"") != std::string::npos) return 26;
         if (bare.find(R"("doubleSided":false)") == std::string::npos) return 27;
         // OPAQUE is glTF's default and is left unsaid rather than restated.
         if (bare.find("\"alphaMode\"") != std::string::npos) return 28;
         if (bare.find("[0,0.5,1,0.25]") == std::string::npos) return 29;
+
+        // The non-default cutoff is load-bearing for a mostly-solid opacity
+        // atlas: omitting it makes Firestorm use glTF's 0.5 default and cuts
+        // the vest's soft shoulder fringe back into shards.
+        const auto masked = homeworldz::mesh::material_document(
+            std::nullopt, {1.0f, 1.0f, 1.0f, 1.0f}, "MASK", 0.05f, true);
+        if (masked.find(R"("alphaMode":"MASK")") == std::string::npos) return 31;
+        if (masked.find(R"("alphaCutoff":0.05)") == std::string::npos) return 32;
     }
 
     const auto failing_storage = [] -> std::unique_ptr<homeworldz::storage::RegionStorage> {

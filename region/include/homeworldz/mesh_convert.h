@@ -117,6 +117,10 @@ struct TextureExtraction {
     // material because a material that blends and a material that does not are
     // drawn by different pools, and hair is in the alpha one.
     std::vector<std::string> face_alpha_modes;
+    // Per face, the threshold used when alphaMode is MASK. glTF defaults this
+    // to 0.5, but a deliberately lower threshold is how a mostly-solid surface
+    // keeps soft fringe pixels while still writing depth.
+    std::vector<float> face_alpha_cutoffs;
     // Per face, the material's baseColorFactor as RGBA.
     //
     // glTF multiplies this into the base-colour map, and where there is no map

@@ -67,7 +67,8 @@ inline constexpr std::string_view material_asset_type = "GLTF 2.0";
 // back faces and lose its picture in the same step.
 std::string material_document(const std::optional<viewer::Uuid>& base_colour_texture,
                               const std::array<float, 4>& base_colour_factor,
-                              std::string_view alpha_mode, bool double_sided);
+                              std::string_view alpha_mode, float alpha_cutoff,
+                              bool double_sided);
 
 struct PublishedMesh {
     // The canonical mesh blob, as stored.
