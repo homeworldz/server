@@ -34,7 +34,7 @@ func encodedHeightmap(height float32) []byte { return encodedHeightmapSize(256, 
 func TestTerrainHeightmapUsesNorthAtTop(t *testing.T) {
 	data := encodedHeightmap(20)
 	binary.LittleEndian.PutUint32(data[(255*256+10)*4:], math.Float32bits(30))
-	tile := renderTerrainHeightmap(data, 256, nil)
+	tile := renderTerrainHeightmap(data, 256, 256, nil)
 	north := tile.At(10, 0)
 	south := tile.At(10, 255)
 	_, northGreen, _, _ := north.RGBA()
@@ -56,7 +56,7 @@ func TestMapTileSlicesLargeRegionAcrossGridCells(t *testing.T) {
 		}
 	}
 	region := regions.Region{ID: "large", GridX: 1000, GridY: 1000}
-	mapped := []mapRegion{{region: region, size: 2}}
+	mapped := []mapRegion{{region: region, sizeX: 2, sizeY: 2}}
 	tiles := map[string]image.Image{"large": terrain}
 	westBytes, westFound, westErr := renderMapTile(1, 1000, 1000, mapped, tiles)
 	eastBytes, eastFound, eastErr := renderMapTile(1, 1001, 1000, mapped, tiles)
@@ -93,7 +93,7 @@ func TestMapTileSlicesFourByFourRegionAtOppositeCorners(t *testing.T) {
 		}
 	}
 	region := regions.Region{ID: "large", GridX: 1000, GridY: 1000}
-	mapped := []mapRegion{{region: region, size: 4}}
+	mapped := []mapRegion{{region: region, sizeX: 4, sizeY: 4}}
 	tiles := map[string]image.Image{"large": terrain}
 	southwestBytes, southwestFound, southwestErr := renderMapTile(1, 1000, 1000, mapped, tiles)
 	northeastBytes, northeastFound, northeastErr := renderMapTile(1, 1003, 1003, mapped, tiles)
@@ -194,11 +194,11 @@ func TestTerrainCacheSeparatesRegionWidths(t *testing.T) {
 	api := &API{terrainHTTP: regionServer.Client(), terrainCache: newTerrainTileCache(),
 		layerCache: newTerrainLayerCache()}
 	region := regions.Region{PublicEndpoint: regionServer.URL}
-	first, ok := api.regionTerrainTile(context.Background(), region, 256)
+	first, ok := api.regionTerrainTile(context.Background(), region, 256, 256)
 	if !ok || first.Bounds().Dx() != 256 {
 		t.Fatalf("first terrain tile = %v/%d, want true/256", ok, first.Bounds().Dx())
 	}
-	second, ok := api.regionTerrainTile(context.Background(), region, 512)
+	second, ok := api.regionTerrainTile(context.Background(), region, 512, 512)
 	if !ok || second.Bounds().Dx() != 512 {
 		t.Fatalf("second terrain tile = %v/%d, want true/512", ok, second.Bounds().Dx())
 	}

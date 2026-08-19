@@ -46,9 +46,10 @@ func (a *API) provisionedRegionsRoot(w http.ResponseWriter, r *http.Request) {
 		if request.Enabled != nil {
 			enabled = *request.Enabled
 		}
+		sizeX, sizeY := resolveSizes(request.Size, request.SizeX, request.SizeY)
 		region, err := a.provisioned.Create(r.Context(), provisioning.Region{ID: id, Name: request.Name,
 			OwnerUserID: request.OwnerUserID, MapX: request.MapX, MapY: request.MapY,
-			Size: request.Size, Maturity: request.Maturity,
+			SizeX: sizeX, SizeY: sizeY, FacetNames: request.FacetNames, Maturity: request.Maturity,
 			PublicEndpoint: request.PublicEndpoint, ViewerPort: request.ViewerPort,
 			Enabled: enabled, AccessKey: accessKey})
 		if !writeProvisioningError(w, err) {
@@ -103,9 +104,18 @@ func (a *API) provisionedRegionByID(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &request) {
 			return
 		}
+		sizeX, sizeY := request.SizeX, request.SizeY
+		if request.Size != nil {
+			if sizeX == nil {
+				sizeX = request.Size
+			}
+			if sizeY == nil {
+				sizeY = request.Size
+			}
+		}
 		region, err := a.provisioned.Update(r.Context(), id, provisioning.Update{Name: request.Name,
 			OwnerUserID: request.OwnerUserID, MapX: request.MapX, MapY: request.MapY,
-			Size: request.Size, Maturity: request.Maturity,
+			SizeX: sizeX, SizeY: sizeY, FacetNames: request.FacetNames, Maturity: request.Maturity,
 			PublicEndpoint: request.PublicEndpoint, ViewerPort: request.ViewerPort, Enabled: request.Enabled})
 		if !writeProvisioningError(w, err) {
 			writeJSON(w, http.StatusOK, ProvisionedRegionResult{Region: region})
@@ -118,6 +128,21 @@ func (a *API) provisionedRegionByID(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, PATCH, DELETE")
 		writeJSON(w, http.StatusMethodNotAllowed, Error{Code: "method_not_allowed", Message: "only GET, PATCH, and DELETE are supported"})
 	}
+}
+
+// resolveSizes folds the square `size` shorthand into per-axis sizes; explicit
+// sizeX/sizeY win where both forms are given.
+func resolveSizes(size, sizeX, sizeY int) (int, int) {
+	resolvedX, resolvedY := sizeX, sizeY
+	if size != 0 {
+		if resolvedX == 0 {
+			resolvedX = size
+		}
+		if resolvedY == 0 {
+			resolvedY = size
+		}
+	}
+	return resolvedX, resolvedY
 }
 
 func newRegionAccessKey() (string, error) {

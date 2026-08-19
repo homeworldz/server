@@ -111,12 +111,12 @@ func (a *API) transitByID(w http.ResponseWriter, r *http.Request) {
 func (a *API) validateTransitRequest(ctx context.Context, w http.ResponseWriter, request PrepareTransitRequest) bool {
 	finite := func(value float32) bool { return !float32NaNOrInf(value) }
 	validVector := func(value transit.Vector3) bool { return finite(value.X) && finite(value.Y) && finite(value.Z) }
-	extent := a.regionExtent(ctx, request.DestinationRegionID)
+	extentX, extentY := a.regionExtents(ctx, request.DestinationRegionID)
 	valid := validUUID(request.ID) && validUUID(request.AgentID) && validUUID(request.SessionID) &&
 		validUUID(request.SourceRegionID) && validUUID(request.DestinationRegionID) &&
 		request.SourceRegionID != request.DestinationRegionID && validVector(request.Position) &&
-		validVector(request.LookAt) && request.Position.X >= 0 && request.Position.X <= extent &&
-		request.Position.Y >= 0 && request.Position.Y <= extent && request.Position.Z >= -4096 &&
+		validVector(request.LookAt) && request.Position.X >= 0 && request.Position.X <= extentX &&
+		request.Position.Y >= 0 && request.Position.Y <= extentY && request.Position.Z >= -4096 &&
 		request.Position.Z <= 4096 && (request.LifetimeSeconds == 0 ||
 		(request.LifetimeSeconds >= 10 && request.LifetimeSeconds <= 120))
 	if !valid {

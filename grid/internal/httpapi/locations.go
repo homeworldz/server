@@ -54,12 +54,12 @@ func (a *API) locationByUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	finite := func(value float32) bool { return !float32NaNOrInf(value) }
-	extent := a.regionExtent(r.Context(), request.RegionID)
+	extentX, extentY := a.regionExtents(r.Context(), request.RegionID)
 	if !validUUID(request.RegionID) ||
 		!finite(request.Position.X) || !finite(request.Position.Y) || !finite(request.Position.Z) ||
 		!finite(request.LookAt.X) || !finite(request.LookAt.Y) || !finite(request.LookAt.Z) ||
-		request.Position.X < 0 || request.Position.X > extent ||
-		request.Position.Y < 0 || request.Position.Y > extent ||
+		request.Position.X < 0 || request.Position.X > extentX ||
+		request.Position.Y < 0 || request.Position.Y > extentY ||
 		math.Hypot(float64(request.LookAt.X), float64(request.LookAt.Y)) < 0.001 {
 		writeJSON(w, http.StatusBadRequest, Error{
 			Code: "invalid_location", Message: "regionId, position, and lookAt must describe a valid Region location"})

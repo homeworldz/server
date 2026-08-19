@@ -419,7 +419,7 @@ func TestProvisionedRegionManagementLifecycle(t *testing.T) {
 			`"publicEndpoint":"https://welcome.example/region","viewerPort":42012}`,
 		http.StatusCreated)
 	if created.Region.ID != id || created.Region.Name != "Welcome" || !created.Region.Enabled ||
-		created.Region.Size != 2 || created.Region.Maturity != 1 ||
+		created.Region.SizeX != 2 || created.Region.SizeY != 2 || created.Region.Maturity != 1 ||
 		created.Region.PublicEndpoint != "https://welcome.example/region" || created.Region.ViewerPort != 42012 ||
 		len(created.AccessKey) != 64 {
 		t.Fatalf("created provisioned region = %#v", created)

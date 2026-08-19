@@ -32,9 +32,11 @@ const (
 
 var regionKinds = map[string]bool{regionKindGrid: true, regionKindUser: true}
 
-// validRegionSizes are the supported region footprints in grid units (each unit
-// is 256 m): 1 = 256x256, 2 = 512x512, 4 = 1024x1024.
-var validRegionSizes = map[int]bool{1: true, 2: true, 4: true}
+// validFacetEdges are the proven square viewer sizes in grid units (each unit
+// is 256 m): 1 = 256x256, 2 = 512x512, 4 = 1024x1024. A region's shorter
+// dimension must be one of these; the longer must be a whole multiple of the
+// shorter (the ADR 0036 shape rule), which the provisioning store enforces.
+var validFacetEdges = map[int]bool{1: true, 2: true, 4: true}
 
 // adminRegionsRoot handles GET/POST /v1/admin/regions.
 func (a *API) adminRegionsRoot(w http.ResponseWriter, r *http.Request) {
@@ -101,12 +103,23 @@ func (a *API) createRegion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, Error{Code: "invalid_region", Message: "viewerPort must be between 1 and 65535", Field: "viewerPort"})
 		return
 	}
-	size := 1
+	sizeX, sizeY := 1, 1
 	if request.Size != nil {
-		size = *request.Size
+		sizeX, sizeY = *request.Size, *request.Size
 	}
-	if !validRegionSizes[size] {
-		writeError(w, http.StatusBadRequest, Error{Code: "invalid_region", Message: "size must be 1, 2, or 4", Field: "size"})
+	if request.SizeX != nil {
+		sizeX = *request.SizeX
+	}
+	if request.SizeY != nil {
+		sizeY = *request.SizeY
+	}
+	shorter, longer := sizeX, sizeY
+	if shorter > longer {
+		shorter, longer = longer, shorter
+	}
+	if !validFacetEdges[shorter] || longer%shorter != 0 {
+		writeError(w, http.StatusBadRequest, Error{Code: "invalid_region",
+			Message: "the shorter side must be 1, 2, or 4 tiles and divide the longer", Field: "size"})
 		return
 	}
 	kind := regionKindUser
@@ -134,7 +147,8 @@ func (a *API) createRegion(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := a.regions.Create(r.Context(), provisioning.Region{
 		ID: id, Name: name, OwnerUserID: request.OwnerUserID,
-		MapX: *request.GridX, MapY: *request.GridY, Size: size, Maturity: 0,
+		MapX: *request.GridX, MapY: *request.GridY, SizeX: sizeX, SizeY: sizeY,
+		FacetNames: request.FacetNames, Maturity: 0,
 		PublicEndpoint: strings.TrimSpace(request.PublicEndpoint), ViewerPort: viewerPort,
 		Enabled: true, Kind: kind, Tags: tags, AccessKey: accessKey,
 	})
@@ -352,11 +366,16 @@ func (a *API) undeployRegion(w http.ResponseWriter, r *http.Request, id string) 
 // online/offline/undeployed state from the enabled flag and any live lease.
 func (a *API) managedRegionOf(ctx context.Context, region provisioning.Region) ManagedRegion {
 	x, y := region.MapX, region.MapY
+	squareSize := 0
+	if region.SizeX == region.SizeY {
+		squareSize = region.SizeX
+	}
 	managed := ManagedRegion{
 		ID: region.ID, Name: region.Name, OwnerUserID: region.OwnerUserID,
 		GridX: &x, GridY: &y, PublicEndpoint: region.PublicEndpoint,
 		ViewerPort: region.ViewerPort, Enabled: region.Enabled,
-		Size: region.Size, Kind: region.Kind, Tags: region.Tags,
+		Size: squareSize, SizeX: region.SizeX, SizeY: region.SizeY,
+		FacetNames: region.FacetNames, Kind: region.Kind, Tags: region.Tags,
 	}
 	if !region.Enabled {
 		managed.State = regionUndeployed

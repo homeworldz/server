@@ -70,9 +70,15 @@ type ManagedRegion struct {
 	Enabled        bool       `json:"enabled"`
 	State          string     `json:"state"`
 	LeaseExpiresAt *time.Time `json:"leaseExpiresAt,omitempty"`
-	Size           int        `json:"size"`
-	Kind           string     `json:"kind"`
-	Tags           string     `json:"tags"`
+	// Size is the square edge for a square region and 0 for a rectangle; it
+	// predates sizeX/sizeY (ADR 0036) and is kept so existing clients keep
+	// rendering square regions.
+	Size       int      `json:"size"`
+	SizeX      int      `json:"sizeX"`
+	SizeY      int      `json:"sizeY"`
+	FacetNames []string `json:"facetNames,omitempty"`
+	Kind       string   `json:"kind"`
+	Tags       string   `json:"tags"`
 }
 
 // RegionList is a list of provisioned regions.
@@ -132,9 +138,14 @@ type createRegionRequest struct {
 	GridY          *int   `json:"gridY"`
 	PublicEndpoint string `json:"publicEndpoint"`
 	ViewerPort     *int   `json:"viewerPort"`
-	Size           *int   `json:"size"`
-	Kind           string `json:"kind"`
-	Tags           string `json:"tags"`
+	// Size is the square shorthand; sizeX/sizeY supersede it for rectangles
+	// (ADR 0036), which also need one facetName per facet beyond the first.
+	Size       *int     `json:"size"`
+	SizeX      *int     `json:"sizeX"`
+	SizeY      *int     `json:"sizeY"`
+	FacetNames []string `json:"facetNames"`
+	Kind       string   `json:"kind"`
+	Tags       string   `json:"tags"`
 }
 
 // setTagsRequest carries a classification update for a user or region.

@@ -15,20 +15,28 @@ type PostgresStore struct{ db *sql.DB }
 
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
 
+const regionColumns = `id,name,owner_user_id,grid_x,grid_y,size_x,size_y,maturity,public_endpoint,viewer_port,enabled,kind,tags`
+
 func (s *PostgresStore) Import(ctx context.Context, items []Region) error {
 	for _, item := range items {
 		if err := validate(item); err != nil {
 			return err
 		}
 		hash := sha256.Sum256([]byte(item.AccessKey))
-		_, err := s.db.ExecContext(ctx, `INSERT INTO provisioned_regions
-			(id,name,owner_user_id,grid_x,grid_y,size,maturity,public_endpoint,viewer_port,enabled,access_key_hash,kind,tags)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (id) DO NOTHING`,
+		result, err := s.db.ExecContext(ctx, `INSERT INTO provisioned_regions
+			(`+regionColumns+`,access_key_hash)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (id) DO NOTHING`,
 			item.ID, item.Name, nullableOwner(item.OwnerUserID), item.MapX, item.MapY,
-			item.Size, item.Maturity, item.PublicEndpoint, item.ViewerPort, item.Enabled, hash[:],
-			regionKindOrDefault(item.Kind), item.Tags)
+			item.SizeX, item.SizeY, item.Maturity, item.PublicEndpoint, item.ViewerPort, item.Enabled,
+			regionKindOrDefault(item.Kind), item.Tags, hash[:])
 		if err != nil {
 			return classify("import provisioned region", err)
+		}
+		if inserted, err := result.RowsAffected(); err != nil || inserted == 0 {
+			continue
+		}
+		if err := s.insertFacetNames(ctx, s.db, item.ID, item.FacetNames); err != nil {
+			return classify("import provisioned region facets", err)
 		}
 	}
 	return nil
@@ -42,7 +50,7 @@ func (s *PostgresStore) Authenticate(ctx context.Context, id, accessKey string) 
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Region, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,owner_user_id,grid_x,grid_y,size,maturity,public_endpoint,viewer_port,enabled,kind,tags
+	rows, err := s.db.QueryContext(ctx, `SELECT `+regionColumns+`
         FROM provisioned_regions ORDER BY grid_y,grid_x,id`)
 	if err != nil {
 		return nil, fmt.Errorf("list provisioned regions: %w", err)
@@ -59,6 +67,9 @@ func (s *PostgresStore) List(ctx context.Context) ([]Region, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate provisioned regions: %w", err)
 	}
+	if err := s.attachFacetNames(ctx, items); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -70,21 +81,38 @@ func (s *PostgresStore) Create(ctx context.Context, item Region) (Region, error)
 	item.Name = normalize(item.Name)
 	item.OwnerUserID = normalize(item.OwnerUserID)
 	item.PublicEndpoint = normalize(item.PublicEndpoint)
-	if item.Size == 0 {
-		item.Size = 1
+	item.FacetNames = trimmedNames(item.FacetNames)
+	if item.SizeX == 0 {
+		item.SizeX = 1
+	}
+	if item.SizeY == 0 {
+		item.SizeY = 1
 	}
 	if err := validate(item); err != nil {
 		return Region{}, err
 	}
 	hash := sha256.Sum256([]byte(item.AccessKey))
-	row := s.db.QueryRowContext(ctx, `INSERT INTO provisioned_regions
-		(id,name,owner_user_id,grid_x,grid_y,size,maturity,public_endpoint,viewer_port,enabled,access_key_hash,kind,tags)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-		RETURNING id,name,owner_user_id,grid_x,grid_y,size,maturity,public_endpoint,viewer_port,enabled,kind,tags`,
-		item.ID, item.Name, nullableOwner(item.OwnerUserID), item.MapX, item.MapY,
-		item.Size, item.Maturity, item.PublicEndpoint, item.ViewerPort, item.Enabled, hash[:],
-		regionKindOrDefault(item.Kind), item.Tags)
-	created, err := scanRegion(row)
+	created, err := s.inTransaction(ctx, func(tx *sql.Tx) (Region, error) {
+		if err := s.checkNamesAcrossTables(ctx, tx, item); err != nil {
+			return Region{}, err
+		}
+		row := tx.QueryRowContext(ctx, `INSERT INTO provisioned_regions
+			(`+regionColumns+`,access_key_hash)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			RETURNING `+regionColumns,
+			item.ID, item.Name, nullableOwner(item.OwnerUserID), item.MapX, item.MapY,
+			item.SizeX, item.SizeY, item.Maturity, item.PublicEndpoint, item.ViewerPort, item.Enabled,
+			regionKindOrDefault(item.Kind), item.Tags, hash[:])
+		created, err := scanRegion(row)
+		if err != nil {
+			return Region{}, err
+		}
+		if err := s.insertFacetNames(ctx, tx, created.ID, item.FacetNames); err != nil {
+			return Region{}, err
+		}
+		created.FacetNames = item.FacetNames
+		return created, nil
+	})
 	if err != nil {
 		return Region{}, classify("create provisioned region", err)
 	}
@@ -108,8 +136,14 @@ func (s *PostgresStore) Update(ctx context.Context, id string, update Update) (R
 	if update.MapY != nil {
 		current.MapY = *update.MapY
 	}
-	if update.Size != nil {
-		current.Size = *update.Size
+	if update.SizeX != nil {
+		current.SizeX = *update.SizeX
+	}
+	if update.SizeY != nil {
+		current.SizeY = *update.SizeY
+	}
+	if update.FacetNames != nil {
+		current.FacetNames = trimmedNames(*update.FacetNames)
 	}
 	if update.Maturity != nil {
 		current.Maturity = *update.Maturity
@@ -133,18 +167,34 @@ func (s *PostgresStore) Update(ctx context.Context, id string, update Update) (R
 	if err := validate(current); err != nil {
 		return Region{}, err
 	}
-	row := s.db.QueryRowContext(ctx, `UPDATE provisioned_regions SET
-		name=$2,owner_user_id=$3,grid_x=$4,grid_y=$5,size=$6,maturity=$7,
-		public_endpoint=$8,viewer_port=$9,enabled=$10,kind=$11,tags=$12,updated_at=now()
-		WHERE id=$1 RETURNING id,name,owner_user_id,grid_x,grid_y,size,maturity,public_endpoint,viewer_port,enabled,kind,tags`,
-		id, current.Name, nullableOwner(current.OwnerUserID), current.MapX, current.MapY,
-		current.Size, current.Maturity, current.PublicEndpoint, current.ViewerPort, current.Enabled,
-		regionKindOrDefault(current.Kind), current.Tags)
-	item, err := scanRegion(row)
+	updated, err := s.inTransaction(ctx, func(tx *sql.Tx) (Region, error) {
+		if err := s.checkNamesAcrossTables(ctx, tx, current); err != nil {
+			return Region{}, err
+		}
+		row := tx.QueryRowContext(ctx, `UPDATE provisioned_regions SET
+			name=$2,owner_user_id=$3,grid_x=$4,grid_y=$5,size_x=$6,size_y=$7,maturity=$8,
+			public_endpoint=$9,viewer_port=$10,enabled=$11,kind=$12,tags=$13,updated_at=now()
+			WHERE id=$1 RETURNING `+regionColumns,
+			id, current.Name, nullableOwner(current.OwnerUserID), current.MapX, current.MapY,
+			current.SizeX, current.SizeY, current.Maturity, current.PublicEndpoint, current.ViewerPort, current.Enabled,
+			regionKindOrDefault(current.Kind), current.Tags)
+		item, err := scanRegion(row)
+		if err != nil {
+			return Region{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM provisioned_region_facets WHERE region_id=$1`, id); err != nil {
+			return Region{}, err
+		}
+		if err := s.insertFacetNames(ctx, tx, id, current.FacetNames); err != nil {
+			return Region{}, err
+		}
+		item.FacetNames = current.FacetNames
+		return item, nil
+	})
 	if err != nil {
 		return Region{}, classify("update provisioned region", err)
 	}
-	return item, nil
+	return updated, nil
 }
 
 func (s *PostgresStore) RotateAccessKey(ctx context.Context, id, accessKey string) (Region, error) {
@@ -154,10 +204,13 @@ func (s *PostgresStore) RotateAccessKey(ctx context.Context, id, accessKey strin
 	hash := sha256.Sum256([]byte(accessKey))
 	row := s.db.QueryRowContext(ctx, `UPDATE provisioned_regions
 		SET access_key_hash=$2,updated_at=now() WHERE id=$1
-		RETURNING id,name,owner_user_id,grid_x,grid_y,size,maturity,public_endpoint,viewer_port,enabled,kind,tags`, id, hash[:])
+		RETURNING `+regionColumns, id, hash[:])
 	item, err := scanRegion(row)
 	if err != nil {
 		return Region{}, classify("rotate provisioned region access key", err)
+	}
+	if err := s.attachFacetNames(ctx, []Region{item}); err != nil {
+		return Region{}, err
 	}
 	return item, nil
 }
@@ -178,7 +231,7 @@ func (s *PostgresStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *PostgresStore) get(ctx context.Context, predicate string, arguments ...any) (Region, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,owner_user_id,grid_x,grid_y,size,maturity,public_endpoint,viewer_port,enabled,kind,tags
+	row := s.db.QueryRowContext(ctx, `SELECT `+regionColumns+`
         FROM provisioned_regions WHERE `+predicate, arguments...)
 	item, err := scanRegion(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -186,6 +239,94 @@ func (s *PostgresStore) get(ctx context.Context, predicate string, arguments ...
 	}
 	if err != nil {
 		return Region{}, fmt.Errorf("get provisioned region: %w", err)
+	}
+	items := []Region{item}
+	if err := s.attachFacetNames(ctx, items); err != nil {
+		return Region{}, err
+	}
+	return items[0], nil
+}
+
+// execer covers *sql.DB and *sql.Tx for the facet-name writes.
+type execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (s *PostgresStore) insertFacetNames(ctx context.Context, db execer, regionID string, names []string) error {
+	for index, name := range names {
+		if _, err := db.ExecContext(ctx, `INSERT INTO provisioned_region_facets
+			(region_id, facet_index, name) VALUES ($1, $2, $3)`,
+			regionID, index+1, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// attachFacetNames fills FacetNames for the given regions in one query.
+func (s *PostgresStore) attachFacetNames(ctx context.Context, items []Region) error {
+	if len(items) == 0 {
+		return nil
+	}
+	byID := make(map[string]int, len(items))
+	for index, item := range items {
+		byID[item.ID] = index
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT region_id, name
+		FROM provisioned_region_facets ORDER BY region_id, facet_index`)
+	if err != nil {
+		return fmt.Errorf("list provisioned region facets: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var regionID, name string
+		if err := rows.Scan(&regionID, &name); err != nil {
+			return fmt.Errorf("scan provisioned region facet: %w", err)
+		}
+		if index, found := byID[regionID]; found {
+			items[index].FacetNames = append(items[index].FacetNames, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate provisioned region facets: %w", err)
+	}
+	return nil
+}
+
+// checkNamesAcrossTables enforces the half of name uniqueness the two
+// single-table indexes cannot: a region name may not match another region's
+// facet name, and a facet name may not match another region's name. Runs
+// inside the write transaction, so a losing race still lands on the indexes.
+func (s *PostgresStore) checkNamesAcrossTables(ctx context.Context, tx *sql.Tx, item Region) error {
+	for _, name := range allNames(item) {
+		var collision bool
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+				SELECT 1 FROM provisioned_regions WHERE lower(name) = lower($1) AND id <> $2
+				UNION ALL
+				SELECT 1 FROM provisioned_region_facets WHERE lower(name) = lower($1) AND region_id <> $2
+			)`, name, item.ID).Scan(&collision)
+		if err != nil {
+			return err
+		}
+		if collision {
+			return fmt.Errorf("%w: name %q is already claimed by another region", ErrConflict, name)
+		}
+	}
+	return nil
+}
+
+func (s *PostgresStore) inTransaction(ctx context.Context, work func(*sql.Tx) (Region, error)) (Region, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Region{}, err
+	}
+	item, err := work(tx)
+	if err != nil {
+		tx.Rollback()
+		return Region{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Region{}, err
 	}
 	return item, nil
 }
@@ -195,7 +336,7 @@ type rowScanner interface{ Scan(...any) error }
 func scanRegion(row rowScanner) (Region, error) {
 	var item Region
 	var owner sql.NullString
-	err := row.Scan(&item.ID, &item.Name, &owner, &item.MapX, &item.MapY, &item.Size, &item.Maturity,
+	err := row.Scan(&item.ID, &item.Name, &owner, &item.MapX, &item.MapY, &item.SizeX, &item.SizeY, &item.Maturity,
 		&item.PublicEndpoint, &item.ViewerPort, &item.Enabled, &item.Kind, &item.Tags)
 	if owner.Valid {
 		item.OwnerUserID = owner.String
@@ -206,6 +347,9 @@ func scanRegion(row rowScanner) (Region, error) {
 func classify(operation string, err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
+	}
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) {
+		return err
 	}
 	var databaseError *pgconn.PgError
 	if errors.As(err, &databaseError) && (databaseError.Code == "23505" || databaseError.Code == "23P01") {

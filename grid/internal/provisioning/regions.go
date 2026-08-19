@@ -26,19 +26,26 @@ var (
 )
 
 type Region struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	OwnerUserID    string `json:"ownerUserId,omitempty"`
-	MapX           int    `json:"mapX"`
-	MapY           int    `json:"mapY"`
-	Size           int    `json:"size"`
-	Maturity       int    `json:"maturity"`
-	PublicEndpoint string `json:"publicEndpoint,omitempty"`
-	ViewerPort     int    `json:"viewerPort,omitempty"`
-	Enabled        bool   `json:"enabled"`
-	Kind           string `json:"kind,omitempty"`
-	Tags           string `json:"tags,omitempty"`
-	AccessKey      string `json:"-"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	OwnerUserID string `json:"ownerUserId,omitempty"`
+	MapX        int    `json:"mapX"`
+	MapY        int    `json:"mapY"`
+	// SizeX by SizeY tiles (each tile 256 m). The shape rule (ADR 0036): the
+	// shorter dimension is a proven square viewer size (1, 2, or 4) and divides
+	// the longer, so square facets of the shorter edge tile the shape exactly.
+	SizeX    int `json:"sizeX"`
+	SizeY    int `json:"sizeY"`
+	Maturity int `json:"maturity"`
+	// FacetNames names facets 1..N-1 of a rectangle, in map-coordinate order;
+	// facet 0 carries the region's own name. Empty for square regions.
+	FacetNames     []string `json:"facetNames,omitempty"`
+	PublicEndpoint string   `json:"publicEndpoint,omitempty"`
+	ViewerPort     int      `json:"viewerPort,omitempty"`
+	Enabled        bool     `json:"enabled"`
+	Kind           string   `json:"kind,omitempty"`
+	Tags           string   `json:"tags,omitempty"`
+	AccessKey      string   `json:"-"`
 }
 
 type Update struct {
@@ -46,7 +53,9 @@ type Update struct {
 	OwnerUserID    *string
 	MapX           *int
 	MapY           *int
-	Size           *int
+	SizeX          *int
+	SizeY          *int
+	FacetNames     *[]string
 	Maturity       *int
 	PublicEndpoint *string
 	ViewerPort     *int
@@ -56,19 +65,24 @@ type Update struct {
 }
 
 type fileRegion struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	OwnerUserID    string `json:"ownerUserId,omitempty"`
-	MapX           int    `json:"mapX"`
-	MapY           int    `json:"mapY"`
-	Size           *int   `json:"size,omitempty"`
-	Maturity       int    `json:"maturity,omitempty"`
-	PublicEndpoint string `json:"publicEndpoint,omitempty"`
-	ViewerPort     int    `json:"viewerPort,omitempty"`
-	Enabled        *bool  `json:"enabled,omitempty"`
-	Kind           string `json:"kind,omitempty"`
-	Tags           string `json:"tags,omitempty"`
-	AccessKey      string `json:"accessKey"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	OwnerUserID string `json:"ownerUserId,omitempty"`
+	MapX        int    `json:"mapX"`
+	MapY        int    `json:"mapY"`
+	// Size is the square shorthand older registry files carry; sizeX/sizeY
+	// supersede it and win when both are present.
+	Size           *int     `json:"size,omitempty"`
+	SizeX          *int     `json:"sizeX,omitempty"`
+	SizeY          *int     `json:"sizeY,omitempty"`
+	FacetNames     []string `json:"facetNames,omitempty"`
+	Maturity       int      `json:"maturity,omitempty"`
+	PublicEndpoint string   `json:"publicEndpoint,omitempty"`
+	ViewerPort     int      `json:"viewerPort,omitempty"`
+	Enabled        *bool    `json:"enabled,omitempty"`
+	Kind           string   `json:"kind,omitempty"`
+	Tags           string   `json:"tags,omitempty"`
+	AccessKey      string   `json:"accessKey"`
 }
 
 type Registry struct {
@@ -104,19 +118,26 @@ func Load(path string) (*Registry, error) {
 	items := make(map[string]Region, len(stored))
 	for index, item := range stored {
 		enabled := true
-		size := 1
+		sizeX, sizeY := 1, 1
 		if item.Enabled != nil {
 			enabled = *item.Enabled
 		}
 		if item.Size != nil {
-			size = *item.Size
+			sizeX, sizeY = *item.Size, *item.Size
+		}
+		if item.SizeX != nil {
+			sizeX = *item.SizeX
+		}
+		if item.SizeY != nil {
+			sizeY = *item.SizeY
 		}
 		kind := item.Kind
 		if kind == "" {
 			kind = "user"
 		}
 		region := Region{ID: item.ID, Name: item.Name, OwnerUserID: item.OwnerUserID,
-			MapX: item.MapX, MapY: item.MapY, Size: size, Maturity: item.Maturity,
+			MapX: item.MapX, MapY: item.MapY, SizeX: sizeX, SizeY: sizeY, Maturity: item.Maturity,
+			FacetNames:     item.FacetNames,
 			PublicEndpoint: item.PublicEndpoint,
 			ViewerPort:     item.ViewerPort, Enabled: enabled, Kind: kind, Tags: item.Tags,
 			AccessKey: item.AccessKey}
@@ -197,8 +218,12 @@ func (r *Registry) Create(_ context.Context, item Region) (Region, error) {
 	item.Name = strings.TrimSpace(item.Name)
 	item.OwnerUserID = strings.TrimSpace(item.OwnerUserID)
 	item.PublicEndpoint = strings.TrimSpace(item.PublicEndpoint)
-	if item.Size == 0 {
-		item.Size = 1
+	item.FacetNames = trimmedNames(item.FacetNames)
+	if item.SizeX == 0 {
+		item.SizeX = 1
+	}
+	if item.SizeY == 0 {
+		item.SizeY = 1
 	}
 	if item.Kind == "" {
 		item.Kind = "user"
@@ -245,8 +270,14 @@ func (r *Registry) Update(_ context.Context, id string, update Update) (Region, 
 	if update.MapY != nil {
 		item.MapY = *update.MapY
 	}
-	if update.Size != nil {
-		item.Size = *update.Size
+	if update.SizeX != nil {
+		item.SizeX = *update.SizeX
+	}
+	if update.SizeY != nil {
+		item.SizeY = *update.SizeY
+	}
+	if update.FacetNames != nil {
+		item.FacetNames = trimmedNames(*update.FacetNames)
 	}
 	if update.Maturity != nil {
 		item.Maturity = *update.Maturity
@@ -326,9 +357,10 @@ func (r *Registry) persist(items map[string]Region) error {
 	stored := make([]fileRegion, 0, len(items))
 	for _, item := range items {
 		enabled := item.Enabled
-		size := item.Size
+		sizeX, sizeY := item.SizeX, item.SizeY
 		stored = append(stored, fileRegion{ID: item.ID, Name: item.Name, OwnerUserID: item.OwnerUserID,
-			MapX: item.MapX, MapY: item.MapY, Size: &size, Maturity: item.Maturity,
+			MapX: item.MapX, MapY: item.MapY, SizeX: &sizeX, SizeY: &sizeY, Maturity: item.Maturity,
+			FacetNames:     item.FacetNames,
 			PublicEndpoint: item.PublicEndpoint,
 			ViewerPort:     item.ViewerPort, Enabled: &enabled, Kind: item.Kind, Tags: item.Tags,
 			AccessKey: item.AccessKey})
@@ -376,10 +408,16 @@ func (r *Registry) persist(items map[string]Region) error {
 
 func validate(item Region) error {
 	if !uuidPattern.MatchString(item.ID) || strings.TrimSpace(item.Name) == "" || len(item.Name) > 128 ||
-		item.MapX < 0 || item.MapY < 0 || (item.Size != 1 && item.Size != 2 && item.Size != 4) ||
+		item.MapX < 0 || item.MapY < 0 ||
 		item.Maturity < 0 || item.Maturity > 2 || item.ViewerPort < 0 || item.ViewerPort > 65535 ||
 		strings.TrimSpace(item.AccessKey) == "" {
 		return fmt.Errorf("%w: UUID, name, coordinates, or access key is invalid", ErrInvalid)
+	}
+	if err := validateShape(item.SizeX, item.SizeY); err != nil {
+		return err
+	}
+	if err := validateFacetNames(item); err != nil {
+		return err
 	}
 	if item.OwnerUserID != "" && !uuidPattern.MatchString(item.OwnerUserID) {
 		return fmt.Errorf("%w: owner user UUID is invalid", ErrInvalid)
@@ -393,23 +431,85 @@ func validate(item Region) error {
 	return nil
 }
 
+// validateShape is the ADR 0036 shape rule: the shorter dimension must be a
+// proven square viewer size and must divide the longer, so square facets of
+// the shorter edge tile the rectangle exactly. A 4x8 is two facets; a 2x5 has
+// no whole tiling and is invalid, as is an 8x8 (no viewer has rendered an
+// 8-tile square).
+func validateShape(sizeX, sizeY int) error {
+	shorter, longer := sizeX, sizeY
+	if shorter > longer {
+		shorter, longer = longer, shorter
+	}
+	if (shorter != 1 && shorter != 2 && shorter != 4) || longer%shorter != 0 {
+		return fmt.Errorf("%w: region shape %dx%d violates the facet rule (shorter side must be 1, 2, or 4 tiles and divide the longer)",
+			ErrInvalid, sizeX, sizeY)
+	}
+	return nil
+}
+
+// validateFacetNames requires exactly one name per facet beyond the first,
+// each shaped like a region name; uniqueness against other regions is the
+// store's job, but a region may not collide with itself.
+func validateFacetNames(item Region) error {
+	if len(item.FacetNames) != item.FacetCount()-1 {
+		return fmt.Errorf("%w: a %dx%d region has %d facets and needs %d facet names beyond its own",
+			ErrInvalid, item.SizeX, item.SizeY, item.FacetCount(), item.FacetCount()-1)
+	}
+	seen := map[string]bool{strings.ToLower(item.Name): true}
+	for _, name := range item.FacetNames {
+		if strings.TrimSpace(name) == "" || len(name) > 128 {
+			return fmt.Errorf("%w: facet name %q is invalid", ErrInvalid, name)
+		}
+		lower := strings.ToLower(name)
+		if seen[lower] {
+			return fmt.Errorf("%w: facet name %q repeats within the region", ErrConflict, name)
+		}
+		seen[lower] = true
+	}
+	return nil
+}
+
+// trimmedNames trims whitespace from each name, mirroring what Create and
+// Update do to the region's own name.
+func trimmedNames(names []string) []string {
+	result := make([]string, len(names))
+	for index, name := range names {
+		result[index] = strings.TrimSpace(name)
+	}
+	return result
+}
+
+// allNames lists every viewer-visible name a region claims: its own, then its
+// facet names in facet order.
+func allNames(item Region) []string {
+	names := make([]string, 0, 1+len(item.FacetNames))
+	names = append(names, item.Name)
+	names = append(names, item.FacetNames...)
+	return names
+}
+
 func validateUnique(items map[string]Region, changedID string) error {
 	names := make(map[string]string, len(items))
 	for id, item := range items {
-		name := strings.ToLower(item.Name)
-		if other, exists := names[name]; exists && other != id {
-			return fmt.Errorf("%w: region %q shares a name with %q", ErrConflict, id, other)
+		// Facet names are viewer-visible region names, so they share the
+		// uniqueness namespace with region names.
+		for _, name := range allNames(item) {
+			lower := strings.ToLower(name)
+			if other, exists := names[lower]; exists && other != id {
+				return fmt.Errorf("%w: region %q shares a name with %q", ErrConflict, id, other)
+			}
+			names[lower] = id
 		}
 		for otherID, other := range items {
 			if otherID == id {
 				continue
 			}
-			if item.MapX < other.MapX+other.Size && other.MapX < item.MapX+item.Size &&
-				item.MapY < other.MapY+other.Size && other.MapY < item.MapY+item.Size {
+			if item.MapX < other.MapX+other.SizeX && other.MapX < item.MapX+item.SizeX &&
+				item.MapY < other.MapY+other.SizeY && other.MapY < item.MapY+item.SizeY {
 				return fmt.Errorf("%w: region %q overlaps %q", ErrConflict, id, otherID)
 			}
 		}
-		names[name] = id
 	}
 	_ = changedID
 	return nil

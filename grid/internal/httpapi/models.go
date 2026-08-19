@@ -88,10 +88,27 @@ type ProvisionedRegionRuntimeResult struct {
 	Maturity      int            `json:"maturity"`
 	OwnerUserID   string         `json:"ownerUserId"`
 	Estate        *estate.Estate `json:"estate,omitempty"`
+	// Facets are the square viewer-facing regions this process presents
+	// (ADR 0036), in map-coordinate order. A square region is one facet at its
+	// own corner, name, and port, so a region that predates facets can ignore
+	// the list entirely.
+	Facets []RegionFacet `json:"facets,omitempty"`
 	// RegionProtocol is the grid's current grid-region protocol version, so a
 	// region that is behind can warn its operator before an increment is
 	// enforced against it.
 	RegionProtocol int `json:"regionProtocol"`
+}
+
+// RegionFacet is one square viewer-facing region of a provisioned region: its
+// name, its southwest corner in map tiles, its edge in metres, and the viewer
+// UDP port the process serves it on (consecutive from the base port).
+type RegionFacet struct {
+	Index      int    `json:"index"`
+	Name       string `json:"name"`
+	GridX      int    `json:"gridX"`
+	GridY      int    `json:"gridY"`
+	Edge       int    `json:"edge"`
+	ViewerPort int    `json:"viewerPort"`
 }
 
 // EstateResult wraps an estate for the region-runtime estate endpoints.
@@ -140,8 +157,11 @@ type RegionNeighbor struct {
 }
 
 type RegionTopology struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Facet is which of its region's facets this entry is (ADR 0036); square
+	// regions are facet 0. Entries of one rectangle share an id and differ here.
+	Facet          int    `json:"facet,omitempty"`
 	GridX          int    `json:"gridX"`
 	GridY          int    `json:"gridY"`
 	SizeX          int    `json:"sizeX"`
@@ -167,28 +187,36 @@ type RegionTopologyList struct {
 }
 
 type CreateProvisionedRegionRequest struct {
-	ID             string `json:"id,omitempty"`
-	Name           string `json:"name"`
-	OwnerUserID    string `json:"ownerUserId,omitempty"`
-	MapX           int    `json:"mapX"`
-	MapY           int    `json:"mapY"`
-	Size           int    `json:"size,omitempty"`
-	Maturity       int    `json:"maturity,omitempty"`
-	PublicEndpoint string `json:"publicEndpoint,omitempty"`
-	ViewerPort     int    `json:"viewerPort,omitempty"`
-	Enabled        *bool  `json:"enabled,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name"`
+	OwnerUserID string `json:"ownerUserId,omitempty"`
+	MapX        int    `json:"mapX"`
+	MapY        int    `json:"mapY"`
+	// Size is the square shorthand; sizeX/sizeY supersede it and win when both
+	// are given (ADR 0036).
+	Size           int      `json:"size,omitempty"`
+	SizeX          int      `json:"sizeX,omitempty"`
+	SizeY          int      `json:"sizeY,omitempty"`
+	FacetNames     []string `json:"facetNames,omitempty"`
+	Maturity       int      `json:"maturity,omitempty"`
+	PublicEndpoint string   `json:"publicEndpoint,omitempty"`
+	ViewerPort     int      `json:"viewerPort,omitempty"`
+	Enabled        *bool    `json:"enabled,omitempty"`
 }
 
 type UpdateProvisionedRegionRequest struct {
-	Name           *string `json:"name,omitempty"`
-	OwnerUserID    *string `json:"ownerUserId,omitempty"`
-	MapX           *int    `json:"mapX,omitempty"`
-	MapY           *int    `json:"mapY,omitempty"`
-	Size           *int    `json:"size,omitempty"`
-	Maturity       *int    `json:"maturity,omitempty"`
-	PublicEndpoint *string `json:"publicEndpoint,omitempty"`
-	ViewerPort     *int    `json:"viewerPort,omitempty"`
-	Enabled        *bool   `json:"enabled,omitempty"`
+	Name           *string   `json:"name,omitempty"`
+	OwnerUserID    *string   `json:"ownerUserId,omitempty"`
+	MapX           *int      `json:"mapX,omitempty"`
+	MapY           *int      `json:"mapY,omitempty"`
+	Size           *int      `json:"size,omitempty"`
+	SizeX          *int      `json:"sizeX,omitempty"`
+	SizeY          *int      `json:"sizeY,omitempty"`
+	FacetNames     *[]string `json:"facetNames,omitempty"`
+	Maturity       *int      `json:"maturity,omitempty"`
+	PublicEndpoint *string   `json:"publicEndpoint,omitempty"`
+	ViewerPort     *int      `json:"viewerPort,omitempty"`
+	Enabled        *bool     `json:"enabled,omitempty"`
 }
 
 type ProvisionedRegionResult struct {

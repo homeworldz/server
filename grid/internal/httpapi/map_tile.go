@@ -64,7 +64,8 @@ type terrainTileCache struct {
 
 type mapRegion struct {
 	region regions.Region
-	size   int
+	sizeX  int
+	sizeY  int
 }
 
 func newTerrainTileCache() terrainTileCache {
@@ -105,19 +106,19 @@ func (a *API) mapTile(w http.ResponseWriter, r *http.Request) {
 	mapRegions := make([]mapRegion, 0, len(online))
 	terrain := make(map[string]image.Image)
 	for _, region := range online {
-		size := 1
+		sizeX, sizeY := 1, 1
 		if a.provisioned != nil {
 			if provisioned, provisionedErr := a.provisioned.Get(r.Context(), region.ID); provisionedErr == nil {
-				size = provisioned.Size
+				sizeX, sizeY = provisioned.SizeX, provisioned.SizeY
 			}
 		}
-		mapped := mapRegion{region: region, size: size}
+		mapped := mapRegion{region: region, sizeX: sizeX, sizeY: sizeY}
 		mapRegions = append(mapRegions, mapped)
-		if region.GridX >= x+span || region.GridX+size <= x ||
-			region.GridY >= y+span || region.GridY+size <= y {
+		if region.GridX >= x+span || region.GridX+sizeX <= x ||
+			region.GridY >= y+span || region.GridY+sizeY <= y {
 			continue
 		}
-		if tile, ok := a.regionTerrainTile(r.Context(), region, size*256); ok {
+		if tile, ok := a.regionTerrainTile(r.Context(), region, sizeX*256, sizeY*256); ok {
 			terrain[region.ID] = tile
 		}
 	}
@@ -141,8 +142,8 @@ func renderMapTile(level, tileX, tileY int, online []mapRegion, terrain map[stri
 	matching := make([]mapRegion, 0)
 	for _, mapped := range online {
 		region := mapped.region
-		if region.GridX < tileX+span && region.GridX+mapped.size > tileX &&
-			region.GridY < tileY+span && region.GridY+mapped.size > tileY {
+		if region.GridX < tileX+span && region.GridX+mapped.sizeX > tileX &&
+			region.GridY < tileY+span && region.GridY+mapped.sizeY > tileY {
 			matching = append(matching, mapped)
 		}
 	}
@@ -165,8 +166,8 @@ func renderMapTile(level, tileX, tileY int, online []mapRegion, terrain map[stri
 			source = tile
 		}
 		left := (region.GridX - tileX) * size / span
-		right := (region.GridX + mapped.size - tileX) * size / span
-		top := (tileY + span - region.GridY - mapped.size) * size / span
+		right := (region.GridX + mapped.sizeX - tileX) * size / span
+		top := (tileY + span - region.GridY - mapped.sizeY) * size / span
 		bottom := (tileY + span - region.GridY) * size / span
 		clippedLeft, clippedRight := max(0, left), min(size, right)
 		clippedTop, clippedBottom := max(0, top), min(size, bottom)
@@ -190,12 +191,12 @@ func encodeJPEG(source image.Image) ([]byte, bool, error) {
 	return encoded.Bytes(), true, nil
 }
 
-func (a *API) regionTerrainTile(ctx context.Context, region regions.Region, width int) (image.Image, bool) {
+func (a *API) regionTerrainTile(ctx context.Context, region regions.Region, width, height int) (image.Image, bool) {
 	if a.terrainHTTP == nil || region.PublicEndpoint == "" {
 		return nil, false
 	}
 	endpoint := strings.TrimRight(region.PublicEndpoint, "/") + "/map/terrain.raw"
-	cacheKey := endpoint + "#" + strconv.Itoa(width)
+	cacheKey := endpoint + "#" + strconv.Itoa(width) + "x" + strconv.Itoa(height)
 	now := time.Now()
 	a.terrainCache.mu.Lock()
 	if cached, ok := a.terrainCache.entries[cacheKey]; ok && cached.expiresAt.After(now) {
@@ -215,13 +216,13 @@ func (a *API) regionTerrainTile(ctx context.Context, region regions.Region, widt
 		return nil, false
 	}
 	defer response.Body.Close()
-	byteCount := width * width * 4
+	byteCount := width * height * 4
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(byteCount+1)))
 	if err != nil || response.StatusCode != http.StatusOK || len(body) != byteCount {
 		a.cacheTerrainTile(cacheKey, nil, now.Add(5*time.Second))
 		return nil, false
 	}
-	tile := renderTerrainHeightmap(body, width, a.regionTerrainLayers(ctx, region))
+	tile := renderTerrainHeightmap(body, width, height, a.regionTerrainLayers(ctx, region))
 	a.cacheTerrainTile(cacheKey, tile, now.Add(60*time.Second))
 	return tile, true
 }
@@ -407,32 +408,32 @@ func (a *API) cacheTerrainTile(endpoint string, tile image.Image, expiresAt time
 	a.terrainCache.entries[endpoint] = cachedTerrainTile{image: tile, expiresAt: expiresAt}
 }
 
-func renderTerrainHeightmap(data []byte, width int, layers *terrainLayers) image.Image {
-	heights := make([]float64, width*width)
+func renderTerrainHeightmap(data []byte, width, height int, layers *terrainLayers) image.Image {
+	heights := make([]float64, width*height)
 	for index := range heights {
 		heights[index] = float64(math.Float32frombits(binary.LittleEndian.Uint32(data[index*4:])))
 	}
-	result := image.NewRGBA(image.Rect(0, 0, width, width))
-	for outputY := 0; outputY < width; outputY++ {
-		y := width - 1 - outputY
+	result := image.NewRGBA(image.Rect(0, 0, width, height))
+	for outputY := 0; outputY < height; outputY++ {
+		y := height - 1 - outputY
 		for x := 0; x < width; x++ {
-			height := heights[y*width+x]
+			sample := heights[y*width+x]
 			// The region's own ground when it will say what that is, and the
 			// fixed height palette when it will not. The palette was every
 			// region's map for as long as it was the only thing here: it puts
 			// grass at any moderate height, so a region whose layers start
 			// above that drew green where a viewer draws dirt.
-			base := terrainColor(height)
+			base := terrainColor(sample)
 			if layers != nil {
-				if height <= layers.WaterHeight {
-					base = waterColor(height, layers.WaterHeight)
+				if sample <= layers.WaterHeight {
+					base = waterColor(sample, layers.WaterHeight)
 				} else {
-					base = layerColorAt(layers, height,
-						float64(x)/float64(width-1), float64(y)/float64(width-1))
+					base = layerColorAt(layers, sample,
+						float64(x)/float64(width-1), float64(y)/float64(height-1))
 				}
 			}
 			left, right := max(0, x-1), min(width-1, x+1)
-			down, up := max(0, y-1), min(width-1, y+1)
+			down, up := max(0, y-1), min(height-1, y+1)
 			dx := heights[y*width+right] - heights[y*width+left]
 			dy := heights[up*width+x] - heights[down*width+x]
 			shade := 0.9 + 0.18*(-dx+dy)/math.Sqrt(dx*dx+dy*dy+4)

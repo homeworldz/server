@@ -73,13 +73,16 @@ type API struct {
 	ticketVerifier *webtoken.Signer
 }
 
-func (a *API) regionExtent(ctx context.Context, id string) float32 {
+// regionExtents is a region's footprint in metres, one extent per axis; a
+// rectangle (ADR 0036) is wider than it is deep or vice versa, so callers
+// bounds-check each axis against its own extent.
+func (a *API) regionExtents(ctx context.Context, id string) (float32, float32) {
 	if a.provisioned != nil {
 		if region, err := a.provisioned.Get(ctx, id); err == nil {
-			return float32(region.Size * 256)
+			return float32(region.SizeX * 256), float32(region.SizeY * 256)
 		}
 	}
-	return 256
+	return 256, 256
 }
 
 type Options struct {
@@ -313,8 +316,9 @@ func (a *API) provisionedRegionRuntime(w http.ResponseWriter, r *http.Request) {
 		} else {
 			result := ProvisionedRegionRuntimeResult{
 				Region: region, GridName: a.gridName, GridPublicURL: a.publicURL,
-				SizeX: provisioned.Size * 256, SizeY: provisioned.Size * 256,
+				SizeX: provisioned.SizeX * 256, SizeY: provisioned.SizeY * 256,
 				Maturity: provisioned.Maturity, OwnerUserID: provisioned.OwnerUserID,
+				Facets:         facetsOf(provisioned, viewerPort),
 				RegionProtocol: gridRegionProtocol}
 			if a.estates != nil {
 				if est, eerr := a.estates.ForRegion(r.Context(), id, provisioned.OwnerUserID); eerr == nil {
@@ -356,6 +360,21 @@ func (a *API) provisionedRegionRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.notFound(w, r)
+}
+
+// facetsOf lists a provisioned region's facets for its registration reply,
+// with ports counted from the effective (possibly operator-overridden) base
+// viewer port so the region binds exactly what the grid advertises.
+func facetsOf(provisioned provisioning.Region, baseViewerPort int) []RegionFacet {
+	facets := make([]RegionFacet, 0, provisioned.FacetCount())
+	for index := 0; index < provisioned.FacetCount(); index++ {
+		originX, originY := provisioned.FacetOrigin(index)
+		facets = append(facets, RegionFacet{
+			Index: index, Name: provisioned.FacetNameAt(index),
+			GridX: originX, GridY: originY, Edge: provisioned.FacetEdge() * 256,
+			ViewerPort: baseViewerPort + index})
+	}
+	return facets
 }
 
 // provisionedRegionEstate handles the estate sub-routes of an authenticated
@@ -542,6 +561,14 @@ func (a *API) regionByID(w http.ResponseWriter, r *http.Request) {
 // currently holding a lease. Adjacency (neighbors) and destination resolution
 // (teleports) are two views of this one list, so they cannot disagree about
 // where a region is.
+//
+// A rectangular region (ADR 0036) appears here as one entry per facet: the
+// square viewer-facing regions its process serves, each with its own name and
+// consecutive viewer port. Every consumer of this list — neighbors, teleport
+// lookup, map blocks — addresses what a viewer can render, and a viewer only
+// ever renders the facets. Facet entries share the region's id; facet 0 sits
+// at the region's own corner and carries its own name, so square regions are
+// exactly one unchanged entry.
 func (a *API) gridTopology(ctx context.Context) ([]RegionTopology, error) {
 	liveItems, err := a.regions.List(ctx)
 	if err != nil {
@@ -567,14 +594,22 @@ func (a *API) gridTopology(ctx context.Context) ([]RegionTopology, error) {
 	}
 	topology := make([]RegionTopology, 0, len(provisioned))
 	for _, item := range provisioned {
-		entry := RegionTopology{ID: item.ID, Name: item.Name, GridX: item.MapX, GridY: item.MapY,
-			SizeX: item.Size * 256, SizeY: item.Size * 256, Maturity: item.Maturity, PublicEndpoint: item.PublicEndpoint,
-			ViewerPort: item.ViewerPort}
-		if live, online := liveByID[item.ID]; online {
-			entry.PublicEndpoint, entry.ViewerPort, entry.Online = live.PublicEndpoint, live.ViewerPort, true
-			entry.SessionEndpoint = live.SessionEndpoint
+		endpoint, viewerPort, online := item.PublicEndpoint, item.ViewerPort, false
+		sessionEndpoint := ""
+		if live, isLive := liveByID[item.ID]; isLive {
+			endpoint, viewerPort, online = live.PublicEndpoint, live.ViewerPort, true
+			sessionEndpoint = live.SessionEndpoint
 		}
-		topology = append(topology, entry)
+		edge := item.FacetEdge() * 256
+		for facet := 0; facet < item.FacetCount(); facet++ {
+			originX, originY := item.FacetOrigin(facet)
+			topology = append(topology, RegionTopology{
+				ID: item.ID, Name: item.FacetNameAt(facet), Facet: facet,
+				GridX: originX, GridY: originY,
+				SizeX: edge, SizeY: edge, Maturity: item.Maturity,
+				PublicEndpoint: endpoint, ViewerPort: viewerPort + facet,
+				Online:         online, SessionEndpoint: sessionEndpoint})
+		}
 	}
 	return topology, nil
 }
@@ -637,14 +672,14 @@ func (a *API) regionNeighbors(w http.ResponseWriter, r *http.Request, id string)
 		a.writeRegionResult(w, regions.Region{}, err)
 		return
 	}
-	sourceSize := 1
+	sourceSizeX, sourceSizeY := 1, 1
 	if a.provisioned != nil {
 		provisionedSource, sourceErr := a.provisioned.Get(r.Context(), id)
 		if sourceErr != nil {
 			writeProvisioningError(w, sourceErr)
 			return
 		}
-		sourceSize = provisionedSource.Size
+		sourceSizeX, sourceSizeY = provisionedSource.SizeX, provisionedSource.SizeY
 	}
 	topology, err := a.gridTopology(r.Context())
 	if err != nil {
@@ -668,21 +703,24 @@ func (a *API) regionNeighbors(w http.ResponseWriter, r *http.Request, id string)
 	}
 	for _, direction := range directions {
 		for _, candidate := range topology {
-			candidateSize := candidate.SizeX / 256
+			// Topology entries are facets, which are square; still, read each
+			// axis on its own so nothing here assumes that.
+			candidateSizeX := candidate.SizeX / 256
+			candidateSizeY := candidate.SizeY / 256
 			adjacent := false
 			switch direction.name {
 			case "north":
-				adjacent = candidate.GridY == source.GridY+sourceSize &&
-					overlaps(source.GridX, sourceSize, candidate.GridX, candidateSize)
+				adjacent = candidate.GridY == source.GridY+sourceSizeY &&
+					overlaps(source.GridX, sourceSizeX, candidate.GridX, candidateSizeX)
 			case "east":
-				adjacent = candidate.GridX == source.GridX+sourceSize &&
-					overlaps(source.GridY, sourceSize, candidate.GridY, candidateSize)
+				adjacent = candidate.GridX == source.GridX+sourceSizeX &&
+					overlaps(source.GridY, sourceSizeY, candidate.GridY, candidateSizeY)
 			case "south":
-				adjacent = candidate.GridY+candidateSize == source.GridY &&
-					overlaps(source.GridX, sourceSize, candidate.GridX, candidateSize)
+				adjacent = candidate.GridY+candidateSizeY == source.GridY &&
+					overlaps(source.GridX, sourceSizeX, candidate.GridX, candidateSizeX)
 			case "west":
-				adjacent = candidate.GridX+candidateSize == source.GridX &&
-					overlaps(source.GridY, sourceSize, candidate.GridY, candidateSize)
+				adjacent = candidate.GridX+candidateSizeX == source.GridX &&
+					overlaps(source.GridY, sourceSizeY, candidate.GridY, candidateSizeY)
 			}
 			if adjacent {
 				neighbors = append(neighbors, RegionNeighbor{Direction: direction.name, Region: candidate})

@@ -229,13 +229,18 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 		return nil, "unavailable", "The Homeworldz grid could not create a session."
 	}
 	preferredRegionID := ""
+	var storedPosition *[3]float32
 	if a.locations != nil {
 		if strings.EqualFold(start, "home") {
 			if location, locationErr := a.locations.GetHome(r.Context(), session.UserID); locationErr == nil {
 				preferredRegionID = location.RegionID
+				position := location.Position
+				storedPosition = &position
 			}
 		} else if location, locationErr := a.locations.Get(r.Context(), session.UserID); locationErr == nil {
 			preferredRegionID = location.RegionID
+			position := location.Position
+			storedPosition = &position
 		}
 	}
 	region, err := resolveDestination(r.Context(), a.regions, start, preferredRegionID, a.welcomePoints)
@@ -300,11 +305,24 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	if state, ok := a.regionStartState(r.Context(), region.PublicEndpoint, session.UserID); ok {
 		lookAt = fmt.Sprintf("[r%.9g,r%.9g,r%.9g]", state.LookAt[0], state.LookAt[1], state.LookAt[2])
 	}
+	// A viewer logs into one square facet of the region (ADR 0036): the facet
+	// containing the arrival position, or facet 0 when nothing places the
+	// avatar more precisely. A square region is exactly its single facet, so
+	// nothing changes for it here.
 	regionSizeX, regionSizeY := 256, 256
+	simPort := region.ViewerPort
+	regionX, regionY := region.GridX*256, region.GridY*256
 	if a.provisioned != nil {
 		if provisioned, provisionErr := a.provisioned.Get(r.Context(), region.ID); provisionErr == nil {
-			regionSizeX = provisioned.Size * 256
-			regionSizeY = provisioned.Size * 256
+			facet := 0
+			if storedPosition != nil && preferredRegionID == region.ID {
+				facet = provisioned.FacetAtPosition(float64(storedPosition[0]), float64(storedPosition[1]))
+			}
+			edge := provisioned.FacetEdge() * 256
+			regionSizeX, regionSizeY = edge, edge
+			originX, originY := provisioned.FacetOrigin(facet)
+			regionX, regionY = originX*256, originY*256
+			simPort = region.ViewerPort + facet
 		}
 	}
 	var activeGestures []gestures.Gesture
@@ -316,8 +334,8 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	return &loginFields{
 		agentID: session.UserID, sessionID: session.ID, secureID: session.SecureID,
 		first: first, last: last, circuit: circuit,
-		simIP: simIP, simPort: region.ViewerPort,
-		regionX: region.GridX * 256, regionY: region.GridY * 256,
+		simIP: simIP, simPort: simPort,
+		regionX: regionX, regionY: regionY,
 		regionSizeX: regionSizeX, regionSizeY: regionSizeY,
 		startLocation: normalizeStart(start), lookAt: lookAt,
 		seedCapability: strings.TrimRight(region.PublicEndpoint, "/") + "/caps/seed/" + session.ID,
