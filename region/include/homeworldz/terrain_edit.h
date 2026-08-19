@@ -14,12 +14,23 @@ namespace homeworldz::terrain {
 
 class Heightmap {
 public:
-    explicit Heightmap(std::size_t width = 256) : width_(width), samples_(width * width) {
-        if (width != 256 && width != 512 && width != 1024)
-            throw std::invalid_argument("terrain width must be 256, 512, or 1024");
+    // Height 0 means square (width). Each dimension must be a multiple of 256,
+    // at least 256 and at most 4096. A macro region of ADR 0036 can be
+    // rectangular (1024x512, 512x2560); the facet shape rule is enforced at
+    // registration, not here.
+    explicit Heightmap(std::size_t width = 256, std::size_t height = 0)
+        : width_(width), height_(height == 0 ? width : height),
+          samples_(width_ * height_) {
+        const auto valid = [](std::size_t dimension) {
+            return dimension >= 256 && dimension <= 4096 && dimension % 256 == 0;
+        };
+        if (!valid(width_) || !valid(height_))
+            throw std::invalid_argument(
+                "terrain dimensions must be multiples of 256 between 256 and 4096");
     }
 
     std::size_t width() const noexcept { return width_; }
+    std::size_t height() const noexcept { return height_; }
     std::size_t size() const noexcept { return samples_.size(); }
     float* data() noexcept { return samples_.data(); }
     const float* data() const noexcept { return samples_.data(); }
@@ -37,11 +48,15 @@ public:
 
 private:
     std::size_t width_;
+    std::size_t height_;
     std::vector<float> samples_;
 };
 
+// Expected height 0 means square (expected_width). The file is raw f32
+// samples; its size must equal width * height * 4.
 std::unique_ptr<Heightmap> load_state(const std::filesystem::path& path,
-                                      std::size_t expected_width = 256);
+                                      std::size_t expected_width = 256,
+                                      std::size_t expected_height = 0);
 bool save_state(const std::filesystem::path& path, const Heightmap& heightmap);
 // How fast the smooth brush converges on the local average per application.
 // It is a feel constant, not a correctness one - smoothing lerps toward a

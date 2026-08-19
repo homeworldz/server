@@ -37,7 +37,8 @@ double linkset_bounding_radius(const scene::Scene& scene, const scene::Entity& r
 scene::Vector3 rotate_vector(scene::Vector3 value, const std::array<double, 4>& rotation);
 scene::Vector3 rotated_box_half_extents(
     scene::Vector3 scale, const std::array<double, 4>& rotation);
-bool contain_body_without_neighbors(BodyState& state, double region_extent = 256.0);
+bool contain_body_without_neighbors(BodyState& state, double region_extent_x = 256.0,
+                                    double region_extent_y = 0.0);
 bool within_viewer_interest(scene::Vector3 observer, scene::Vector3 subject,
                             double draw_distance, double subject_radius = 0.0);
 bool body_transform_changed(const BodyState& previous, const BodyState& current,

@@ -451,16 +451,18 @@ std::string encode_heightmap(const homeworldz::terrain::Heightmap& heightmap) {
 
 homeworldz::scene::Vector3 default_spawn(const homeworldz::terrain::Heightmap& heightmap) {
     const auto width = heightmap.width();
-    const auto center = width / 2;
-    std::size_t selected_x = center;
-    std::size_t selected_y = center;
+    const auto height_extent = heightmap.height();
+    const auto center_x = width / 2;
+    const auto center_y = height_extent / 2;
+    std::size_t selected_x = center_x;
+    std::size_t selected_y = center_y;
     std::size_t selected_distance = (std::numeric_limits<std::size_t>::max)();
-    for (std::size_t y = 16; y < width - 16; ++y) {
+    for (std::size_t y = 16; y < height_extent - 16; ++y) {
         for (std::size_t x = 16; x < width - 16; ++x) {
             const auto height = heightmap[y * width + x];
             if (height < 24.0F) continue;
-            const auto dx = static_cast<std::int64_t>(x) - static_cast<std::int64_t>(center);
-            const auto dy = static_cast<std::int64_t>(y) - static_cast<std::int64_t>(center);
+            const auto dx = static_cast<std::int64_t>(x) - static_cast<std::int64_t>(center_x);
+            const auto dy = static_cast<std::int64_t>(y) - static_cast<std::int64_t>(center_y);
             const auto distance = static_cast<std::size_t>(dx * dx + dy * dy);
             if (distance < selected_distance) {
                 selected_x = x;
@@ -475,9 +477,10 @@ homeworldz::scene::Vector3 default_spawn(const homeworldz::terrain::Heightmap& h
 
 double ground_height(const homeworldz::terrain::Heightmap& heightmap,
                       const homeworldz::scene::Vector3& position) {
-    const auto maximum = static_cast<int>(heightmap.width() - 1);
-    const auto x = std::clamp(static_cast<int>(position.x), 0, maximum);
-    const auto y = std::clamp(static_cast<int>(position.y), 0, maximum);
+    const auto x = std::clamp(static_cast<int>(position.x), 0,
+                              static_cast<int>(heightmap.width() - 1));
+    const auto y = std::clamp(static_cast<int>(position.y), 0,
+                              static_cast<int>(heightmap.height() - 1));
     return heightmap[static_cast<std::size_t>(y) * heightmap.width() + x];
 }
 
@@ -540,17 +543,53 @@ std::string udp_endpoint(const sockaddr_in& address) {
     return std::string(ip.data()) + ':' + std::to_string(ntohs(address.sin_port));
 }
 
+// Facet-qualified endpoint keys (ADR 0036). A viewer talking to facet i > 0 is
+// keyed "ip:port/f<i>", so the circuit registry, the avatars map, and every
+// endpoint-keyed side map distinguish the same transport endpoint per facet
+// without knowing facets exist. Facet 0 keeps the bare "ip:port" form, which
+// makes a square region byte-identical to what it was before facets.
+std::string facet_endpoint_key(std::string endpoint, int facet) {
+    if (facet <= 0 || endpoint.empty()) return endpoint;
+    return endpoint + "/f" + std::to_string(facet);
+}
+
+// Which facet an endpoint key belongs to; 0 for a bare key.
+int endpoint_facet(std::string_view endpoint) {
+    const auto marker = endpoint.rfind("/f");
+    if (marker == std::string_view::npos) return 0;
+    int facet{};
+    const auto text = endpoint.substr(marker + 2);
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), facet);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || facet < 0) return 0;
+    return facet;
+}
+
+// The transport half of an endpoint key: "ip:port" with any facet suffix gone.
+std::string_view endpoint_transport(std::string_view endpoint) {
+    const auto marker = endpoint.rfind("/f");
+    return marker == std::string_view::npos ? endpoint : endpoint.substr(0, marker);
+}
+
+// The viewer sockets, one per facet, in facet order; filled by main once the
+// registration reply names the facets. File scope so send_udp can route a
+// facet-qualified endpoint to the socket that facet is served on.
+std::vector<socket_handle> viewer_facet_sockets;
+
 bool send_udp(socket_handle socket, std::string_view endpoint, std::span<const std::byte> bytes) {
-    const auto colon = endpoint.rfind(':');
+    const auto facet = endpoint_facet(endpoint);
+    if (facet > 0 && static_cast<std::size_t>(facet) < viewer_facet_sockets.size())
+        socket = viewer_facet_sockets[static_cast<std::size_t>(facet)];
+    const auto transport = endpoint_transport(endpoint);
+    const auto colon = transport.rfind(':');
     if (colon == std::string_view::npos) return false;
     unsigned port{};
-    const auto port_text = endpoint.substr(colon + 1);
+    const auto port_text = transport.substr(colon + 1);
     const auto parsed = std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
     if (parsed.ec != std::errc{} || parsed.ptr != port_text.data() + port_text.size() || port > 65535) return false;
     sockaddr_in destination{};
     destination.sin_family = AF_INET;
     destination.sin_port = htons(static_cast<unsigned short>(port));
-    const std::string ip(endpoint.substr(0, colon));
+    const std::string ip(transport.substr(0, colon));
     if (inet_pton(AF_INET, ip.c_str(), &destination.sin_addr) != 1) return false;
     return sendto(socket, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), 0,
                   reinterpret_cast<const sockaddr*>(&destination), sizeof(destination)) == static_cast<int>(bytes.size());
@@ -1164,6 +1203,11 @@ int main(int argc, char* argv[]) {
     int region_grid_y{};
 	int region_size_x{256};
 	int region_size_y{256};
+	// The square viewer-facing regions this process presents (ADR 0036), from
+	// the registration reply. A square region is exactly one facet at its own
+	// corner, name, and port; a rectangle is a row of them along its longer
+	// axis. Everything a viewer is sent is scoped to one of these.
+	std::vector<homeworldz::grid::RegionFacet> region_facets;
     auto region_public_endpoint = configured_value(
         "region.public_endpoint", "http://localhost:" + std::to_string(configured_port()));
     auto grid_public_endpoint = configured_value(
@@ -1420,6 +1464,7 @@ int main(int argc, char* argv[]) {
             region_grid_y = provisioned->grid_y;
 			region_size_x = provisioned->size_x;
 			region_size_y = provisioned->size_y;
+			region_facets = provisioned->facets;
 			region_public_endpoint = provisioned->public_endpoint;
 			region_viewer_port = provisioned->viewer_port;
 			grid_public_endpoint = provisioned->grid_public_url;
@@ -1503,29 +1548,81 @@ int main(int argc, char* argv[]) {
     }
 
     const auto terrain_width = static_cast<std::size_t>(region_size_x);
-    const auto default_heightmap = load_raw_heightmap(configured_value(
-        "region.terrain_path", "assets/region/terrain/plateau-square.raw"), terrain_width);
-    auto revert_heightmap = homeworldz::terrain::load_state(revert_state_path, terrain_width);
+    const auto terrain_height = static_cast<std::size_t>(region_size_y);
+    // The packaged default terrain is square; a rectangle starts from the flat
+    // fallback unless its operator supplies a matching raw.
+    const auto default_heightmap = terrain_width == terrain_height ?
+        load_raw_heightmap(configured_value(
+            "region.terrain_path", "assets/region/terrain/plateau-square.raw"), terrain_width) :
+        nullptr;
+    auto revert_heightmap = homeworldz::terrain::load_state(
+        revert_state_path, terrain_width, terrain_height);
     const bool loaded_baked_baseline = static_cast<bool>(revert_heightmap);
     if (!revert_heightmap) {
         revert_heightmap = default_heightmap ?
             std::make_unique<homeworldz::terrain::Heightmap>(*default_heightmap) :
-            std::make_unique<homeworldz::terrain::Heightmap>(terrain_width);
+            std::make_unique<homeworldz::terrain::Heightmap>(terrain_width, terrain_height);
         if (!default_heightmap) revert_heightmap->fill(25.0F);
     }
-    auto terrain_heightmap = homeworldz::terrain::load_state(terrain_state_path, terrain_width);
+    auto terrain_heightmap = homeworldz::terrain::load_state(
+        terrain_state_path, terrain_width, terrain_height);
     const bool loaded_region_state = static_cast<bool>(terrain_heightmap);
     if (!terrain_heightmap)
         terrain_heightmap = std::make_unique<homeworldz::terrain::Heightmap>(*revert_heightmap);
     std::cout << "{\"level\":\"info\",\"message\":\"terrain heightmap loaded\",\"source\":\""
               << (loaded_region_state ? "region-state" :
                   (default_heightmap ? "packaged-default" : "flat-fallback"))
-              << "\",\"width\":" << terrain_width << "}" << std::endl;
+              << "\",\"width\":" << terrain_width
+              << ",\"height\":" << terrain_height << "}" << std::endl;
     std::cout << "{\"level\":\"info\",\"message\":\"terrain baseline loaded\",\"source\":\""
               << (loaded_baked_baseline ? "baked" :
                   (default_heightmap ? "packaged-default" : "flat-fallback"))
               << "\"}" << std::endl;
     const auto initial_spawn = default_spawn(*terrain_heightmap);
+
+    // --- Facet presentation (ADR 0036) ---
+    // A grid that predates facets registers a square without a list; the
+    // single facet it implies is synthesized so everything downstream can
+    // assume at least one.
+    if (region_facets.empty())
+        region_facets.push_back({0, region_name, region_grid_x, region_grid_y,
+                                 region_size_x, region_viewer_port});
+    const auto facet_count = static_cast<int>(region_facets.size());
+    const auto facet_edge_metres = region_facets.front().edge;
+    // A facet's origin within the macro region, in metres.
+    const auto facet_origin_x = [&](int facet) {
+        return static_cast<double>((region_facets[static_cast<std::size_t>(facet)].grid_x -
+                                    region_grid_x) * 256);
+    };
+    const auto facet_origin_y = [&](int facet) {
+        return static_cast<double>((region_facets[static_cast<std::size_t>(facet)].grid_y -
+                                    region_grid_y) * 256);
+    };
+    // The region handle a viewer standing on this facet believes it is in.
+    const auto facet_handle = [&](int facet) {
+        const auto& entry = region_facets[static_cast<std::size_t>(facet)];
+        return (static_cast<std::uint64_t>(entry.grid_x * 256) << 32) |
+               static_cast<std::uint32_t>(entry.grid_y * 256);
+    };
+    // Which facet contains a macro position, clamped so a position slightly
+    // out of bounds still resolves to the nearest facet.
+    const auto facet_of_position = [&](double x, double y) {
+        const auto along = region_size_x >= region_size_y ? x : y;
+        const auto edge = static_cast<double>(facet_edge_metres);
+        auto facet = static_cast<int>((std::max)(0.0, along) / edge);
+        if (facet >= facet_count) facet = facet_count - 1;
+        return facet;
+    };
+    // The facet an endpoint-keyed viewer is connected to.
+    const auto endpoint_facet_of = [&](std::string_view endpoint) {
+        const auto facet = endpoint_facet(endpoint);
+        return facet < facet_count ? facet : 0;
+    };
+    if (facet_count > 1)
+        std::cout << "{\"level\":\"info\",\"message\":\"rectangular region presents as facets\""
+                     ",\"facets\":" << facet_count << ",\"edge\":" << facet_edge_metres
+                  << ",\"sizeX\":" << region_size_x << ",\"sizeY\":" << region_size_y
+                  << "}" << std::endl;
 
     homeworldz::scene::Scene scene;
     // Legacy Blinn-Phong material definitions by id, in the LLSD binary the
@@ -1704,14 +1801,15 @@ int main(int argc, char* argv[]) {
     std::optional<homeworldz::parcel::ParcelSet> parcels;
     try {
         if (auto restored = storage->load_parcels()) {
-            parcels.emplace(region_size_x, std::move(*restored));
+            parcels.emplace(region_size_x, region_size_y, std::move(*restored));
             std::cout << "{\"level\":\"info\",\"message\":\"parcels restored\",\"count\":"
                       << parcels->parcels().size() << "}" << std::endl;
         } else {
             const auto claim_date = static_cast<std::int32_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
-            parcels.emplace(region_size_x, homeworldz::viewer::random_uuid(), region_owner_id,
+            parcels.emplace(region_size_x, region_size_y,
+                            homeworldz::viewer::random_uuid(), region_owner_id,
                             claim_date);
             storage->save_parcels(parcels->parcels());
             std::cout << "{\"level\":\"info\",\"message\":\"default parcel created\",\"owner\":"
@@ -2232,7 +2330,16 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<homeworldz::physics::World> physics_world;
     std::cout << "{\"level\":\"warning\",\"message\":\"production physics unavailable\"}" << std::endl;
 #endif
-    homeworldz::physics::BodyId physics_terrain{};
+    // One collision field per facet (ADR 0036): Jolt heightfields are square,
+    // so a rectangle is covered by facet-sized squares, each padded and placed
+    // at its facet's origin. A square region is one field at the region origin,
+    // exactly as before.
+    std::vector<homeworldz::physics::BodyId> physics_terrain_bodies;
+    const auto terrain_body_at = [&](double x, double y) {
+        if (physics_terrain_bodies.empty()) return homeworldz::physics::BodyId{};
+        const auto facet = facet_of_position(x, y);
+        return physics_terrain_bodies[static_cast<std::size_t>(facet)];
+    };
     const auto synchronize_physics_terrain = [&]() {
         if (!physics_world) return false;
         try {
@@ -2256,24 +2363,42 @@ int main(int argc, char* argv[]) {
             // border rather than short of it, and Jolt's requirement that the
             // sample count divide by its block size is satisfied (an odd
             // count is rejected, so one extra sample would not do).
-            const auto terrain_samples = terrain_heightmap->width();
-            const auto padded = terrain_samples + 2;
-            homeworldz::physics::HeightFieldDefinition definition;
-            definition.samples.resize(static_cast<std::size_t>(padded) * padded);
-            for (std::size_t y = 0; y < padded; ++y) {
-                const auto source_y = (std::min)(y, terrain_samples - 1);
-                for (std::size_t x = 0; x < padded; ++x) {
-                    const auto source_x = (std::min)(x, terrain_samples - 1);
-                    definition.samples[y * padded + x] =
-                        (*terrain_heightmap)[source_y * terrain_samples + source_x];
+            const auto map_width = terrain_heightmap->width();
+            const auto map_height = terrain_heightmap->height();
+            const auto edge = static_cast<std::size_t>(facet_edge_metres);
+            const auto padded = edge + 2;
+            std::vector<homeworldz::physics::BodyId> replacements;
+            replacements.reserve(static_cast<std::size_t>(facet_count));
+            for (int facet = 0; facet < facet_count; ++facet) {
+                const auto window_x = static_cast<std::size_t>(facet_origin_x(facet));
+                const auto window_y = static_cast<std::size_t>(facet_origin_y(facet));
+                homeworldz::physics::HeightFieldDefinition definition;
+                definition.samples.resize(padded * padded);
+                for (std::size_t y = 0; y < padded; ++y) {
+                    // Padding clamps to the macro map, so an internal facet
+                    // edge reads its neighbour's real samples and the collision
+                    // surface stays continuous across the line.
+                    const auto source_y = (std::min)(window_y + y, map_height - 1);
+                    for (std::size_t x = 0; x < padded; ++x) {
+                        const auto source_x = (std::min)(window_x + x, map_width - 1);
+                        definition.samples[y * padded + x] =
+                            (*terrain_heightmap)[source_y * map_width + source_x];
+                    }
                 }
+                definition.sample_count = static_cast<std::uint32_t>(padded);
+                definition.spacing = 1.0;
+                definition.origin = {static_cast<double>(window_x),
+                                     static_cast<double>(window_y), 0.0};
+                const auto replacement = physics_world->create_heightfield(definition);
+                if (replacement == 0) {
+                    for (const auto body : replacements) physics_world->remove_body(body);
+                    return false;
+                }
+                replacements.push_back(replacement);
             }
-            definition.sample_count = static_cast<std::uint32_t>(padded);
-            definition.spacing = 1.0;
-            const auto replacement = physics_world->create_heightfield(definition);
-            if (replacement == 0) return false;
-            if (physics_terrain != 0) physics_world->remove_body(physics_terrain);
-            physics_terrain = replacement;
+            for (const auto body : physics_terrain_bodies)
+                if (body != 0) physics_world->remove_body(body);
+            physics_terrain_bodies = std::move(replacements);
             return true;
         } catch (const std::exception& error) {
             std::cerr << "{\"level\":\"error\",\"message\":\"physics terrain synchronization failed\","
@@ -2289,7 +2414,7 @@ int main(int argc, char* argv[]) {
     // Checked at integer coordinates, where the heightfield's triangles pass
     // exactly through the samples, so a correct field agrees to float
     // precision and a displaced one cannot.
-    if (physics_terrain_ready && physics_world && physics_terrain != 0) {
+    if (physics_terrain_ready && physics_world && !physics_terrain_bodies.empty()) {
         // How far a sample may legitimately sit from the heightmap is not one
         // number. Jolt stores each sample as 8 bits within the range of its own
         // 2x2 block, and measures that range over a 3x3 span — one sample of
@@ -2313,20 +2438,29 @@ int main(int argc, char* argv[]) {
         // Float slack for a ray that falls 4 km before it arrives; well above
         // the observed noise on ground whose block has no relief to quantize.
         constexpr double float_slack = 0.002;
-        const auto padded = terrain_width + 2;
+        // The block grid belongs to each facet's own padded field (ADR 0036),
+        // so bounds are computed facet-locally against the same clamped macro
+        // reads the field was built from.
+        const auto facet_edge = static_cast<std::size_t>(facet_edge_metres);
+        const auto padded = facet_edge + 2;
         const auto sample_bound = [&](std::size_t x, std::size_t y) {
-            const auto column_start = (x / block_size) * block_size;
-            const auto reversed_start = ((padded - 1 - y) / block_size) * block_size;
+            const auto facet = facet_of_position(static_cast<double>(x), static_cast<double>(y));
+            const auto window_x = static_cast<std::size_t>(facet_origin_x(facet));
+            const auto window_y = static_cast<std::size_t>(facet_origin_y(facet));
+            const auto local_x = x - window_x;
+            const auto local_y = y - window_y;
+            const auto column_start = (local_x / block_size) * block_size;
+            const auto reversed_start = ((padded - 1 - local_y) / block_size) * block_size;
             float low = (std::numeric_limits<float>::max)();
             float high = (std::numeric_limits<float>::lowest)();
             for (std::size_t across = 0; across <= block_size; ++across)
                 for (std::size_t down = 0; down <= block_size; ++down) {
                     const auto reversed = reversed_start + down;
                     if (reversed >= padded) continue;
-                    // Padding repeats the edge sample, so clamping reads the
-                    // same value the padded field holds.
-                    const auto column = (std::min)(column_start + across, terrain_width - 1);
-                    const auto row = (std::min)(padded - 1 - reversed, terrain_width - 1);
+                    // Padding clamps to the macro map, so these reads are the
+                    // same values the padded field holds.
+                    const auto column = (std::min)(window_x + column_start + across, terrain_width - 1);
+                    const auto row = (std::min)(window_y + padded - 1 - reversed, terrain_height - 1);
                     const auto value = (*terrain_heightmap)[row * terrain_width + column];
                     low = (std::min)(low, value);
                     high = (std::max)(high, value);
@@ -2339,11 +2473,12 @@ int main(int argc, char* argv[]) {
         // deviation".
         double worst = 0.0, worst_bound = 0.0, worst_ratio = -1.0;
         int worst_x = 0, worst_y = 0;
-        const auto step = (std::max<std::size_t>)(1, terrain_width / 16);
-        for (std::size_t y = 0; y + 1 < terrain_width; y += step)
+        const auto step = (std::max<std::size_t>)(1, facet_edge / 16);
+        for (std::size_t y = 0; y + 1 < terrain_height; y += step)
             for (std::size_t x = 0; x + 1 < terrain_width; x += step) {
                 const auto hit = physics_world->ray_cast_body(
-                    physics_terrain, {static_cast<double>(x), static_cast<double>(y), 4096.0},
+                    terrain_body_at(static_cast<double>(x), static_cast<double>(y)),
+                    {static_cast<double>(x), static_cast<double>(y), 4096.0},
                     {0, 0, -1}, 8192.0);
                 if (!hit) continue;
                 const auto expected = (*terrain_heightmap)[y * terrain_width + x];
@@ -2464,11 +2599,12 @@ int main(int argc, char* argv[]) {
         return true;
     };
     const auto collision_ground_height = [&](const homeworldz::scene::Vector3& position) {
-        if (physics_world && physics_terrain != 0) {
+        const auto terrain_body = terrain_body_at(position.x, position.y);
+        if (physics_world && terrain_body != 0) {
             constexpr double ray_origin_height = 4096.0;
             constexpr double ray_distance = 8192.0;
             const auto hit = physics_world->ray_cast_body(
-                physics_terrain, {position.x, position.y, ray_origin_height}, {0, 0, -1}, ray_distance);
+                terrain_body, {position.x, position.y, ray_origin_height}, {0, 0, -1}, ray_distance);
             if (hit) return hit->point.z;
         }
         return ground_height(*terrain_heightmap, position);
@@ -2483,15 +2619,16 @@ int main(int argc, char* argv[]) {
             std::sqrt((std::max)(0.0, 1.0 - squared))};
         const auto half_extents =
             homeworldz::physics::rotated_box_half_extents(entity.scale, rotation);
-        const auto terrain_maximum = static_cast<int>(terrain_width - 1);
+        const auto terrain_maximum_x = static_cast<int>(terrain_width - 1);
+        const auto terrain_maximum_y = static_cast<int>(terrain_height - 1);
         const auto minimum_x = std::clamp(
-            static_cast<int>(std::floor(entity.position.x - half_extents.x)), 0, terrain_maximum);
+            static_cast<int>(std::floor(entity.position.x - half_extents.x)), 0, terrain_maximum_x);
         const auto maximum_x = std::clamp(
-            static_cast<int>(std::ceil(entity.position.x + half_extents.x)), 0, terrain_maximum);
+            static_cast<int>(std::ceil(entity.position.x + half_extents.x)), 0, terrain_maximum_x);
         const auto minimum_y = std::clamp(
-            static_cast<int>(std::floor(entity.position.y - half_extents.y)), 0, terrain_maximum);
+            static_cast<int>(std::floor(entity.position.y - half_extents.y)), 0, terrain_maximum_y);
         const auto maximum_y = std::clamp(
-            static_cast<int>(std::ceil(entity.position.y + half_extents.y)), 0, terrain_maximum);
+            static_cast<int>(std::ceil(entity.position.y + half_extents.y)), 0, terrain_maximum_y);
         double maximum_ground = -std::numeric_limits<double>::infinity();
         for (int y = minimum_y; y <= maximum_y; ++y)
             for (int x = minimum_x; x <= maximum_x; ++x)
@@ -2573,18 +2710,25 @@ int main(int argc, char* argv[]) {
     // first connection. Caught by the stall test, not by the compiler.
     set_socket_blocking_mode(server, false);
 
-    const auto viewer_server = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (viewer_server == invalid_socket) {
-        close_socket(server);
-        return 1;
+    // One viewer socket per facet (ADR 0036), bound on the consecutive ports
+    // the grid advertised; a square region binds exactly its one base port.
+    viewer_facet_sockets.clear();
+    for (const auto& facet : region_facets) {
+        const auto facet_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        sockaddr_in viewer_address{};
+        if (facet_socket == invalid_socket ||
+            !configured_bind_address(viewer_address, "region.viewer_bind_address", facet.viewer_port) ||
+            bind(facet_socket, reinterpret_cast<sockaddr*>(&viewer_address), sizeof(viewer_address)) != 0) {
+            std::cerr << "{\"level\":\"error\",\"message\":\"viewer socket bind failed\",\"facet\":"
+                      << facet.index << ",\"port\":" << facet.viewer_port << "}" << std::endl;
+            if (facet_socket != invalid_socket) close_socket(facet_socket);
+            for (const auto bound : viewer_facet_sockets) close_socket(bound);
+            close_socket(server);
+            return 1;
+        }
+        viewer_facet_sockets.push_back(facet_socket);
     }
-    sockaddr_in viewer_address{};
-    if (!configured_bind_address(viewer_address, "region.viewer_bind_address", region_viewer_port) ||
-        bind(viewer_server, reinterpret_cast<sockaddr*>(&viewer_address), sizeof(viewer_address)) != 0) {
-        close_socket(viewer_server);
-        close_socket(server);
-        return 1;
-    }
+    const auto viewer_server = viewer_facet_sockets.front();
     homeworldz::region::InboundTransitRegistry inbound_transits;
     homeworldz::region::CapabilityArrivalGate capability_arrival_gate;
     homeworldz::viewer::CircuitRegistry circuits([&](const homeworldz::viewer::UseCircuitCode& request) {
@@ -2970,18 +3114,48 @@ int main(int argc, char* argv[]) {
         std::cout << "{\"level\":\"info\",\"message\":\"session avatar retired\",\"localId\":"
                   << static_cast<std::uint64_t>(entity_id) << "}" << std::endl;
     };
+    // A wire object in one facet's local coordinates (ADR 0036): root
+    // positions shift by the facet origin, children stay parent-relative, and
+    // facet 0 — the whole of a square region — shifts by zero.
+    const auto object_for_facet = [&](homeworldz::viewer::StaticObject object, int facet) {
+        if (facet > 0 && object.parent_local_id == 0) {
+            object.position[0] -= static_cast<float>(facet_origin_x(facet));
+            object.position[1] -= static_cast<float>(facet_origin_y(facet));
+        }
+        return object;
+    };
+    // ObjectUpdate bytes for one recipient, carrying the handle and the
+    // coordinates of the facet their circuit is on.
+    const auto object_update_for = [&](std::string_view recipient_endpoint,
+                                       const homeworldz::viewer::StaticObject& object) {
+        const auto facet = endpoint_facet_of(recipient_endpoint);
+        return homeworldz::viewer::encode_static_object_update(
+            facet_handle(facet), object_for_facet(object, facet));
+    };
+    // The avatar form of the same rebasing.
+    const auto avatar_update_for = [&](std::string_view recipient_endpoint,
+                                       std::uint32_t local_id,
+                                       const homeworldz::viewer::Uuid& agent_id,
+                                       std::array<float, 3> position,
+                                       std::array<float, 3> velocity = {},
+                                       std::array<float, 3> rotation = {}) {
+        const auto facet = endpoint_facet_of(recipient_endpoint);
+        if (facet > 0) {
+            position[0] -= static_cast<float>(facet_origin_x(facet));
+            position[1] -= static_cast<float>(facet_origin_y(facet));
+        }
+        return homeworldz::viewer::encode_avatar_object_update(
+            facet_handle(facet), local_id, agent_id, position, velocity, rotation);
+    };
     const auto broadcast_object_update = [&](const homeworldz::scene::Entity& entity,
                                              std::chrono::steady_clock::time_point when) {
-        const auto region_handle =
-            (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-            static_cast<std::uint32_t>(region_grid_y * 256);
         for (const auto& [recipient_endpoint, recipient] : avatars) {
             const auto object =
                 static_object_from_entity(scene, entity, recipient.user_id, falcon);
             if (!object) continue;
             if (const auto sent = circuits.send(
                     recipient_endpoint,
-                    homeworldz::viewer::encode_static_object_update(region_handle, *object),
+                    object_update_for(recipient_endpoint, *object),
                     true, when, true))
                 static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
         }
@@ -3322,6 +3496,40 @@ int main(int argc, char* argv[]) {
         });
     };
 
+    // Re-key a viewer from one facet's endpoint to another's (ADR 0036). An
+    // internal line crossing moves nothing but the transport key: the avatar
+    // entity, its physics character, appearance, and animations all survive.
+    // Wire-level bookkeeping whose content was rebased to the old facet
+    // (handshake, sent transforms, the overlay) is dropped instead of moved,
+    // so the new facet's circuit re-sends it in its own coordinates.
+    const auto migrate_viewer_endpoint = [&](const std::string& from, const std::string& to,
+                                             const std::string& session_id) {
+        const auto move_key = [&](auto& keyed) {
+            auto found = keyed.find(from);
+            if (found == keyed.end()) return;
+            auto value = std::move(found->second);
+            keyed.erase(found);
+            keyed.insert_or_assign(to, std::move(value));
+        };
+        move_key(avatars);
+        move_key(avatar_geometries);
+        move_key(avatar_appearances);
+        move_key(avatar_animations);
+        move_key(next_animation_sequences);
+        move_key(movement_animations);
+        move_key(texture_packets);
+        move_key(physics_edit_selections);
+        if (server_seeded_appearances.erase(from)) server_seeded_appearances.insert(to);
+        handshake_replies.erase(from);
+        handshake_replies.erase(to);
+        sent_dynamic_transforms.erase(from);
+        parcel_overlay_sent.erase(session_id);
+        std::erase_if(pending_agent_movement_completes,
+            [&](const PendingAgentMovementComplete& pending) {
+                return pending.endpoint == from;
+            });
+    };
+
     const auto take_viewer_events = [&](const std::string& session_id) {
         std::vector<std::string> events;
         const auto queued = queued_viewer_events.find(session_id);
@@ -3408,7 +3616,11 @@ int main(int argc, char* argv[]) {
             homeworldz::viewer::parse_uuid(registration->region_id()) : std::nullopt;
         if (!region_id) return false;
         homeworldz::viewer::RegionHandshake handshake;
-        handshake.name = region_name;
+        // The viewer is standing on one facet, which to it is a region with
+        // this name (ADR 0036); a square region's single facet carries the
+        // region's own name.
+        handshake.name = region_facets[static_cast<std::size_t>(
+            endpoint_facet_of(endpoint))].name;
         handshake.region_id = *region_id;
         // The estate/region owner is authoritative from the grid record; fall back
         // to this agent only when the grid supplied no owner (older records).
@@ -3529,12 +3741,19 @@ int main(int argc, char* argv[]) {
                       << homeworldz::api::json_string(error.what()) << "}" << std::endl;
         }
     };
-    // Build and enqueue a ParcelProperties event for one parcel over the Event Queue.
+    // Build and enqueue a ParcelProperties event for one parcel over the Event
+    // Queue. `facet` scopes the viewer-facing geometry (bitmap, AABB) to the
+    // square facet the recipient stands on (ADR 0036); ownership, area, and
+    // prim accounting stay those of the whole parcel.
     const auto send_parcel_properties = [&](const std::string& session_id,
                                             const homeworldz::parcel::Parcel& parcel,
                                             std::int32_t request_result, std::int32_t sequence_id,
-                                            bool snap_selection) {
-        const int edge = parcels->edge_cells();
+                                            bool snap_selection, int facet) {
+        const int cells_x = parcels->cells_x();
+        const int cells_y = parcels->cells_y();
+        const int window_cells = facet_edge_metres / 4;
+        const int window_cell_x = static_cast<int>(facet_origin_x(facet)) / 4;
+        const int window_cell_y = static_cast<int>(facet_origin_y(facet)) / 4;
         homeworldz::viewer::ParcelPropertiesEvent event;
         event.request_result = request_result;
         event.sequence_id = sequence_id;
@@ -3543,8 +3762,17 @@ int main(int argc, char* argv[]) {
         event.owner_id = parcel.owner_id;
         event.is_group_owned = parcel.is_group_owned;
         event.claim_date = parcel.claim_date;
-        event.bitmap = parcel.bitmap;
-        event.area = parcel.area(edge);
+        // The coverage bitmap the viewer sees is its facet's window of the
+        // parcel; a square region's single facet is the whole grid unchanged.
+        event.bitmap = homeworldz::parcel::ParcelSet::full_bitmap(window_cells);
+        std::fill(event.bitmap.begin(), event.bitmap.end(), 0);
+        for (int cell_y = 0; cell_y < window_cells; ++cell_y)
+            for (int cell_x = 0; cell_x < window_cells; ++cell_x)
+                if (homeworldz::parcel::ParcelSet::bit_get(parcel.bitmap, cells_x, cells_y,
+                        window_cell_x + cell_x, window_cell_y + cell_y))
+                    homeworldz::parcel::ParcelSet::bit_set(event.bitmap, window_cells, window_cells,
+                        cell_x, cell_y, true);
+        event.area = parcel.area(cells_x, cells_y);
         event.status = 0; // Leased
         event.parcel_flags = parcel.flags;
         event.sale_price = parcel.sale_price;
@@ -3573,12 +3801,19 @@ int main(int argc, char* argv[]) {
             event.region_deny_age_unverified = (estate & 0x40000000) != 0;
         }
         int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
-        if (parcel.cell_bounds(edge, min_x, min_y, max_x, max_y)) {
+        if (parcel.cell_bounds(cells_x, cells_y, min_x, min_y, max_x, max_y)) {
             // A parcel AABB spans the full buildable Z range so the viewer's
             // "are you standing inside this parcel" test (which considers Z) passes
-            // for an avatar at terrain height.
-            event.aabb_min = {static_cast<float>(min_x * 4), static_cast<float>(min_y * 4), 0.0F};
-            event.aabb_max = {static_cast<float>(max_x * 4), static_cast<float>(max_y * 4), 4096.0F};
+            // for an avatar at terrain height. Clamped and rebased to the
+            // recipient's facet, since that square is the region it knows.
+            const auto clamped_min_x = std::clamp(min_x - window_cell_x, 0, window_cells);
+            const auto clamped_min_y = std::clamp(min_y - window_cell_y, 0, window_cells);
+            const auto clamped_max_x = std::clamp(max_x - window_cell_x, 0, window_cells);
+            const auto clamped_max_y = std::clamp(max_y - window_cell_y, 0, window_cells);
+            event.aabb_min = {static_cast<float>(clamped_min_x * 4),
+                              static_cast<float>(clamped_min_y * 4), 0.0F};
+            event.aabb_max = {static_cast<float>(clamped_max_x * 4),
+                              static_cast<float>(clamped_max_y * 4), 4096.0F};
         }
         std::int32_t owner_prims = 0, group_prims = 0, other_prims = 0, region_prims = 0;
         for (const auto& [entity_id, entity] : scene.entities()) {
@@ -3614,14 +3849,21 @@ int main(int argc, char* argv[]) {
             static_cast<float>(position.x), static_cast<float>(position.y));
         if (parcel == nullptr || parcel->local_id == avatar.last_agent_parcel) return;
         send_parcel_properties(avatar.session_id, *parcel, homeworldz::parcel::result_single,
-            static_cast<std::int32_t>(++agent_parcel_sequence), false);
+            static_cast<std::int32_t>(++agent_parcel_sequence), false,
+            facet_of_position(position.x, position.y));
         avatar.last_agent_parcel = parcel->local_id;
     };
     // Send ParcelOverlay (coloured parcel boundaries) to one viewer over UDP.
+    // The viewer receives its facet's square window of the parcel grid
+    // (ADR 0036), which for a square region is the whole of it.
     const auto send_parcel_overlay = [&](const std::string& viewer_endpoint,
                                          const std::string& agent_id,
                                          std::chrono::steady_clock::time_point when) {
-        const auto cells = parcels->overlay_for(agent_id, region_owner_id);
+        const auto facet = endpoint_facet_of(viewer_endpoint);
+        const auto cells = parcels->overlay_window_for(agent_id, region_owner_id,
+            static_cast<int>(facet_origin_x(facet)) / 4,
+            static_cast<int>(facet_origin_y(facet)) / 4,
+            facet_edge_metres / 4);
         for (auto& packet : homeworldz::viewer::encode_parcel_overlay(cells))
             if (const auto outgoing = circuits.send(viewer_endpoint, std::move(packet), true, when, true))
                 static_cast<void>(send_udp(viewer_server, viewer_endpoint, *outgoing));
@@ -4092,8 +4334,11 @@ int main(int argc, char* argv[]) {
         fd_set readable;
         FD_ZERO(&readable);
         FD_SET(server, &readable);
-        FD_SET(viewer_server, &readable);
-        auto highest = server > viewer_server ? server : viewer_server;
+        auto highest = server;
+        for (const auto facet_socket : viewer_facet_sockets) {
+            FD_SET(facet_socket, &readable);
+            if (facet_socket > highest) highest = facet_socket;
+        }
         for (const auto& pending : incoming_http) {
             FD_SET(pending.client, &readable);
             if (pending.client > highest) highest = pending.client;
@@ -6145,29 +6390,60 @@ int main(int argc, char* argv[]) {
             }
         }
         const auto now = std::chrono::steady_clock::now();
-        if (ready > 0 && FD_ISSET(viewer_server, &readable)) {
+        const auto any_viewer_socket_ready = [&] {
+            for (const auto facet_socket : viewer_facet_sockets)
+                if (FD_ISSET(facet_socket, &readable)) return true;
+            return false;
+        };
+        if (ready > 0 && any_viewer_socket_ready()) {
             constexpr std::size_t max_viewer_packets_per_tick = 256;
             for (std::size_t packet_index = 0; packet_index < max_viewer_packets_per_tick; ++packet_index) {
-                if (packet_index > 0) {
+                // Take the next waiting datagram from whichever facet socket
+                // has one; the facet a packet arrived on is part of the
+                // sender's identity (ADR 0036), carried in the endpoint key.
+                auto receiving_socket = invalid_socket;
+                int receiving_facet = 0;
+                for (std::size_t index = 0; index < viewer_facet_sockets.size(); ++index) {
                     fd_set immediately_readable;
                     FD_ZERO(&immediately_readable);
-                    FD_SET(viewer_server, &immediately_readable);
+                    FD_SET(viewer_facet_sockets[index], &immediately_readable);
                     timeval no_wait{0, 0};
-                    if (select(static_cast<int>(viewer_server) + 1, &immediately_readable,
-                               nullptr, nullptr, &no_wait) <= 0)
+                    if (select(static_cast<int>(viewer_facet_sockets[index]) + 1,
+                               &immediately_readable, nullptr, nullptr, &no_wait) > 0) {
+                        receiving_socket = viewer_facet_sockets[index];
+                        receiving_facet = static_cast<int>(index);
                         break;
+                    }
                 }
+                if (receiving_socket == invalid_socket) break;
                 std::array<std::byte, 65535> datagram{};
                 sockaddr_in sender{};
                 socket_length sender_size = sizeof(sender);
-                const auto received = recvfrom(viewer_server, reinterpret_cast<char*>(datagram.data()),
+                const auto received = recvfrom(receiving_socket, reinterpret_cast<char*>(datagram.data()),
                                                static_cast<int>(datagram.size()), 0,
                                                reinterpret_cast<sockaddr*>(&sender), &sender_size);
-                const auto endpoint = udp_endpoint(sender);
+                const auto endpoint = facet_endpoint_key(udp_endpoint(sender), receiving_facet);
                 if (received > 0 && !endpoint.empty()) {
                 const auto packet = circuits.receive(
                      endpoint, std::span<const std::byte>(datagram.data(), static_cast<std::size_t>(received)), now);
                 for (const auto& replaced : circuits.take_replaced()) {
+                    // The same session on the same transport, arriving on a
+                    // different facet socket, is an internal line crossing
+                    // (ADR 0036): re-key the avatar's state to the new facet
+                    // rather than tearing it down. There is no handoff,
+                    // because there is no second server.
+                    const auto* arriving = circuits.identity(endpoint);
+                    if (arriving && arriving->session_id == replaced.identity.session_id &&
+                        endpoint_transport(replaced.endpoint) == endpoint_transport(endpoint) &&
+                        replaced.endpoint != endpoint) {
+                        migrate_viewer_endpoint(replaced.endpoint, endpoint,
+                            homeworldz::viewer::format_uuid(replaced.identity.session_id));
+                        std::cout << "{\"level\":\"info\",\"message\":\"viewer circuit re-tagged to facet\""
+                                     ",\"from\":" << homeworldz::api::json_string(replaced.endpoint)
+                                  << ",\"to\":" << homeworldz::api::json_string(endpoint)
+                                  << "}" << std::endl;
+                        continue;
+                    }
                     // A newer login took over this account. The old circuit is
                     // already gone from the registry, so frame a standalone
                     // KickUser datagram (unreliable, one-shot) telling the old
@@ -6226,8 +6502,12 @@ int main(int argc, char* argv[]) {
                                     map_image_id, static_cast<std::uint16_t>(size_x),
                                     static_cast<std::uint16_t>(size_y)});
                             };
-                            add_map_region(region_grid_x, region_grid_y, region_name,
-                                           region_size_x, region_size_y, avatars.size());
+                            // One block per facet (ADR 0036): each is the
+                            // square region a viewer can actually render, and
+                            // a square region is exactly one block, as before.
+                            for (const auto& facet : region_facets)
+                                add_map_region(facet.grid_x, facet.grid_y, facet.name,
+                                               facet.edge, facet.edge, avatars.size());
                             refresh_grid_topology();
                             for (const auto& placement : grid_topology) {
 								if (!placement.online) continue;
@@ -6293,7 +6573,7 @@ int main(int argc, char* argv[]) {
                             if (parcel != nullptr)
                                 send_parcel_properties(session_id, *parcel,
                                     homeworldz::parcel::result_single, request->sequence_id,
-                                    request->snap_selection);
+                                    request->snap_selection, endpoint_facet_of(endpoint));
                             // Deliver the colored parcel-boundary overlay once per
                             // session, on the viewer's initial parcel sweep.
                             if (parcel_overlay_sent.insert(session_id).second)
@@ -6308,7 +6588,8 @@ int main(int argc, char* argv[]) {
                             const auto session_id = homeworldz::viewer::format_uuid(identity->session_id);
                             if (parcel != nullptr)
                                 send_parcel_properties(session_id, *parcel,
-                                    homeworldz::parcel::result_single, request->sequence_id, false);
+                                    homeworldz::parcel::result_single, request->sequence_id, false,
+                                    endpoint_facet_of(endpoint));
                         }
                         if (const auto update =
                                 homeworldz::viewer::decode_parcel_properties_update(packet->payload);
@@ -6352,7 +6633,8 @@ int main(int argc, char* argv[]) {
                                     homeworldz::viewer::format_uuid(identity->session_id);
                                 send_parcel_properties(session_id, *parcel,
                                     homeworldz::parcel::result_single,
-                                    homeworldz::parcel::selected_parcel_sequence_id, false);
+                                    homeworldz::parcel::selected_parcel_sequence_id, false,
+                                    endpoint_facet_of(endpoint));
                             }
                         }
                         if (const auto divide = homeworldz::viewer::decode_parcel_divide(packet->payload);
@@ -6376,7 +6658,8 @@ int main(int argc, char* argv[]) {
                                     if (const auto* fresh = parcels->find_by_local_id(*carved))
                                         send_parcel_properties(session_id, *fresh,
                                             homeworldz::parcel::result_single,
-                                            homeworldz::parcel::selected_parcel_sequence_id, true);
+                                            homeworldz::parcel::selected_parcel_sequence_id, true,
+                                            endpoint_facet_of(endpoint));
                                 }
                             }
                         }
@@ -6396,7 +6679,8 @@ int main(int argc, char* argv[]) {
                                 if (const auto* fresh = parcels->find_by_local_id(*merged))
                                     send_parcel_properties(session_id, *fresh,
                                         homeworldz::parcel::result_single,
-                                        homeworldz::parcel::selected_parcel_sequence_id, true);
+                                        homeworldz::parcel::selected_parcel_sequence_id, true,
+                                        endpoint_facet_of(endpoint));
                             }
                         }
                         if (const auto request =
@@ -9132,9 +9416,11 @@ int main(int argc, char* argv[]) {
                             homeworldz::viewer::AgentMovementComplete response;
                             response.agent_id = identity->agent_id;
                             response.session_id = identity->session_id;
-                            response.region_handle =
-                                (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                static_cast<std::uint32_t>(region_grid_y * 256);
+                            // The viewer stands on one facet (ADR 0036): its
+                            // handle and coordinates are the facet's, which for
+                            // a square region are the region's own.
+                            const auto arrival_facet = endpoint_facet_of(endpoint);
+                            response.region_handle = facet_handle(arrival_facet);
                             response.timestamp = static_cast<std::uint32_t>(
                                 std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
                             response.channel_version = "Homeworldz " + region_version;
@@ -9154,8 +9440,13 @@ int main(int argc, char* argv[]) {
                                 for (const auto duplicate : duplicates) scene.remove(duplicate);
                                 if (entity == 0) entity = scene.create(name, initial_spawn);
                                 auto* persisted = scene.find(entity);
+                                // A transit's arrival position is local to the
+                                // facet the viewer was handed, since to the
+                                // sender that facet was the whole destination.
                                 const auto arrival_position = arrival ? homeworldz::scene::Vector3{
-                                    arrival->position[0], arrival->position[1], arrival->position[2]} :
+                                    arrival->position[0] + facet_origin_x(arrival_facet),
+                                    arrival->position[1] + facet_origin_y(arrival_facet),
+                                    arrival->position[2]} :
                                     initial_spawn;
                                 const auto spawn = arrival ? arrival_position :
                                     (persisted ? persisted->position : initial_spawn);
@@ -9186,9 +9477,10 @@ int main(int argc, char* argv[]) {
                                     persisted->avatar_flying);
                                 const auto initial_position = controller.state().position;
                                 const auto initial_viewer_position = controller.viewer_position();
-                                response.position = {static_cast<float>(initial_position.x),
-                                                     static_cast<float>(initial_position.y),
-                                                     static_cast<float>(initial_position.z)};
+                                response.position = {
+                                    static_cast<float>(initial_position.x - facet_origin_x(arrival_facet)),
+                                    static_cast<float>(initial_position.y - facet_origin_y(arrival_facet)),
+                                    static_cast<float>(initial_position.z)};
                                 const auto& rotation = controller.state().rotation;
                                 const double qx = rotation[0], qy = rotation[1], qz = rotation[2];
                                 const auto qw = std::sqrt((std::max)(
@@ -9224,6 +9516,17 @@ int main(int argc, char* argv[]) {
                                 if (viewer_grid && registration)
                                     static_cast<void>(viewer_grid->update_presence(name, registration->region_id()));
                                 restore_attachments(name, entity, now);
+                            } else {
+                                // An avatar that already lives here is
+                                // completing movement onto a new facet after an
+                                // internal crossing (ADR 0036), or retrying:
+                                // answer with its real position in the arriving
+                                // facet's coordinates. Nothing is re-created.
+                                const auto current = avatars.at(endpoint).controller.state().position;
+                                response.position = {
+                                    static_cast<float>(current.x - facet_origin_x(arrival_facet)),
+                                    static_cast<float>(current.y - facet_origin_y(arrival_facet)),
+                                    static_cast<float>(current.z)};
                             }
                             const auto& live_avatar = avatars.at(endpoint);
                             auto& animations = avatar_animations[endpoint];
@@ -9242,12 +9545,11 @@ int main(int argc, char* argv[]) {
                                 static_cast<float>(initial_viewer_position.x),
                                 static_cast<float>(initial_viewer_position.y),
                                 static_cast<float>(initial_viewer_position.z)};
-                            const auto new_avatar_update =
-                                homeworldz::viewer::encode_avatar_object_update(
-                                    response.region_handle,
+                            for (const auto& [recipient_endpoint, recipient] : avatars) {
+                                const auto new_avatar_update = avatar_update_for(
+                                    recipient_endpoint,
                                     static_cast<std::uint32_t>(live_avatar.entity_id),
                                     identity->agent_id, avatar_position);
-                            for (const auto& [recipient_endpoint, recipient] : avatars) {
                                 if (const auto avatar = circuits.send(
                                         recipient_endpoint, new_avatar_update, true, now, true))
                                     static_cast<void>(send_udp(
@@ -9257,9 +9559,8 @@ int main(int argc, char* argv[]) {
                                 const auto recipient_id =
                                     homeworldz::viewer::parse_uuid(recipient.user_id);
                                 if (!recipient_id) continue;
-                                const auto existing_avatar_update =
-                                    homeworldz::viewer::encode_avatar_object_update(
-                                        response.region_handle,
+                                const auto existing_avatar_update = avatar_update_for(
+                                        endpoint,
                                         static_cast<std::uint32_t>(recipient.entity_id),
                                         *recipient_id,
                                         {static_cast<float>(recipient_position.x),
@@ -9386,22 +9687,33 @@ int main(int argc, char* argv[]) {
                                               << bake->bake.assets.size() << "}" << std::endl;
                                 }
                             }
-                            const auto terrain_patches_per_axis = terrain_width / 16;
+                            // The arriving viewer gets its facet's window of
+                            // the macro heightmap (ADR 0036) — the whole map,
+                            // when the region is square.
+                            const auto terrain_window_x =
+                                static_cast<std::size_t>(facet_origin_x(arrival_facet));
+                            const auto terrain_window_y =
+                                static_cast<std::size_t>(facet_origin_y(arrival_facet));
+                            const auto facet_patches_per_axis =
+                                static_cast<std::size_t>(facet_edge_metres) / 16;
                             constexpr std::size_t terrain_patches_per_packet = 16;
-                            for (std::size_t y = 0; y < terrain_patches_per_axis; ++y)
-                                for (std::size_t first_x = 0; first_x < terrain_patches_per_axis;
+                            for (std::size_t y = 0; y < facet_patches_per_axis; ++y)
+                                for (std::size_t first_x = 0; first_x < facet_patches_per_axis;
                                      first_x += terrain_patches_per_packet) {
                                     std::array<homeworldz::viewer::TerrainPatch,
                                         terrain_patches_per_packet> row{};
                                     const auto count = (std::min)(terrain_patches_per_packet,
-                                        terrain_patches_per_axis - first_x);
+                                        facet_patches_per_axis - first_x);
                                     for (std::size_t index = 0; index < count; ++index)
                                         row[index] = {
                                             static_cast<std::uint8_t>(first_x + index),
                                             static_cast<std::uint8_t>(y)};
-                                    const auto terrain_payload = homeworldz::viewer::encode_terrain(
+                                    const auto terrain_payload = homeworldz::viewer::encode_terrain_window(
                                         std::span<const homeworldz::viewer::TerrainPatch>(
-                                            row.data(), count), *terrain_heightmap);
+                                            row.data(), count), *terrain_heightmap,
+                                        terrain_width, terrain_height,
+                                        terrain_window_x, terrain_window_y,
+                                        static_cast<std::size_t>(facet_edge_metres));
                                     if (const auto terrain = circuits.send(
                                             endpoint, terrain_payload, true, now))
                                         static_cast<void>(send_udp(viewer_server, endpoint, *terrain));
@@ -9411,8 +9723,7 @@ int main(int argc, char* argv[]) {
                                 const auto restored_object = static_object_from_entity(scene, entity, live_avatar.user_id, falcon);
                                 if (!restored_object) continue;
                                 if (const auto object = circuits.send(endpoint,
-                                        homeworldz::viewer::encode_static_object_update(
-                                            response.region_handle, *restored_object), true, now, true))
+                                        object_update_for(endpoint, *restored_object), true, now, true))
                                     static_cast<void>(send_udp(viewer_server, endpoint, *object));
                             }
                             // The arrival greeting, privately, once the world
@@ -9512,8 +9823,7 @@ int main(int argc, char* argv[]) {
                                             ? static_object_from_entity(scene, *entity, recipient.user_id, falcon) : std::nullopt;
                                         if (!object) continue;
                                         if (const auto sent = circuits.send(recipient_endpoint,
-                                                homeworldz::viewer::encode_static_object_update(
-                                                    region_handle, *object), true, now, true))
+                                                object_update_for(recipient_endpoint, *object), true, now, true))
                                             static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
                                     }
                                 }
@@ -9578,8 +9888,7 @@ int main(int argc, char* argv[]) {
                                         const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                         if (!object) continue;
                                         if (const auto sent = circuits.send(recipient_endpoint,
-                                                homeworldz::viewer::encode_static_object_update(
-                                                    region_handle, *object), true, now, true))
+                                                object_update_for(recipient_endpoint, *object), true, now, true))
                                             static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
                                     }
                                     if (session_object_visible(*entity))
@@ -9933,8 +10242,7 @@ int main(int argc, char* argv[]) {
                                     const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                     if (!object) continue;
                                     if (const auto sent = circuits.send(recipient_endpoint,
-                                            homeworldz::viewer::encode_static_object_update(
-                                                region_handle, *object), true, now, true))
+                                            object_update_for(recipient_endpoint, *object), true, now, true))
                                         static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
                                 }
                                 // Session clients get the move as well. Until 2026-08-08 this
@@ -10129,8 +10437,7 @@ int main(int argc, char* argv[]) {
                                         const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                         if (!object) continue;
                                         if (const auto sent = circuits.send(recipient_endpoint,
-                                                homeworldz::viewer::encode_static_object_update(
-                                                    region_handle, *object), true, now, true))
+                                                object_update_for(recipient_endpoint, *object), true, now, true))
                                             static_cast<void>(send_udp(
                                                 viewer_server, recipient_endpoint, *sent));
                                     }
@@ -10246,8 +10553,7 @@ int main(int argc, char* argv[]) {
                                             object->update_flags |=
                                                 object_duplicate->duplicate_flags & create_selected;
                                         if (const auto sent = circuits.send(recipient_endpoint,
-                                                homeworldz::viewer::encode_static_object_update(
-                                                    region_handle, *object), true, now, true))
+                                                object_update_for(recipient_endpoint, *object), true, now, true))
                                             static_cast<void>(send_udp(
                                                 viewer_server, recipient_endpoint, *sent));
                                     }
@@ -10317,8 +10623,7 @@ int main(int argc, char* argv[]) {
                                     const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                     if (!object) continue;
                                     if (const auto sent = circuits.send(recipient_endpoint,
-                                            homeworldz::viewer::encode_static_object_update(
-                                                region_handle, *object), true, now, true))
+                                            object_update_for(recipient_endpoint, *object), true, now, true))
                                         static_cast<void>(send_udp(
                                             viewer_server, recipient_endpoint, *sent));
                                 }
@@ -10427,8 +10732,7 @@ int main(int argc, char* argv[]) {
                                     const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                     if (!object) continue;
                                     if (const auto sent = circuits.send(recipient_endpoint,
-                                            homeworldz::viewer::encode_static_object_update(
-                                                region_handle, *object), true, now, true))
+                                            object_update_for(recipient_endpoint, *object), true, now, true))
                                         static_cast<void>(send_udp(
                                             viewer_server, recipient_endpoint, *sent));
                                 }
@@ -10490,8 +10794,7 @@ int main(int argc, char* argv[]) {
                                     const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                     if (!object) continue;
                                     if (const auto sent = circuits.send(recipient_endpoint,
-                                            homeworldz::viewer::encode_static_object_update(
-                                                region_handle, *object), true, now, true))
+                                            object_update_for(recipient_endpoint, *object), true, now, true))
                                         static_cast<void>(send_udp(
                                             viewer_server, recipient_endpoint, *sent));
                                 }
@@ -10568,8 +10871,7 @@ int main(int argc, char* argv[]) {
                                         const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                         if (!object) continue;
                                         if (const auto sent = circuits.send(recipient_endpoint,
-                                                homeworldz::viewer::encode_static_object_update(
-                                                    region_handle, *object), true, now, true))
+                                                object_update_for(recipient_endpoint, *object), true, now, true))
                                             static_cast<void>(send_udp(
                                                 viewer_server, recipient_endpoint, *sent));
                                     }
@@ -10734,8 +11036,7 @@ int main(int argc, char* argv[]) {
                                             (object_add->add_flags & add_create_selected) != 0)
                                             object->update_flags |= add_create_selected;
                                         if (const auto sent = circuits.send(recipient_endpoint,
-                                                homeworldz::viewer::encode_static_object_update(
-                                                    region_handle, *object), true, now, true))
+                                                object_update_for(recipient_endpoint, *object), true, now, true))
                                             static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
                                     }
                                     // And to session clients: this is the insert. The loop above
@@ -11085,8 +11386,7 @@ int main(int argc, char* argv[]) {
                                         if (!object) continue;
                                         if (const auto outgoing = circuits.send(
                                                 recipient_endpoint,
-                                                homeworldz::viewer::encode_static_object_update(
-                                                    region_handle, *object), true, now, true))
+                                                object_update_for(recipient_endpoint, *object), true, now, true))
                                             static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
                                     }
                                     // An insert, like duplicate: a local_id no session client has
@@ -11604,14 +11904,6 @@ int main(int argc, char* argv[]) {
                     // avatar itself, then its appearance, so a viewer rezzes a
                     // properly shaped and dressed body rather than a default.
                     if (session_agent) {
-                        const auto session_region_handle =
-                            (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                            static_cast<std::uint32_t>(region_grid_y * 256);
-                        const auto announce = homeworldz::viewer::encode_avatar_object_update(
-                            session_region_handle, static_cast<std::uint32_t>(entity), *session_agent,
-                            {static_cast<float>(live.controller.state().position.x),
-                             static_cast<float>(live.controller.state().position.y),
-                             static_cast<float>(live.controller.state().position.z)});
                         std::vector<std::byte> appearance;
                         if (const auto seeded = avatar_appearances.find(participant_key);
                             seeded != avatar_appearances.end())
@@ -11621,6 +11913,11 @@ int main(int argc, char* argv[]) {
                         for (const auto& [recipient_endpoint, recipient] : avatars) {
                             static_cast<void>(recipient);
                             if (recipient_endpoint == participant_key) continue;
+                            const auto announce = avatar_update_for(
+                                recipient_endpoint, static_cast<std::uint32_t>(entity), *session_agent,
+                                {static_cast<float>(live.controller.state().position.x),
+                                 static_cast<float>(live.controller.state().position.y),
+                                 static_cast<float>(live.controller.state().position.z)});
                             if (const auto sent = circuits.send(
                                     recipient_endpoint, announce, true, now, true))
                                 static_cast<void>(send_udp(
@@ -11824,11 +12121,6 @@ int main(int argc, char* argv[]) {
         // rather than per edit: LayerData is what makes an edit visible, and it
         // was being encoded and sent to every avatar once per ModifyLand.
         if (!pending_viewer_terrain_patches.empty() && now >= next_viewer_terrain_notice) {
-            std::vector<homeworldz::viewer::TerrainPatch> patches;
-            patches.reserve(pending_viewer_terrain_patches.size());
-            for (const auto packed : pending_viewer_terrain_patches)
-                patches.push_back({static_cast<std::uint8_t>(packed & 0xffu),
-                                   static_cast<std::uint8_t>((packed >> 8) & 0xffu)});
             // Pack by encoded size, not by a patch count. Compressed patches
             // vary from tens of bytes to hundreds depending on how busy the
             // ground is, and a datagram over the path MTU fragments and gets
@@ -11836,41 +12128,66 @@ int main(int argc, char* argv[]) {
             // missed spots along a stroke. Coalescing made this reachable: one
             // edit dirtied about three patches and always fit, while a quarter
             // second of a fast brush unions many (operator report, 2026-07-30).
+            //
+            // Patches are encoded per facet (ADR 0036): each facet's viewers
+            // get the patches inside their facet's window, in window-relative
+            // coordinates. A square region is one facet and one pass.
             constexpr std::size_t datagram_budget = 1000;
             constexpr std::size_t patches_per_packet = 4;
-            std::vector<std::vector<std::byte>> payloads;
-            for (std::size_t offset = 0; offset < patches.size(); ) {
-                auto count = (std::min)(patches_per_packet, patches.size() - offset);
-                auto payload = homeworldz::viewer::encode_terrain(
-                    std::span<const homeworldz::viewer::TerrainPatch>(
-                        patches.data() + offset, count), *terrain_heightmap);
-                // Too big, or refused outright: fall back to one patch per
-                // packet, which is the smallest unit the format has.
-                while (count > 1 && (payload.empty() || payload.size() > datagram_budget)) {
-                    count = 1;
-                    payload = homeworldz::viewer::encode_terrain(
+            const auto edge = static_cast<std::size_t>(facet_edge_metres);
+            for (int facet = 0; facet < facet_count; ++facet) {
+                const auto window_x = static_cast<std::size_t>(facet_origin_x(facet));
+                const auto window_y = static_cast<std::size_t>(facet_origin_y(facet));
+                std::vector<homeworldz::viewer::TerrainPatch> patches;
+                patches.reserve(pending_viewer_terrain_patches.size());
+                for (const auto packed : pending_viewer_terrain_patches) {
+                    const std::size_t patch_x = packed & 0xffu;
+                    const std::size_t patch_y = (packed >> 8) & 0xffu;
+                    const auto metres_x = patch_x * 16;
+                    const auto metres_y = patch_y * 16;
+                    if (metres_x < window_x || metres_x >= window_x + edge ||
+                        metres_y < window_y || metres_y >= window_y + edge) continue;
+                    patches.push_back({static_cast<std::uint8_t>((metres_x - window_x) / 16),
+                                       static_cast<std::uint8_t>((metres_y - window_y) / 16)});
+                }
+                if (patches.empty()) continue;
+                const auto encode_window = [&](std::size_t offset, std::size_t count) {
+                    return homeworldz::viewer::encode_terrain_window(
                         std::span<const homeworldz::viewer::TerrainPatch>(
-                            patches.data() + offset, count), *terrain_heightmap);
+                            patches.data() + offset, count), *terrain_heightmap,
+                        terrain_width, terrain_height, window_x, window_y, edge);
+                };
+                std::vector<std::vector<std::byte>> payloads;
+                for (std::size_t offset = 0; offset < patches.size(); ) {
+                    auto count = (std::min)(patches_per_packet, patches.size() - offset);
+                    auto payload = encode_window(offset, count);
+                    // Too big, or refused outright: fall back to one patch per
+                    // packet, which is the smallest unit the format has.
+                    while (count > 1 && (payload.empty() || payload.size() > datagram_budget)) {
+                        count = 1;
+                        payload = encode_window(offset, count);
+                    }
+                    if (payload.empty()) {
+                        // A single patch that will not encode is a real fault and
+                        // used to be dropped in silence.
+                        std::cerr << "{\"level\":\"error\",\"message\":\"terrain patch would not encode\""
+                                     ",\"x\":" << static_cast<unsigned>(patches[offset].x)
+                                  << ",\"y\":" << static_cast<unsigned>(patches[offset].y)
+                                  << ",\"facet\":" << facet << "}" << std::endl;
+                        ++offset;
+                        continue;
+                    }
+                    payloads.push_back(std::move(payload));
+                    offset += count;
                 }
-                if (payload.empty()) {
-                    // A single patch that will not encode is a real fault and
-                    // used to be dropped in silence.
-                    std::cerr << "{\"level\":\"error\",\"message\":\"terrain patch would not encode\""
-                                 ",\"x\":" << static_cast<unsigned>(patches[offset].x)
-                              << ",\"y\":" << static_cast<unsigned>(patches[offset].y)
-                              << "}" << std::endl;
-                    ++offset;
-                    continue;
+                for (const auto& [recipient_endpoint, recipient] : avatars) {
+                    static_cast<void>(recipient);
+                    if (endpoint_facet_of(recipient_endpoint) != facet) continue;
+                    for (const auto& payload : payloads)
+                        if (const auto outgoing = circuits.send(
+                                recipient_endpoint, payload, true, now))
+                            static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
                 }
-                payloads.push_back(std::move(payload));
-                offset += count;
-            }
-            for (const auto& [recipient_endpoint, recipient] : avatars) {
-                static_cast<void>(recipient);
-                for (const auto& payload : payloads)
-                    if (const auto outgoing = circuits.send(
-                            recipient_endpoint, payload, true, now))
-                        static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
             }
             pending_viewer_terrain_patches.clear();
             next_viewer_terrain_notice = now + std::chrono::milliseconds(250);
@@ -12035,6 +12352,54 @@ int main(int argc, char* argv[]) {
             if (!avatar.outbound_transit_id.empty())
                 avatar.controller.expire_transient_controls();
             avatar.controller.step(elapsed);
+            // An internal facet line (ADR 0036) is crossed with the ordinary
+            // ceremony and no handoff: the destination is this same process,
+            // one socket over. The viewer connects there, its circuit re-tags
+            // on arrival, and nothing else moves — there is no transit,
+            // because there is no second server. Only the macro border below
+            // is a real crossing.
+            if (facet_count > 1 && !session_avatar && avatar.outbound_transit_id.empty() &&
+                now >= avatar.next_crossing_attempt) {
+                const auto& macro_position = avatar.controller.state().position;
+                const bool inside_region =
+                    macro_position.x >= 0.0 && macro_position.x < region_size_x &&
+                    macro_position.y >= 0.0 && macro_position.y < region_size_y;
+                const auto standing_facet =
+                    facet_of_position(macro_position.x, macro_position.y);
+                const auto circuit_facet = endpoint_facet_of(endpoint);
+                if (inside_region && standing_facet != circuit_facet) {
+                    const auto* identity = circuits.identity(endpoint);
+                    const auto& target = region_facets[static_cast<std::size_t>(standing_facet)];
+                    const auto simulator = simulator_event_endpoint(
+                        region_public_endpoint, target.viewer_port);
+                    if (identity && simulator) {
+                        const auto session_id = homeworldz::viewer::format_uuid(identity->session_id);
+                        const auto agent_id = homeworldz::viewer::format_uuid(identity->agent_id);
+                        const auto target_handle = facet_handle(standing_facet);
+                        const std::array<float, 3> facet_position{
+                            static_cast<float>(macro_position.x - facet_origin_x(standing_facet)),
+                            static_cast<float>(macro_position.y - facet_origin_y(standing_facet)),
+                            static_cast<float>(macro_position.z)};
+                        const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
+                        enqueue_viewer_event(session_id,
+                            homeworldz::viewer::enable_simulator_event_xml(
+                                target_handle, *simulator, edge, edge));
+                        enqueue_viewer_event(session_id,
+                            homeworldz::viewer::crossed_region_event_xml({
+                                agent_id, session_id, target_handle, *simulator,
+                                region_public_endpoint + "/caps/seed/" + session_id +
+                                    "/" + homeworldz::viewer::random_uuid(),
+                                facet_position, avatar.controller.look_direction(),
+                                edge, edge}));
+                        avatar.next_crossing_attempt = now + std::chrono::seconds(2);
+                        std::cout << "{\"level\":\"info\",\"message\":\"avatar facet crossing signaled\""
+                                     ",\"fromFacet\":" << circuit_facet
+                                  << ",\"toFacet\":" << standing_facet
+                                  << ",\"agent\":" << homeworldz::api::json_string(avatar.user_id)
+                                  << "}" << std::endl;
+                    }
+                }
+            }
             if (may_cross && avatar.outbound_transit_id.empty()) {
                 const auto& position = avatar.controller.state().position;
                 const auto crossing = homeworldz::region::plan_avatar_border_crossing(
@@ -12226,20 +12591,17 @@ int main(int argc, char* argv[]) {
             if (transform_changed && now >= avatar.next_transform) {
                 const auto agent_id = homeworldz::viewer::parse_uuid(avatar.user_id);
                 if (agent_id) {
-                    const auto region_handle =
-                        (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                        static_cast<std::uint32_t>(region_grid_y * 256);
                     const std::array<float, 3> position{
                         static_cast<float>(viewer_position.x), static_cast<float>(viewer_position.y),
                         static_cast<float>(viewer_position.z)};
                     const std::array<float, 3> velocity{
                         static_cast<float>(state.velocity.x), static_cast<float>(state.velocity.y),
                         static_cast<float>(state.velocity.z)};
-                    const auto update = homeworldz::viewer::encode_avatar_object_update(
-                        region_handle, static_cast<std::uint32_t>(avatar.entity_id), *agent_id,
-                        position, velocity, state.rotation);
                     for (const auto& recipient_entry : avatars) {
                         const auto& recipient_endpoint = recipient_entry.first;
+                        const auto update = avatar_update_for(
+                            recipient_endpoint, static_cast<std::uint32_t>(avatar.entity_id),
+                            *agent_id, position, velocity, state.rotation);
                         if (const auto outgoing = circuits.send(recipient_endpoint, update, false, now, true))
                             static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
                     }
@@ -12331,7 +12693,8 @@ int main(int argc, char* argv[]) {
                 // crossed edge. Neighbor discovery will replace this with a
                 // crossing handoff when an accepting neighbor exists.
                 if (homeworldz::physics::contain_body_without_neighbors(
-                        state, static_cast<double>(region_size_x)))
+                        state, static_cast<double>(region_size_x),
+                        static_cast<double>(region_size_y)))
                     physics_world->set_body_state(state);
                 auto* entity = scene.find(entity_id);
                 if (!entity) continue;
@@ -12401,8 +12764,7 @@ int main(int argc, char* argv[]) {
                     const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                     if (!object) continue;
                     if (const auto sent = circuits.send(recipient_endpoint,
-                            homeworldz::viewer::encode_static_object_update(
-                                region_handle, *object), false, now, true)) {
+                            object_update_for(recipient_endpoint, *object), false, now, true)) {
                         if (send_udp(viewer_server, recipient_endpoint, *sent))
                             recipient_cache.insert_or_assign(
                                 entity_id, SentDynamicTransform{state, now});
@@ -12540,7 +12902,8 @@ int main(int argc, char* argv[]) {
                                  candidate.user_location.z};
                     } else {
                         int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
-                        if (!candidate.cell_bounds(parcels->edge_cells(), min_x, min_y, max_x, max_y))
+                        if (!candidate.cell_bounds(parcels->cells_x(), parcels->cells_y(),
+                                                   min_x, min_y, max_x, max_y))
                             continue;
                         point = {static_cast<double>((min_x + max_x) * 2),
                                  static_cast<double>((min_y + max_y) * 2), 0.0};
@@ -12633,7 +12996,8 @@ int main(int argc, char* argv[]) {
     // shutdown is one the creator was told nothing about and whose assets may
     // be half-registered.
     publish_queue.reset();
-    close_socket(viewer_server);
+    for (const auto facet_socket : viewer_facet_sockets) close_socket(facet_socket);
+    viewer_facet_sockets.clear();
     close_socket(server);
 #ifdef _WIN32
     WSACleanup();

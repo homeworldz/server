@@ -61,12 +61,68 @@ int main() {
     if (!loaded_large || *loaded_large != large || wrong_size) return 8;
 
     homeworldz::terrain::Heightmap maximum(1024);
-    if (maximum.width() != 1024 || maximum.size() != 1024 * 1024) return 9;
+    if (maximum.width() != 1024 || maximum.height() != 1024 || maximum.size() != 1024 * 1024)
+        return 9;
     if (!homeworldz::terrain::apply(maximum, large_revert, large_raise).empty()) return 10;
     try {
-        homeworldz::terrain::Heightmap unsupported(768);
+        homeworldz::terrain::Heightmap unsupported(300);
         return 11;
     } catch (const std::invalid_argument&) {
+    }
+    try {
+        homeworldz::terrain::Heightmap oversized(4352);
+        return 11;
+    } catch (const std::invalid_argument&) {
+    }
+    try {
+        homeworldz::terrain::Heightmap bad_height(512, 100);
+        return 11;
+    } catch (const std::invalid_argument&) {
+    }
+
+    // Rectangular heightmaps (ADR 0036): a macro region is width x height with
+    // each dimension its own bound; row-major indexing keeps the width stride.
+    {
+        homeworldz::terrain::Heightmap rect(512, 256);
+        if (rect.width() != 512 || rect.height() != 256 || rect.size() != 512 * 256) return 19;
+        rect.fill(20.0F);
+        const auto rect_revert = rect;
+
+        // A square revert of the same width is a different shape, not a match.
+        homeworldz::terrain::Heightmap square_revert(512);
+        square_revert.fill(20.0F);
+        homeworldz::viewer::ModifyLand corner_raise;
+        corner_raise.action = 1;
+        corner_raise.seconds = 1.0F;
+        corner_raise.brush_size = 1;
+        corner_raise.areas.push_back({-1, 500.0F, 240.0F, 500.0F, 240.0F});
+        corner_raise.extended_brush_sizes.push_back(4.0F);
+        if (!homeworldz::terrain::apply(rect, square_revert, corner_raise).empty()) return 20;
+
+        // Editing near the far corner: x may run to 511 while y stops at 255,
+        // each axis bounded independently. The width()-as-y-bound bug would
+        // either index off the end or leave the far column untouched.
+        if (homeworldz::terrain::apply(rect, rect_revert, corner_raise).empty()) return 21;
+        if (rect[240 * 512 + 500] <= 20.9F) return 22;
+        if (rect[100 * 512 + 100] != 20.0F) return 23;
+
+        // A brush centred past the top edge clamps to the last row rather than
+        // walking into memory that a square map would have had.
+        auto edge_raise = corner_raise;
+        edge_raise.areas.clear();
+        edge_raise.areas.push_back({-1, 255.0F, 255.0F, 255.0F, 255.0F});
+        if (homeworldz::terrain::apply(rect, rect_revert, edge_raise).empty()) return 24;
+        if (rect[255 * 512 + 255] <= 20.0F) return 25;
+
+        // Save and load with width != height; a square load of the same width
+        // expects a different byte count and is refused.
+        const auto rect_path = std::filesystem::temp_directory_path() /
+            "homeworldz-terrain-edit-rect-test.f32";
+        if (!homeworldz::terrain::save_state(rect_path, rect)) return 26;
+        const auto loaded_rect = homeworldz::terrain::load_state(rect_path, 512, 256);
+        const auto square_load = homeworldz::terrain::load_state(rect_path, 512);
+        std::filesystem::remove(rect_path, ignored);
+        if (!loaded_rect || *loaded_rect != rect || square_load) return 27;
     }
 
     // The Region/Estate terrain raise/lower limits. Before setregionterrain was

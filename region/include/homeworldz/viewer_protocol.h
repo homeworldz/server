@@ -1223,6 +1223,18 @@ std::vector<std::byte> encode_chat_from_simulator(const ChatFromSimulator& messa
 std::vector<std::byte> encode_flat_terrain(std::span<const TerrainPatch> patches, float height);
 std::vector<std::byte> encode_terrain(std::span<const TerrainPatch> patches,
                                       std::span<const float> heightmap);
+// Terrain LayerData for one square window of a larger heightmap (ADR 0036):
+// `patches` are window-relative patch coordinates, `window_edge` is the facet
+// edge in metres (256, 512, or 1024), and (window_x, window_y) is the window's
+// origin in metres within the heightmap. The classic/extended layer form is
+// chosen by the window edge, since that is the region size the viewer believes
+// it is standing in.
+std::vector<std::byte> encode_terrain_window(std::span<const TerrainPatch> patches,
+                                             std::span<const float> heightmap,
+                                             std::size_t heightmap_width,
+                                             std::size_t heightmap_height,
+                                             std::size_t window_x, std::size_t window_y,
+                                             std::size_t window_edge);
 std::vector<std::byte> encode_static_object_update(std::uint64_t region_handle,
                                                    const StaticObject& object);
 std::vector<std::byte> encode_avatar_object_update(std::uint64_t region_handle, std::uint32_t local_id,

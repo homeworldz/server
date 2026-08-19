@@ -92,6 +92,18 @@ struct EstateSettingsPatch {
     std::optional<double> sun_hour;
 };
 
+// One square viewer-facing region of this process (ADR 0036): its name, its
+// southwest map corner, its edge in metres, and the viewer UDP port it is
+// served on. A square region is exactly one facet at its own corner and port.
+struct RegionFacet {
+    int index{};
+    std::string name;
+    int grid_x{};
+    int grid_y{};
+    int edge{256};
+    int viewer_port{};
+};
+
 struct RegisteredRegion {
     std::string id;
     std::string name;
@@ -106,6 +118,10 @@ struct RegisteredRegion {
 	int maturity{};
 	std::string owner_id;
 	std::optional<Estate> estate;
+	// The square viewer-facing regions this process presents, in map-coordinate
+	// order (ADR 0036). Always at least one; facet 0 is the region's own name,
+	// corner, and port.
+	std::vector<RegionFacet> facets;
 	// The grid's current grid-region protocol version from the registration
 	// reply; how a region learns an increment is coming before it is enforced.
 	int grid_region_protocol{};

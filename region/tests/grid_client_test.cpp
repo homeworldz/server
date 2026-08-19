@@ -158,6 +158,12 @@ int main() {
         provisioned->viewer_port != 43002 || provisioned->grid_name != "Homeworldz Test" ||
         provisioned->grid_public_url != "https://grid.example" ||
         provisioned->grid_region_protocol != 1 ||
+        // A square reply with no facet list is an old grid speaking squares:
+        // the region is its own single facet — same name, corner, and port.
+        provisioned->facets.size() != 1 || provisioned->facets[0].index != 0 ||
+        provisioned->facets[0].name != "Sandbox Region" ||
+        provisioned->facets[0].grid_x != 1001 || provisioned->facets[0].grid_y != 1000 ||
+        provisioned->facets[0].edge != 256 || provisioned->facets[0].viewer_port != 43002 ||
         transport->requests.back().path != "/api/v1/region-runtime/Sandbox%20Region" ||
         transport->requests.back().body.find(
             R"("viewerPort":42012)") == std::string::npos ||
@@ -190,6 +196,49 @@ int main() {
         refusal.clear();
         if (refused.renew_provisioned_lease(provisioned->id, 60, &refusal) ||
             refusal.find("requires 2") == std::string::npos) return 1;
+    }
+    {
+        // A rectangular region arrives as its viewer-facing facets (ADR 0036):
+        // squares in map-coordinate order, facet 0 the region's own name,
+        // corner, and base port, ports consecutive from there.
+        const auto rectangle_reply = [](std::string_view facets) {
+            std::string reply = R"({"id":"55555555-5555-4555-8555-555555555555","name":"Shore","gridX":1000,"gridY":1000,"sizeX":1024,"sizeY":512,"maturity":0,"publicEndpoint":"https://shore.example/region","viewerPort":42012,"gridName":"Homeworldz Test","gridPublicUrl":"https://grid.example")";
+            if (!facets.empty()) reply += ",\"facets\":" + std::string(facets);
+            reply += R"(,"regionProtocol":1})";
+            return reply;
+        };
+        const auto register_with = [&](const std::string& body) {
+            homeworldz::grid::Client rectangle_client(
+                std::make_shared<CannedTransport>(200, body));
+            return rectangle_client.register_provisioned_region("Shore", provisioned_settings);
+        };
+        const auto shore = register_with(rectangle_reply(
+            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012},)"
+            R"({"index":1,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":512,"viewerPort":42013}])"));
+        if (!shore || shore->size_x != 1024 || shore->size_y != 512 ||
+            shore->facets.size() != 2 ||
+            shore->facets[0].index != 0 || shore->facets[0].name != "Shore" ||
+            shore->facets[0].grid_x != 1000 || shore->facets[0].grid_y != 1000 ||
+            shore->facets[0].edge != 512 || shore->facets[0].viewer_port != 42012 ||
+            shore->facets[1].index != 1 || shore->facets[1].name != "Cliffs" ||
+            shore->facets[1].grid_x != 1002 || shore->facets[1].grid_y != 1000 ||
+            shore->facets[1].edge != 512 || shore->facets[1].viewer_port != 42013) return 1;
+        // A rectangle without a facet list cannot be presented — the process
+        // has no names or ports for its squares. Refused, never guessed.
+        if (register_with(rectangle_reply({}))) return 1;
+        // A list that skips an index, uses the wrong edge, is short one facet,
+        // or opens with a facet that is not the region itself is refused whole.
+        if (register_with(rectangle_reply(
+            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012},)"
+            R"({"index":2,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":512,"viewerPort":42013}])"))) return 1;
+        if (register_with(rectangle_reply(
+            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":256,"viewerPort":42012},)"
+            R"({"index":1,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":256,"viewerPort":42013}])"))) return 1;
+        if (register_with(rectangle_reply(
+            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012}])"))) return 1;
+        if (register_with(rectangle_reply(
+            R"([{"index":0,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":512,"viewerPort":42013},)"
+            R"({"index":1,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012}])"))) return 1;
     }
     const auto neighbors = client.find_region_neighbors(provisioned->id);
     if (!neighbors || neighbors->size() != 1 || neighbors->front().direction != "west" ||

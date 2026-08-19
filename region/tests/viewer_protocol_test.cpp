@@ -1092,6 +1092,60 @@ bool extended_terrain_codec() {
            encode_terrain(invalid_patch, maximum).empty();
 }
 
+bool terrain_window_codec() {
+    // A viewer only ever receives square facet-sized windows of the macro
+    // heightmap (ADR 0036), so a window encode must be byte-for-byte what the
+    // square encoder produces from the same samples sliced out by hand.
+    const auto sample_height = [](std::size_t x, std::size_t y) {
+        return 10.0F + static_cast<float>(x % 61) * 0.5F + static_cast<float>(y % 37) * 0.25F;
+    };
+    std::vector<float> macro(512 * 256);
+    for (std::size_t y = 0; y < 256; ++y)
+        for (std::size_t x = 0; x < 512; ++x)
+            macro[y * 512 + x] = sample_height(x, y);
+    std::vector<float> slice(256 * 256);
+    for (std::size_t y = 0; y < 256; ++y)
+        for (std::size_t x = 0; x < 256; ++x)
+            slice[y * 256 + x] = macro[y * 512 + 256 + x];
+    const std::array<TerrainPatch, 3> patches{{{0, 0}, {7, 3}, {15, 15}}};
+    const auto windowed = encode_terrain_window(patches, macro, 512, 256, 256, 0, 256);
+    const auto sliced = encode_terrain(patches, slice);
+    if (windowed.empty() || sliced.empty() || windowed != sliced) return false;
+    if (windowed[1] != std::byte{0x4c}) return false; // classic form for a 256 window
+
+    // A 512-edge window of a 1024-wide macro takes the extended form, because
+    // that is the region size the viewer believes it is standing in.
+    std::vector<float> wide(1024 * 512);
+    for (std::size_t y = 0; y < 512; ++y)
+        for (std::size_t x = 0; x < 1024; ++x)
+            wide[y * 1024 + x] = sample_height(x, y);
+    std::vector<float> wide_slice(512 * 512);
+    for (std::size_t y = 0; y < 512; ++y)
+        for (std::size_t x = 0; x < 512; ++x)
+            wide_slice[y * 512 + x] = wide[y * 1024 + 512 + x];
+    const std::array<TerrainPatch, 2> wide_patches{{{31, 0}, {18, 25}}};
+    const auto wide_windowed = encode_terrain_window(wide_patches, wide, 1024, 512, 512, 0, 512);
+    const auto wide_sliced = encode_terrain(wide_patches, wide_slice);
+    if (wide_windowed.empty() || wide_sliced.empty() || wide_windowed != wide_sliced) return false;
+    if (wide_windowed[1] != std::byte{0x4d}) return false; // extended form
+
+    // Invalid windows are refused rather than clamped or wrapped.
+    const std::array<TerrainPatch, 1> one{{{0, 0}}};
+    if (!encode_terrain_window(one, macro, 512, 256, 256, 0, 128).empty()) return false;   // edge
+    if (!encode_terrain_window(one, macro, 512, 256, 100, 0, 256).empty()) return false;   // origin
+    if (!encode_terrain_window(one, macro, 512, 256, 384, 0, 256).empty()) return false;   // overrun x
+    if (!encode_terrain_window(one, macro, 512, 256, 0, 128, 256).empty()) return false;   // overrun y
+    if (!encode_terrain_window(one, macro, 512, 512, 0, 0, 256).empty()) return false;     // size lie
+    if (!encode_terrain_window(one, macro, 300, 256, 0, 0, 256).empty()) return false;     // dimension
+    if (!encode_terrain_window({}, macro, 512, 256, 0, 0, 256).empty()) return false;      // no patches
+    const std::array<TerrainPatch, 1> outside{{{16, 0}}};
+    if (!encode_terrain_window(outside, macro, 512, 256, 0, 0, 256).empty()) return false; // patch
+    std::vector<float> tainted = macro;
+    tainted[7] = std::numeric_limits<float>::quiet_NaN();
+    if (!encode_terrain_window(one, tainted, 512, 256, 0, 0, 256).empty()) return false;   // non-finite
+    return true;
+}
+
 bool static_object_codec() {
     StaticObject object;
     object.parent_local_id = 0x12345678;
@@ -1677,6 +1731,7 @@ int main() {
     if (!chat_codecs()) return 9;
     if (!flat_terrain_codec()) return 10;
     if (!extended_terrain_codec()) return 21;
+    if (!terrain_window_codec()) return 43;
     if (!static_object_codec()) return 11;
     if (!render_material_extra_params()) return 42;
     if (!object_relationship_codecs()) return 19;

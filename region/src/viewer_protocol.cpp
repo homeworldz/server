@@ -274,15 +274,23 @@ const std::array<int, 256>& terrain_copy_matrix() {
     return table;
 }
 
+// The patch's samples are read from a square window of a possibly larger
+// heightmap: `stride` is the heightmap's full row width and (window_x,
+// window_y) is the window's origin within it (ADR 0036). The patch id written
+// to the wire stays window-relative. A whole-map encode is the degenerate case
+// window (0, 0) with stride equal to the map width.
 std::array<int, 256> compress_terrain_patch(std::span<const float> heightmap,
                                             std::uint8_t patch_x, std::uint8_t patch_y,
-                                            std::size_t terrain_width, bool extended,
+                                            std::size_t stride, std::size_t window_x,
+                                            std::size_t window_y, bool extended,
                                             TerrainPatchHeader& header) {
+    const auto base = (window_y + static_cast<std::size_t>(patch_y) * 16) * stride +
+                      window_x + static_cast<std::size_t>(patch_x) * 16;
     float minimum = std::numeric_limits<float>::max();
     float maximum = std::numeric_limits<float>::lowest();
-    for (int y = patch_y * 16; y < (patch_y + 1) * 16; ++y) {
-        for (int x = patch_x * 16; x < (patch_x + 1) * 16; ++x) {
-            const auto value = heightmap[static_cast<std::size_t>(y) * terrain_width + x];
+    for (std::size_t y = 0; y < 16; ++y) {
+        for (std::size_t x = 0; x < 16; ++x) {
+            const auto value = heightmap[base + y * stride + x];
             minimum = std::min(minimum, value);
             maximum = std::max(maximum, value);
         }
@@ -297,9 +305,9 @@ std::array<int, 256> compress_terrain_patch(std::span<const float> heightmap,
     const auto subtract = 512.0F + header.dc_offset * premultiply;
     std::array<float, 256> block{};
     std::size_t index = 0;
-    for (int y = patch_y * 16; y < (patch_y + 1) * 16; ++y)
-        for (int x = patch_x * 16; x < (patch_x + 1) * 16; ++x)
-            block[index++] = heightmap[static_cast<std::size_t>(y) * terrain_width + x] * premultiply - subtract;
+    for (std::size_t y = 0; y < 16; ++y)
+        for (std::size_t x = 0; x < 16; ++x)
+            block[index++] = heightmap[base + y * stride + x] * premultiply - subtract;
 
     constexpr float inverse_sqrt_two = 0.7071067811865475244F;
     const auto& cosine = terrain_cosines();
@@ -3021,15 +3029,36 @@ std::vector<std::byte> encode_flat_terrain(std::span<const TerrainPatch> patches
 
 std::vector<std::byte> encode_terrain(std::span<const TerrainPatch> patches,
                                       std::span<const float> heightmap) {
+    // The classic square encode: the whole heightmap is the window.
     const auto terrain_width = static_cast<std::size_t>(std::sqrt(heightmap.size()));
-    const bool supported_width = terrain_width == 256 || terrain_width == 512 || terrain_width == 1024;
-    if (patches.empty() || patches.size() > 32 || !supported_width ||
-        terrain_width * terrain_width != heightmap.size() ||
+    if (terrain_width * terrain_width != heightmap.size()) return {};
+    return encode_terrain_window(patches, heightmap, terrain_width, terrain_width, 0, 0,
+                                 terrain_width);
+}
+
+std::vector<std::byte> encode_terrain_window(std::span<const TerrainPatch> patches,
+                                             std::span<const float> heightmap,
+                                             std::size_t heightmap_width,
+                                             std::size_t heightmap_height,
+                                             std::size_t window_x, std::size_t window_y,
+                                             std::size_t window_edge) {
+    const bool supported_edge = window_edge == 256 || window_edge == 512 || window_edge == 1024;
+    const auto valid_dimension = [window_edge](std::size_t dimension) {
+        return dimension % 256 == 0 && dimension >= window_edge;
+    };
+    if (patches.empty() || patches.size() > 32 || !supported_edge ||
+        !valid_dimension(heightmap_width) || !valid_dimension(heightmap_height) ||
+        heightmap_width * heightmap_height != heightmap.size() ||
+        window_x % 16 != 0 || window_y % 16 != 0 ||
+        window_x + window_edge > heightmap_width ||
+        window_y + window_edge > heightmap_height ||
         !std::all_of(heightmap.begin(), heightmap.end(), [](float height) { return std::isfinite(height); }))
         return {};
-    const bool extended = terrain_width > 256;
+    // The layer form is chosen by the window edge, since that is the region
+    // size the viewer believes it is standing in.
+    const bool extended = window_edge > 256;
     const auto layer_type = static_cast<std::uint8_t>(extended ? 0x4d : 0x4c);
-    const auto patches_per_axis = terrain_width / 16;
+    const auto patches_per_axis = window_edge / 16;
     BitWriter bits;
     bits.write_byte(0x08);
     bits.write_byte(0x01); // stride 264, little endian
@@ -3039,7 +3068,7 @@ std::vector<std::byte> encode_terrain(std::span<const TerrainPatch> patches,
         if (patch.x >= patches_per_axis || patch.y >= patches_per_axis) return {};
         TerrainPatchHeader header;
         const auto coefficients = compress_terrain_patch(
-            heightmap, patch.x, patch.y, terrain_width, extended, header);
+            heightmap, patch.x, patch.y, heightmap_width, window_x, window_y, extended, header);
         const auto word_bits = write_terrain_patch_header(bits, header, coefficients, extended);
         write_terrain_coefficients(bits, coefficients, word_bits);
     }

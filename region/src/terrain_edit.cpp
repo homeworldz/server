@@ -19,9 +19,8 @@ float neighbor_average(const Heightmap& source, int x, int y) {
     int count{};
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx) {
-            const auto maximum = static_cast<int>(source.width() - 1);
-            const auto sample_x = std::clamp(x + dx, 0, maximum);
-            const auto sample_y = std::clamp(y + dy, 0, maximum);
+            const auto sample_x = std::clamp(x + dx, 0, static_cast<int>(source.width() - 1));
+            const auto sample_y = std::clamp(y + dy, 0, static_cast<int>(source.height() - 1));
             total += source[static_cast<std::size_t>(sample_y) * source.width() + sample_x];
             ++count;
         }
@@ -40,12 +39,14 @@ float deterministic_noise(int x, int y) {
 } // namespace
 
 std::unique_ptr<Heightmap> load_state(const std::filesystem::path& path,
-                                      std::size_t expected_width) {
+                                      std::size_t expected_width,
+                                      std::size_t expected_height) {
+    if (expected_height == 0) expected_height = expected_width;
     std::ifstream input(path, std::ios::binary | std::ios::ate);
-    const auto expected_bytes = expected_width * expected_width * sizeof(float);
+    const auto expected_bytes = expected_width * expected_height * sizeof(float);
     if (!input || input.tellg() != static_cast<std::streamoff>(expected_bytes)) return {};
     input.seekg(0);
-    auto result = std::make_unique<Heightmap>(expected_width);
+    auto result = std::make_unique<Heightmap>(expected_width, expected_height);
     input.read(reinterpret_cast<char*>(result->data()), static_cast<std::streamsize>(expected_bytes));
     if (!input || std::any_of(result->begin(), result->end(), [](float height) {
             return !std::isfinite(height) || height < minimum_height || height > maximum_height;
@@ -77,7 +78,7 @@ std::vector<viewer::TerrainPatch> apply(Heightmap& heightmap, const Heightmap& r
                                         float smooth_strength, float raise_limit,
                                         float lower_limit) {
     if (edit.action > 5 || edit.areas.empty()) return {};
-    if (heightmap.width() != revert.width()) return {};
+    if (heightmap.width() != revert.width() || heightmap.height() != revert.height()) return {};
     // Normalised so a reversed or same-signed pair cannot invert the window and
     // reject every edit. The viewer sends raise positive and lower negative; an
     // operator typing them the other way round should get a usable region, not a
@@ -100,11 +101,12 @@ std::vector<viewer::TerrainPatch> apply(Heightmap& heightmap, const Heightmap& r
         if (area_index < edit.extended_brush_sizes.size() && edit.extended_brush_sizes[area_index] > 0.0F)
             radius = edit.extended_brush_sizes[area_index];
         radius = std::clamp(radius, 0.5F, 64.0F);
-        const auto maximum = static_cast<int>(heightmap.width() - 1);
-        const auto x_from = std::clamp(static_cast<int>(std::floor(center_x - radius)), 0, maximum);
-        const auto x_to = std::clamp(static_cast<int>(std::ceil(center_x + radius)), 0, maximum);
-        const auto y_from = std::clamp(static_cast<int>(std::floor(center_y - radius)), 0, maximum);
-        const auto y_to = std::clamp(static_cast<int>(std::ceil(center_y + radius)), 0, maximum);
+        const auto maximum_x = static_cast<int>(heightmap.width() - 1);
+        const auto maximum_y = static_cast<int>(heightmap.height() - 1);
+        const auto x_from = std::clamp(static_cast<int>(std::floor(center_x - radius)), 0, maximum_x);
+        const auto x_to = std::clamp(static_cast<int>(std::ceil(center_x + radius)), 0, maximum_x);
+        const auto y_from = std::clamp(static_cast<int>(std::floor(center_y - radius)), 0, maximum_y);
+        const auto y_to = std::clamp(static_cast<int>(std::ceil(center_y + radius)), 0, maximum_y);
         const auto duration = std::clamp(edit.seconds, 0.01F, 4.0F);
         for (int y = y_from; y <= y_to; ++y)
             for (int x = x_from; x <= x_to; ++x) {

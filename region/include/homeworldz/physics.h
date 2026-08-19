@@ -89,6 +89,10 @@ struct HeightFieldDefinition {
     std::vector<float> samples;
     std::uint32_t sample_count{};
     double spacing{1.0};
+    // World placement of the field's southwest corner. A rectangular region
+    // (ADR 0036) is covered by one square field per facet, each offset here;
+    // a square region keeps the default zero origin.
+    scene::Vector3 origin{};
     // Terrain contact material, defaulting to the stone preset of the legacy
     // material table. Without an explicit material the terrain body inherits the
     // engine default — restitution zero in Jolt — and the averaging restitution

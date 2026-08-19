@@ -2,6 +2,7 @@
 
 #include "homeworldz/api_models.h"
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <cstdlib>
@@ -386,6 +387,74 @@ Estate estate_from_json(std::string_view body) {
     return estate;
 }
 
+// One facet object from the registration reply's "facets" array (ADR 0036).
+// A facet the process cannot serve as written is a refused facet, never a
+// repaired one.
+std::optional<RegionFacet> facet_from_json(std::string_view body) {
+    RegionFacet facet;
+    facet.name = json_field(body, "name");
+    const auto index = json_int(body, "index");
+    const auto grid_x = json_int(body, "gridX");
+    const auto grid_y = json_int(body, "gridY");
+    const auto edge = json_int(body, "edge");
+    const auto viewer_port = json_int(body, "viewerPort");
+    if (facet.name.empty() || !index || *index < 0 || !grid_x || *grid_x < 0 ||
+        !grid_y || *grid_y < 0 ||
+        !edge || (*edge != 256 && *edge != 512 && *edge != 1024) ||
+        !viewer_port || *viewer_port < 1 || *viewer_port > 65535) return std::nullopt;
+    facet.index = *index;
+    facet.grid_x = *grid_x;
+    facet.grid_y = *grid_y;
+    facet.edge = *edge;
+    facet.viewer_port = *viewer_port;
+    return facet;
+}
+
+// The reply's "facets" array as a whole: nullopt when the reply carries no
+// such array (an old grid), an empty engaged vector never — a present array
+// that fails to parse is reported through the second member. The bounds are
+// located before any object scan so keys inside "estate" are never misread.
+struct ParsedFacets {
+    bool present{};
+    std::optional<std::vector<RegionFacet>> facets;
+};
+
+ParsedFacets facets_from_json(std::string_view body) {
+    constexpr std::string_view marker = "\"facets\":[";
+    const auto found = body.find(marker);
+    if (found == std::string_view::npos) return {};
+    ParsedFacets parsed{true, std::nullopt};
+    const auto array_start = found + marker.size();
+    auto array_end = std::string_view::npos;
+    bool quoted = false;
+    bool escaped = false;
+    for (auto position = array_start; position < body.size(); ++position) {
+        const auto character = body[position];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (character == '\\') escaped = true;
+            else if (character == '"') quoted = false;
+        } else if (character == '"') quoted = true;
+        else if (character == ']') { array_end = position; break; }
+    }
+    if (array_end == std::string_view::npos) return parsed;
+    const auto array = body.substr(array_start, array_end - array_start);
+    // Facet objects are flat, so each one runs from its brace to the next
+    // close brace; a partial parse is a failed parse, never a short list.
+    std::vector<RegionFacet> facets;
+    std::size_t position = 0;
+    while ((position = array.find('{', position)) != std::string_view::npos) {
+        const auto object_end = array.find('}', position);
+        if (object_end == std::string_view::npos) return parsed;
+        const auto facet = facet_from_json(array.substr(position + 1, object_end - position - 1));
+        if (!facet) return parsed;
+        facets.push_back(*facet);
+        position = object_end + 1;
+    }
+    parsed.facets = std::move(facets);
+    return parsed;
+}
+
 std::optional<TaskInventoryTransfer> task_transfer_from_json(std::string_view body) {
     TaskInventoryTransfer value;
     value.id = json_field(body, "id");
@@ -593,11 +662,16 @@ std::optional<RegisteredRegion> Client::register_provisioned_region(
     region.grid_public_url = json_field(response.body, "gridPublicUrl");
     region.owner_id = json_field(response.body, "ownerUserId");
 	if (region.id.empty() || region.name.empty() || !grid_x || !grid_y || !size_x || !size_y ||
-		(*size_x != 256 && *size_x != 512 && *size_x != 1024) || *size_x != *size_y ||
 		!maturity || *maturity < 0 || *maturity > 2 ||
         region.public_endpoint.empty() || !viewer_port || *viewer_port < 1 || *viewer_port > 65535 ||
         region.grid_name.empty() || region.grid_public_url.empty() ||
         !grid_protocol || *grid_protocol < 1) return std::nullopt;
+    // The ADR 0036 shape rule, in metres: the shorter side is a viewer-square
+    // edge and tiles the longer side exactly.
+    const auto shorter = (std::min)(*size_x, *size_y);
+    const auto longer = (std::max)(*size_x, *size_y);
+    if ((shorter != 256 && shorter != 512 && shorter != 1024) || longer % shorter != 0)
+        return std::nullopt;
     region.grid_region_protocol = *grid_protocol;
     region.grid_x = *grid_x;
     region.grid_y = *grid_y;
@@ -605,6 +679,30 @@ std::optional<RegisteredRegion> Client::register_provisioned_region(
 	region.size_x = *size_x;
 	region.size_y = *size_y;
 	region.maturity = *maturity;
+    const auto parsed_facets = facets_from_json(response.body);
+    if (!parsed_facets.present) {
+        // A reply without facets is an old grid speaking squares. A square is
+        // its own single facet; a rectangle cannot be presented without the
+        // grid naming its facets and ports, so it is a refused registration.
+        if (*size_x != *size_y) return std::nullopt;
+        region.facets.push_back(RegionFacet{
+            0, region.name, region.grid_x, region.grid_y, shorter, region.viewer_port});
+    } else {
+        if (!parsed_facets.facets) return std::nullopt;
+        region.facets = *parsed_facets.facets;
+        // Exactly one facet per viewer square, in index order, each the
+        // shorter edge; facet 0 is the region itself — same name, corner, and
+        // base port.
+        if (region.facets.size() != static_cast<std::size_t>(longer / shorter))
+            return std::nullopt;
+        for (std::size_t position = 0; position < region.facets.size(); ++position)
+            if (region.facets[position].index != static_cast<int>(position) ||
+                region.facets[position].edge != shorter) return std::nullopt;
+        if (region.facets.front().name != region.name ||
+            region.facets.front().grid_x != region.grid_x ||
+            region.facets.front().grid_y != region.grid_y ||
+            region.facets.front().viewer_port != region.viewer_port) return std::nullopt;
+    }
     if (const auto estate = json_object(response.body, "estate"))
         region.estate = estate_from_json(*estate);
     return region;

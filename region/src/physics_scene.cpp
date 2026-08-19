@@ -204,14 +204,18 @@ scene::Vector3 rotated_box_half_extents(
             std::abs(x.z) + std::abs(y.z) + std::abs(z.z)};
 }
 
-bool contain_body_without_neighbors(BodyState& state, double region_extent) {
+bool contain_body_without_neighbors(BodyState& state, double region_extent_x,
+                                    double region_extent_y) {
+    // A zero Y extent means square, which is what every caller meant before
+    // regions could be rectangular (ADR 0036).
+    if (region_extent_y <= 0.0) region_extent_y = region_extent_x;
     bool constrained{};
     if (state.position.x < 0.0) {
         state.position.x = 0.0;
         state.linear_velocity.x = std::max(0.0, state.linear_velocity.x);
         constrained = true;
-    } else if (state.position.x > region_extent) {
-        state.position.x = region_extent;
+    } else if (state.position.x > region_extent_x) {
+        state.position.x = region_extent_x;
         state.linear_velocity.x = std::min(0.0, state.linear_velocity.x);
         constrained = true;
     }
@@ -219,8 +223,8 @@ bool contain_body_without_neighbors(BodyState& state, double region_extent) {
         state.position.y = 0.0;
         state.linear_velocity.y = std::max(0.0, state.linear_velocity.y);
         constrained = true;
-    } else if (state.position.y > region_extent) {
-        state.position.y = region_extent;
+    } else if (state.position.y > region_extent_y) {
+        state.position.y = region_extent_y;
         state.linear_velocity.y = std::min(0.0, state.linear_velocity.y);
         constrained = true;
     }

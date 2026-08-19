@@ -121,15 +121,23 @@ struct Parcel {
     std::int32_t other_clean_time{};
     std::int32_t claim_date{};
     std::uint8_t landing_type{static_cast<std::uint8_t>(LandingType::anywhere)};
-    // Packed 1-bit-per-4m-cell coverage map, row-major (n = y*edge + x), LSB-first.
+    // Packed 1-bit-per-4m-cell coverage map, row-major (n = y*cells_x + x), LSB-first.
     std::vector<std::uint8_t> bitmap;
     std::vector<AccessEntry> access;
 
     // Number of set cells * 16 m^2.
-    std::int32_t area(int edge_cells) const;
-    bool contains_cell(int edge_cells, int cell_x, int cell_y) const;
+    std::int32_t area(int cells_x, int cells_y) const;
+    std::int32_t area(int edge_cells) const { return area(edge_cells, edge_cells); }
+    bool contains_cell(int cells_x, int cells_y, int cell_x, int cell_y) const;
+    bool contains_cell(int edge_cells, int cell_x, int cell_y) const {
+        return contains_cell(edge_cells, edge_cells, cell_x, cell_y);
+    }
     // Inclusive-min / exclusive-max cell AABB of the set cells; false when empty.
-    bool cell_bounds(int edge_cells, int& min_x, int& min_y, int& max_x, int& max_y) const;
+    bool cell_bounds(int cells_x, int cells_y, int& min_x, int& min_y, int& max_x,
+                     int& max_y) const;
+    bool cell_bounds(int edge_cells, int& min_x, int& min_y, int& max_x, int& max_y) const {
+        return cell_bounds(edge_cells, edge_cells, min_x, min_y, max_x, max_y);
+    }
 };
 
 // Policy predicates. `region_owner` (the estate/region owner) is always permitted;
@@ -147,18 +155,33 @@ bool can_enter(const Parcel& parcel, std::string_view agent, std::string_view re
 bool can_run_scripts(const Parcel& parcel, std::string_view owner, std::string_view region_owner);
 
 // A region's complete set of parcels plus the derived per-cell ownership grid.
-// Cell resolution is fixed at 4 m; edge_cells = region_size_metres / 4.
+// Cell resolution is fixed at 4 m; cells_x/cells_y = region size in metres / 4.
+// Regions may be rectangular (ADR 0036); bitmaps are row-major, x inner,
+// n = y*cells_x + x.
 class ParcelSet {
 public:
     // Build a single default parcel covering the whole region, owned by owner_id.
-    ParcelSet(int region_size_metres, std::string global_id, std::string owner_id,
-              std::int32_t claim_date = 0);
+    ParcelSet(int region_size_x_metres, int region_size_y_metres, std::string global_id,
+              std::string owner_id, std::int32_t claim_date = 0);
     // Build from persisted parcels (bitmaps must match this region size).
-    ParcelSet(int region_size_metres, std::vector<Parcel> parcels);
+    ParcelSet(int region_size_x_metres, int region_size_y_metres, std::vector<Parcel> parcels);
+    // Square conveniences.
+    ParcelSet(int region_size_metres, std::string global_id, std::string owner_id,
+              std::int32_t claim_date = 0)
+        : ParcelSet(region_size_metres, region_size_metres, std::move(global_id),
+                    std::move(owner_id), claim_date) {}
+    ParcelSet(int region_size_metres, std::vector<Parcel> parcels)
+        : ParcelSet(region_size_metres, region_size_metres, std::move(parcels)) {}
 
-    int region_size_metres() const { return region_size_; }
-    int edge_cells() const { return edge_cells_; }
-    int bitmap_bytes() const { return (edge_cells_ * edge_cells_ + 7) / 8; }
+    int region_size_x_metres() const { return region_size_x_; }
+    int region_size_y_metres() const { return region_size_y_; }
+    // Compatibility: the X size (equal to the Y size for square regions).
+    int region_size_metres() const { return region_size_x_; }
+    int cells_x() const { return cells_x_; }
+    int cells_y() const { return cells_y_; }
+    // Compatibility: cells_x (equal to cells_y for square regions).
+    int edge_cells() const { return cells_x_; }
+    int bitmap_bytes() const { return (cells_x_ * cells_y_ + 7) / 8; }
 
     const std::vector<Parcel>& parcels() const { return parcels_; }
     std::vector<Parcel>& parcels() { return parcels_; }
@@ -169,13 +192,24 @@ public:
     // Parcel covering a world-metre point, or nullptr if outside the region.
     const Parcel* parcel_at(float x, float y) const;
 
-    // Parcel owning a 4 m cell (cell_x/cell_y in [0, edge_cells)), or nullptr.
+    // Parcel owning a 4 m cell (cell_x in [0, cells_x), cell_y in [0, cells_y)),
+    // or nullptr.
     const Parcel* parcel_at_cell(int cell_x, int cell_y) const;
 
-    // Per-cell ParcelOverlay bytes (row-major, x inner) coloured from the point of
-    // view of `agent`, with west/south parcel and region-edge borders marked.
+    // Per-cell ParcelOverlay bytes for the whole region (cells_x * cells_y,
+    // row-major, x inner) coloured from the point of view of `agent`, with
+    // west/south parcel and region-edge borders marked.
     std::vector<std::uint8_t> overlay_for(std::string_view agent,
                                           std::string_view region_owner) const;
+
+    // The overlay bytes for one square window (a facet, ADR 0036): cell origin
+    // (cell_x0, cell_y0), window_cells per side, row-major x-inner. Borders are
+    // computed against the full parcel grid, so an internal facet edge shows a
+    // border only where a parcel line actually lies on it.
+    std::vector<std::uint8_t> overlay_window_for(std::string_view agent,
+                                                 std::string_view region_owner,
+                                                 int cell_x0, int cell_y0,
+                                                 int window_cells) const;
 
     // The single parcel covering an entire (west,south,east,north) metre rectangle,
     // or nullptr when the rectangle spans more than one parcel or lies outside.
@@ -193,20 +227,38 @@ public:
     std::optional<std::int32_t> join(float west, float south, float east, float north,
                                      std::string_view owner_id);
 
-    // Bit helpers on a packed bitmap of the given edge size.
-    static bool bit_get(const std::vector<std::uint8_t>& bitmap, int edge_cells,
+    // Bit helpers on a packed bitmap of the given grid size (row-major, x inner).
+    static bool bit_get(const std::vector<std::uint8_t>& bitmap, int cells_x, int cells_y,
                         int cell_x, int cell_y);
+    static void bit_set(std::vector<std::uint8_t>& bitmap, int cells_x, int cells_y,
+                        int cell_x, int cell_y, bool value);
+    static std::vector<std::uint8_t> full_bitmap(int cells_x, int cells_y);
+    static std::vector<std::uint8_t> rectangle_bitmap(int cells_x, int cells_y, int west,
+                                                      int south, int east, int north);
+    // Square conveniences.
+    static bool bit_get(const std::vector<std::uint8_t>& bitmap, int edge_cells,
+                        int cell_x, int cell_y) {
+        return bit_get(bitmap, edge_cells, edge_cells, cell_x, cell_y);
+    }
     static void bit_set(std::vector<std::uint8_t>& bitmap, int edge_cells, int cell_x,
-                        int cell_y, bool value);
-    static std::vector<std::uint8_t> full_bitmap(int edge_cells);
+                        int cell_y, bool value) {
+        bit_set(bitmap, edge_cells, edge_cells, cell_x, cell_y, value);
+    }
+    static std::vector<std::uint8_t> full_bitmap(int edge_cells) {
+        return full_bitmap(edge_cells, edge_cells);
+    }
     static std::vector<std::uint8_t> rectangle_bitmap(int edge_cells, int west, int south,
-                                                      int east, int north);
+                                                      int east, int north) {
+        return rectangle_bitmap(edge_cells, edge_cells, west, south, east, north);
+    }
 
 private:
     std::int32_t next_local_id();
 
-    int region_size_{256};
-    int edge_cells_{64};
+    int region_size_x_{256};
+    int region_size_y_{256};
+    int cells_x_{64};
+    int cells_y_{64};
     std::int32_t last_local_id_{first_local_id - 1};
     std::vector<Parcel> parcels_;
 };

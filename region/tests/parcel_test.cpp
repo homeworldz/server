@@ -168,6 +168,111 @@ int main() {
         check((other_view[0] & 0x07) == overlay_owned_by_self, "carved parcel is self from other's view");
     }
 
+    // Rectangular region (ADR 0036): 1024 x 512 m -> 256 x 128 cells.
+    {
+        using namespace homeworldz::parcel;
+        const std::string owner = "22222222-2222-4222-8222-222222222222";
+        ParcelSet set(1024, 512, "11111111-1111-4111-8111-111111111111", owner, 1000);
+        check(set.region_size_x_metres() == 1024, "rect region x size is 1024 m");
+        check(set.region_size_y_metres() == 512, "rect region y size is 512 m");
+        check(set.region_size_metres() == 1024, "compat region size is the x size");
+        check(set.cells_x() == 256, "rect region has 256 cells in x");
+        check(set.cells_y() == 128, "rect region has 128 cells in y");
+        check(set.edge_cells() == 256, "compat edge_cells is cells_x");
+        check(set.bitmap_bytes() == (256 * 128 + 7) / 8, "rect bitmap is cells_x*cells_y bits");
+        check(set.parcels().size() == 1, "fresh rect region has one parcel");
+        const Parcel& whole = set.parcels().front();
+        check(whole.area(set.cells_x(), set.cells_y()) == 1024 * 512,
+              "default rect parcel covers the whole region");
+        check(set.parcel_at(1000.0F, 500.0F) == &whole, "far NE point resolves to parcel");
+        check(set.parcel_at(1000.0F, 520.0F) == nullptr, "point beyond y extent is outside");
+        check(set.parcel_at(1030.0F, 100.0F) == nullptr, "point beyond x extent is outside");
+        check(set.parcel_at_cell(255, 127) == &whole, "last cell resolves to parcel");
+        check(set.parcel_at_cell(255, 128) == nullptr, "cell beyond cells_y is null");
+        check(set.parcel_at_cell(128, 127) == &whole, "tall column cell resolves (no square clamp)");
+
+        // Divide a rectangle entirely beyond x = 512 m (the second facet's territory).
+        const auto carved = set.divide(640.0F, 128.0F, 768.0F, 256.0F,
+                                       "33333333-3333-4333-8333-333333333333",
+                                       "44444444-4444-4444-8444-444444444444", 2000);
+        check(carved.has_value(), "divide beyond x=512 succeeds");
+        const Parcel* east_parcel = carved ? set.find_by_local_id(*carved) : nullptr;
+        check(east_parcel != nullptr, "east parcel is findable");
+        check(east_parcel && east_parcel->area(set.cells_x(), set.cells_y()) == 128 * 128,
+              "east parcel is 128x128 m");
+        check(set.parcel_at(700.0F, 200.0F) == east_parcel, "point in east carve resolves");
+        check(set.parcel_at_cell(160, 32) == east_parcel, "cell in east carve resolves");
+        check(set.parcel_at_cell(159, 32) != east_parcel, "cell west of carve is not the carve");
+        int min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+        check(east_parcel &&
+                  east_parcel->cell_bounds(set.cells_x(), set.cells_y(), min_x, min_y, max_x,
+                                           max_y),
+              "east parcel has cell bounds");
+        check(min_x == 160 && min_y == 32 && max_x == 192 && max_y == 64,
+              "east parcel bounds are (160,32)-(192,64)");
+
+        // The full overlay covers the rectangular grid; a facet window matches its slice.
+        const auto full = set.overlay_for(owner, "");
+        check(static_cast<int>(full.size()) == set.cells_x() * set.cells_y(),
+              "rect overlay covers every cell");
+        const int window = 128; // one 512 m facet, in cells
+        const auto second = set.overlay_window_for(owner, "", window, 0, window);
+        check(static_cast<int>(second.size()) == window * window,
+              "facet window overlay is window_cells^2");
+        bool slice_matches = true;
+        for (int y = 0; y < window && slice_matches; ++y)
+            for (int x = 0; x < window; ++x)
+                if (second[static_cast<std::size_t>(y) * window + x] !=
+                    full[static_cast<std::size_t>(y) * set.cells_x() + (window + x)]) {
+                    slice_matches = false;
+                    break;
+                }
+        check(slice_matches, "facet window equals the corresponding overlay_for slice");
+    }
+
+    // Facet-edge borders (ADR 0036): a parcel line lying on the internal facet
+    // seam shows a border; the seam itself is not a region edge.
+    {
+        using namespace homeworldz::parcel;
+        const std::string owner = "22222222-2222-4222-8222-222222222222";
+        ParcelSet set(1024, 512, "11111111-1111-4111-8111-111111111111", owner, 1000);
+        // Carve everything east of x = 512 m into a second parcel: the parcel
+        // line lies exactly on the facet seam.
+        const auto carved = set.divide(512.0F, 0.0F, 1024.0F, 512.0F,
+                                       "33333333-3333-4333-8333-333333333333",
+                                       "44444444-4444-4444-8444-444444444444", 2000);
+        check(carved.has_value(), "carving the east half succeeds");
+
+        const int window = 128;
+        const auto second = set.overlay_window_for(owner, "", window, 0, window);
+        // Window cell x=0 is region cell x=128, immediately east of the parcel line.
+        check((second[0] & overlay_border_west) != 0,
+              "parcel line on the seam shows a west border in the second window");
+        check((second[0] & overlay_border_south) != 0,
+              "region south edge borders the second window's first row");
+        // A row off the south edge: still a west border (parcel line), no south border.
+        check((second[static_cast<std::size_t>(1) * window + 0] & overlay_border_west) != 0,
+              "west border continues up the parcel line");
+        check((second[static_cast<std::size_t>(1) * window + 0] & overlay_border_south) == 0,
+              "no south border inside the region interior");
+        // With no parcel line on the seam, the internal edge shows no border.
+        ParcelSet undivided(1024, 512, "11111111-1111-4111-8111-111111111111", owner, 1000);
+        const auto seam = undivided.overlay_window_for(owner, "", window, 1, window);
+        check((seam[0] & overlay_border_west) == 0,
+              "internal facet edge without a parcel line shows no west border");
+        check((seam[0] & overlay_border_south) == 0,
+              "region-edge borders do not appear on an interior window row");
+        // The true region west edge still borders the first window.
+        const auto first = undivided.overlay_window_for(owner, "", 0, 0, window);
+        check((first[0] & overlay_border_west) != 0, "region west edge borders the first window");
+        check((first[0] & overlay_border_south) != 0, "region south edge borders the first window");
+        // Square region: overlay_for and the whole-region window agree.
+        ParcelSet square(256, "11111111-1111-4111-8111-111111111111", owner, 0);
+        check(square.overlay_for(owner, "") ==
+                  square.overlay_window_for(owner, "", 0, 0, square.cells_x()),
+              "square overlay_for equals its whole-region window");
+    }
+
     if (failures != 0) {
         std::printf("%d parcel test check(s) failed\n", failures);
         return 1;

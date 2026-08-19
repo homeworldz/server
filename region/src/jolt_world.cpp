@@ -262,7 +262,10 @@ public:
         if (shape.HasError()) throw std::runtime_error(shape.GetError().c_str());
         const auto rotation = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90.0F));
         const JPH::RVec3 position{
-            0.0F, static_cast<float>(static_cast<double>(count - 1) * definition.spacing), 0.0F};
+            static_cast<float>(definition.origin.x),
+            static_cast<float>(static_cast<double>(count - 1) * definition.spacing +
+                               definition.origin.y),
+            static_cast<float>(definition.origin.z)};
         JPH::BodyCreationSettings settings(
             shape.Get(), position, rotation, JPH::EMotionType::Static, Layers::static_body);
         // The same ghost-contact remedy for bodies rather than characters: a
