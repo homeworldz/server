@@ -199,6 +199,9 @@ struct LiveAvatar {
     std::chrono::steady_clock::time_point last_agent_update{};
     std::uint32_t last_agent_update_sequence{};
     bool has_agent_update{};
+    // The viewer's walk/run gait, from SetAlwaysRun. False until the viewer
+    // says otherwise, which it does on arrival as well as on toggle.
+    bool always_run{};
     homeworldz::physics::CharacterId physics_character{};
     std::chrono::steady_clock::time_point restored_flying_until{};
     std::string outbound_transit_id;
@@ -11284,6 +11287,18 @@ int main(int argc, char* argv[]) {
                         }
                         const auto update = homeworldz::viewer::decode_agent_update(packet->payload);
                         const auto avatar = avatars.find(endpoint);
+                        const auto run_toggle =
+                            homeworldz::viewer::decode_set_always_run(packet->payload);
+                        if (run_toggle && avatar != avatars.end() &&
+                            run_toggle->agent_id == identity->agent_id &&
+                            run_toggle->session_id == identity->session_id &&
+                            avatar->second.always_run != run_toggle->always_run) {
+                            avatar->second.always_run = run_toggle->always_run;
+                            std::cout << "{\"level\":\"info\",\"message\":\"avatar run toggle\""
+                                         ",\"alwaysRun\":"
+                                      << (run_toggle->always_run ? "true" : "false")
+                                      << "}" << std::endl;
+                        }
                         if (update && avatar != avatars.end() && update->agent_id == identity->agent_id &&
                             update->session_id == identity->session_id &&
                             (!avatar->second.has_agent_update || sequence_is_newer(
@@ -11292,6 +11307,22 @@ int main(int argc, char* argv[]) {
                             const bool was_flying = avatar->second.controller.state().flying;
                             const bool grace_active = now < avatar->second.restored_flying_until;
                             auto accepted = *update;
+                            // The FAST control bits arrive on every ordinary
+                            // keypress - LLAgent::moveAt() sends AT_POS |
+                            // FAST_AT unconditionally - so from a viewer they
+                            // cannot mean "run". The gait arrives separately
+                            // as SetAlwaysRun (held on this avatar), and the
+                            // controller's fast bit is rewritten here to say
+                            // what that gait is. The session transport keeps
+                            // the bit's plain meaning: its clients set it only
+                            // when they intend to run.
+                            constexpr auto fast_bits =
+                                homeworldz::viewer::control_fast_forward |
+                                homeworldz::viewer::control_fast_left |
+                                homeworldz::viewer::control_fast_up;
+                            accepted.control_flags &= ~fast_bits;
+                            if (avatar->second.always_run)
+                                accepted.control_flags |= homeworldz::viewer::control_fast_forward;
                             if (grace_active && was_flying)
                                 accepted.control_flags |= homeworldz::viewer::control_fly;
                             avatar->second.controller.apply(accepted);

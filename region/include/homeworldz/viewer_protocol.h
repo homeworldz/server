@@ -926,6 +926,16 @@ struct AgentUpdate : AgentMessage {
     std::uint8_t flags{};
 };
 
+// SetAlwaysRun (Low 88): the viewer's walk/run gait, sent when the user
+// toggles running and again on every region arrival. This message - not the
+// FAST control bits - is how a viewer expresses running: LLAgent::moveAt()
+// sets FAST_AT alongside AT_POS on every ordinary keypress, so in AgentUpdate
+// those bits mean "full speed for my current gait" and this says which gait
+// that is.
+struct SetAlwaysRun : AgentMessage {
+    bool always_run{};
+};
+
 struct ModifyLandArea {
     std::int32_t local_id{};
     float west{};
@@ -1173,6 +1183,7 @@ std::optional<RequestImage> decode_request_image(std::span<const std::byte> payl
 std::vector<std::vector<std::byte>> encode_image_transfer(
     const Uuid& image_id, std::span<const std::byte> content, std::uint32_t start_packet = 0);
 std::optional<AgentUpdate> decode_agent_update(std::span<const std::byte> payload);
+std::optional<SetAlwaysRun> decode_set_always_run(std::span<const std::byte> payload);
 std::optional<ModifyLand> decode_modify_land(std::span<const std::byte> payload);
 std::optional<ParcelPropertiesRequest> decode_parcel_properties_request(
     std::span<const std::byte> payload);

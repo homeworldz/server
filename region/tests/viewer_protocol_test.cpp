@@ -911,9 +911,26 @@ bool agent_update_codec() {
     payload[108] = std::byte{0x00}; payload[109] = std::byte{0x43};
     payload[110] = std::byte{0x01}; payload[111] = std::byte{0x20};
     const auto update = decode_agent_update(payload);
-    return update && update->agent_id == *agent && update->session_id == *session &&
-           update->body_rotation[0] == 1.0F && update->camera_center[0] == 2.0F &&
-           update->draw_distance == 128.0F && update->control_flags == 0x2001;
+    if (!update || update->agent_id != *agent || update->session_id != *session ||
+        update->body_rotation[0] != 1.0F || update->camera_center[0] != 2.0F ||
+        update->draw_distance != 128.0F || update->control_flags != 0x2001)
+        return false;
+    // SetAlwaysRun, the gait beside the controls above.
+    auto gait = bytes({0xff, 0xff, 0x00, 0x58});
+    gait.insert(gait.end(), agent->begin(), agent->end());
+    gait.insert(gait.end(), session->begin(), session->end());
+    gait.push_back(std::byte{1});
+    const auto running = decode_set_always_run(gait);
+    if (!running || running->agent_id != *agent || running->session_id != *session ||
+        !running->always_run)
+        return false;
+    gait[36] = std::byte{0};
+    const auto walking = decode_set_always_run(gait);
+    if (!walking || walking->always_run) return false;
+    // Truncation is refused, and so is another Low message's id.
+    if (decode_set_always_run(std::span(gait).first(36))) return false;
+    gait[3] = std::byte{0x59};
+    return !decode_set_always_run(gait);
 }
 
 bool modify_land_codec() {

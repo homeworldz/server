@@ -2462,6 +2462,20 @@ std::optional<AgentUpdate> decode_agent_update(std::span<const std::byte> payloa
     return result;
 }
 
+// Low 88. AgentData only: agent, session, and the one bool.
+std::optional<SetAlwaysRun> decode_set_always_run(std::span<const std::byte> payload) {
+    constexpr std::array<std::byte, 4> message_id{
+        std::byte{0xff}, std::byte{0xff}, std::byte{0x00}, std::byte{0x58}};
+    if (payload.size() < 37 ||
+        !std::equal(message_id.begin(), message_id.end(), payload.begin()))
+        return std::nullopt;
+    SetAlwaysRun result;
+    std::copy_n(payload.begin() + 4, 16, result.agent_id.begin());
+    std::copy_n(payload.begin() + 20, 16, result.session_id.begin());
+    result.always_run = payload[36] != std::byte{0};
+    return result;
+}
+
 std::optional<ModifyLand> decode_modify_land(std::span<const std::byte> payload) {
     constexpr std::size_t fixed_size = 47;
     constexpr std::size_t area_size = 20;
