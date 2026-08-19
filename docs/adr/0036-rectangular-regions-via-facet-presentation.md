@@ -5,9 +5,16 @@ Status: Accepted
 This ADR records **current expectation and intent**, not a commitment, and is
 expected to be revised as evidence arrives.
 
-**Implementation state.** Nothing below is built. Regions today are square
-(1, 2, or 4 tiles per side, per [ADR 0024](0024-provisioned-region-identity.md))
-and are presented to viewers as single variable-size regions.
+**Implementation state (2026-08-19).** The grid half is built: rectangular
+provisioning under the shape rule, per-facet names and consecutive ports,
+and per-facet squares on every discovery surface (migration 33). The region
+half's core is built: per-facet sockets, facet-keyed circuits, rebased
+object/avatar/terrain/parcel encoding, per-facet physics fields, and the
+internal-line ceremony with circuit re-tag. Still open, all reachable only
+on a rectangle: inbound position rebasing (rez rays, multi-object edits,
+land edits, parcel request rectangles), per-facet chat positions,
+within-macro teleports across a facet line, the session transport's
+rectangular terrain descriptor — and live viewer acceptance.
 
 ## The problem
 

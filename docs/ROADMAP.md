@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="86" aria-label="Phase 2 progress: 86%">86%</progress> | 86% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="87" aria-label="Phase 2 progress: 87%">87%</progress> | 87% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -107,6 +107,10 @@ client.
 - [x] Complete 2x2 terrain editing, object persistence, map-idle, and restart acceptance in the live Beta Region.
 - [x] Repeat the full variable-size acceptance suite in a 4x4 Region.
 - [x] Prevent overlaps and invalid neighbor layouts and define behavior beside offline or differently sized regions.
+- [x] Provision rectangular regions ([ADR 0036](adr/0036-rectangular-regions-via-facet-presentation.md)): `size_x`/`size_y` under the facet shape rule, per-facet names and consecutive viewer ports, and one square facet per entry on every discovery surface — topology, lookup, neighbors, map, and login.
+- [x] Run a rectangular region as one macro simulation presented to viewers as square facets: per-facet sockets and handles, rebased object and terrain encoding, windowed parcel views and map blocks, per-facet collision fields, and an internal-line crossing ceremony that re-tags the circuit and moves nothing else.
+- [ ] Finish the rectangle-only seams: inbound position rebasing (rez rays, multi-object edits, land edits, parcel-request rectangles), per-facet chat positions, within-macro teleports across a facet line, and the session transport's rectangular terrain descriptor.
+- [ ] Complete live Firestorm acceptance of a provisioned rectangle, walked end to end across its internal facet line.
 
 ### Parcels and local authority
 
