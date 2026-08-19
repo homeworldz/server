@@ -877,6 +877,16 @@ std::optional<std::uint8_t> decode_complete_ping_check(std::span<const std::byte
     return std::to_integer<std::uint8_t>(payload[1]);
 }
 
+std::vector<std::byte> encode_disable_simulator() {
+    // DisableSimulator, Low 152 (0x98): no body. Tells a viewer to drop its
+    // connection to this simulator immediately instead of pinging a dead
+    // circuit for thirty seconds — sent on a facet's old endpoint when an
+    // internal crossing re-tags the circuit away from it (ADR 0036).
+    constexpr std::array<std::byte, 4> disable_simulator_id{
+        std::byte{0xff}, std::byte{0xff}, std::byte{0x00}, std::byte{0x98}};
+    return {disable_simulator_id.begin(), disable_simulator_id.end()};
+}
+
 std::vector<std::byte> encode_kick_user(const Uuid& agent_id, const Uuid& session_id,
                                         std::string_view reason) {
     std::vector<std::byte> output(kick_user_id.begin(), kick_user_id.end());
