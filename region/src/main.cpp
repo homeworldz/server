@@ -1372,24 +1372,29 @@ int main(int argc, char* argv[]) {
                 return false;
             }
             for (const auto& neighbor : *discovered) {
-				const auto source_size = region_size_x / 256;
-				const auto neighbor_size = neighbor.size_x / 256;
+				// Each axis has its own extent (ADR 0036): a 1x2 region's west
+				// side is two tiles tall, and a neighbor beside its second
+				// tile is as adjacent as one beside its first.
+				const auto source_size_x = region_size_x / 256;
+				const auto source_size_y = region_size_y / 256;
+				const auto neighbor_size_x = neighbor.size_x / 256;
+				const auto neighbor_size_y = neighbor.size_y / 256;
 				const auto overlaps = [](int first, int first_size, int second, int second_size) {
 					return first < second + second_size && second < first + first_size;
 				};
 				bool adjacent{};
 				if (neighbor.direction == "north")
-					adjacent = neighbor.grid_y == region_grid_y + source_size &&
-						overlaps(region_grid_x, source_size, neighbor.grid_x, neighbor_size);
+					adjacent = neighbor.grid_y == region_grid_y + source_size_y &&
+						overlaps(region_grid_x, source_size_x, neighbor.grid_x, neighbor_size_x);
 				else if (neighbor.direction == "east")
-					adjacent = neighbor.grid_x == region_grid_x + source_size &&
-						overlaps(region_grid_y, source_size, neighbor.grid_y, neighbor_size);
+					adjacent = neighbor.grid_x == region_grid_x + source_size_x &&
+						overlaps(region_grid_y, source_size_y, neighbor.grid_y, neighbor_size_y);
 				else if (neighbor.direction == "south")
-					adjacent = neighbor.grid_y + neighbor_size == region_grid_y &&
-						overlaps(region_grid_x, source_size, neighbor.grid_x, neighbor_size);
+					adjacent = neighbor.grid_y + neighbor_size_y == region_grid_y &&
+						overlaps(region_grid_x, source_size_x, neighbor.grid_x, neighbor_size_x);
 				else if (neighbor.direction == "west")
-					adjacent = neighbor.grid_x + neighbor_size == region_grid_x &&
-						overlaps(region_grid_y, source_size, neighbor.grid_y, neighbor_size);
+					adjacent = neighbor.grid_x + neighbor_size_x == region_grid_x &&
+						overlaps(region_grid_y, source_size_y, neighbor.grid_y, neighbor_size_y);
 				if (!adjacent) {
                     std::cerr << "{\"level\":\"" << (required ? "error" : "warning")
                               << "\",\"message\":\"invalid region neighbor topology\"}" << std::endl;
