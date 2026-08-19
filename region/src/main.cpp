@@ -12432,14 +12432,27 @@ int main(int argc, char* argv[]) {
                             static_cast<float>(macro_position.y - facet_origin_y(standing_facet)),
                             static_cast<float>(macro_position.z)};
                         const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
+                        const auto facet_seed = region_public_endpoint + "/caps/seed/" +
+                            session_id + "/" + homeworldz::viewer::random_uuid();
+                        // The full ceremony, in the order a viewer expects it:
+                        // EnableSimulator opens the child connection,
+                        // EstablishAgentCommunication hands it the sibling
+                        // facet's seed, and CrossedRegion promotes it. Without
+                        // the middle event the viewer stalls mid-crossing —
+                        // frozen controls, no CompleteAgentMovement, no
+                        // backfill (found live, 2026-08-19).
                         enqueue_viewer_event(session_id,
                             homeworldz::viewer::enable_simulator_event_xml(
                                 target_handle, *simulator, edge, edge));
                         enqueue_viewer_event(session_id,
+                            homeworldz::viewer::establish_agent_communication_event_xml({
+                                agent_id,
+                                simulator_endpoint(region_public_endpoint, target.viewer_port),
+                                facet_seed}));
+                        enqueue_viewer_event(session_id,
                             homeworldz::viewer::crossed_region_event_xml({
                                 agent_id, session_id, target_handle, *simulator,
-                                region_public_endpoint + "/caps/seed/" + session_id +
-                                    "/" + homeworldz::viewer::random_uuid(),
+                                facet_seed,
                                 facet_position, avatar.controller.look_direction(),
                                 edge, edge}));
                         avatar.next_crossing_attempt = now + std::chrono::seconds(2);
