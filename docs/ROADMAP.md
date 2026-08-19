@@ -109,6 +109,8 @@ client.
 - [x] Prevent overlaps and invalid neighbor layouts and define behavior beside offline or differently sized regions.
 - [x] Provision rectangular regions ([ADR 0036](adr/0036-rectangular-regions-via-facet-presentation.md)): `size_x`/`size_y` under the facet shape rule, per-facet names and consecutive viewer ports, and one square facet per entry on every discovery surface — topology, lookup, neighbors, map, and login.
 - [x] Run a rectangular region as one macro simulation presented to viewers as square facets: per-facet sockets and handles, rebased object and terrain encoding, windowed parcel views and map blocks, per-facet collision fields, and an internal-line crossing ceremony that re-tags the circuit and moves nothing else.
+- [x] Serve every facet through standing child circuits: one circuit per facet per viewer, established at arrival and backfilled at handshake, updates partitioned by the facet containing each object or avatar, an atomic kill-then-update when an entity crosses an internal line, and a crossing reduced to promoting a circuit that already exists.
+- [ ] Complete live acceptance of standing child circuits in Firestorm: sibling facets visible without crossing, promotion on crossing, partition changes while watched, and clean teardown at logout.
 - [ ] Finish the rectangle-only seams: inbound position rebasing (rez rays, multi-object edits, land edits, parcel-request rectangles), per-facet chat positions, within-macro teleports across a facet line, and the session transport's rectangular terrain descriptor.
 - [ ] Complete live Firestorm acceptance of a provisioned rectangle, walked end to end across its internal facet line.
 
