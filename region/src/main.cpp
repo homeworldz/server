@@ -543,32 +543,12 @@ std::string udp_endpoint(const sockaddr_in& address) {
     return std::string(ip.data()) + ':' + std::to_string(ntohs(address.sin_port));
 }
 
-// Facet-qualified endpoint keys (ADR 0036). A viewer talking to facet i > 0 is
-// keyed "ip:port/f<i>", so the circuit registry, the avatars map, and every
-// endpoint-keyed side map distinguish the same transport endpoint per facet
-// without knowing facets exist. Facet 0 keeps the bare "ip:port" form, which
-// makes a square region byte-identical to what it was before facets.
-std::string facet_endpoint_key(std::string endpoint, int facet) {
-    if (facet <= 0 || endpoint.empty()) return endpoint;
-    return endpoint + "/f" + std::to_string(facet);
-}
-
-// Which facet an endpoint key belongs to; 0 for a bare key.
-int endpoint_facet(std::string_view endpoint) {
-    const auto marker = endpoint.rfind("/f");
-    if (marker == std::string_view::npos) return 0;
-    int facet{};
-    const auto text = endpoint.substr(marker + 2);
-    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), facet);
-    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || facet < 0) return 0;
-    return facet;
-}
-
-// The transport half of an endpoint key: "ip:port" with any facet suffix gone.
-std::string_view endpoint_transport(std::string_view endpoint) {
-    const auto marker = endpoint.rfind("/f");
-    return marker == std::string_view::npos ? endpoint : endpoint.substr(0, marker);
-}
+// Facet-qualified endpoint keys (ADR 0036) live in the viewer protocol library
+// now that CircuitRegistry partitions eviction by facet with them; main uses
+// them by their old unqualified names.
+using homeworldz::viewer::facet_endpoint_key;
+using homeworldz::viewer::endpoint_facet;
+using homeworldz::viewer::endpoint_transport;
 
 // The viewer sockets, one per facet, in facet order; filled by main once the
 // registration reply names the facets. File scope so send_udp can route a
@@ -2695,6 +2675,7 @@ int main(int argc, char* argv[]) {
     std::unordered_map<homeworldz::scene::EntityId, std::chrono::steady_clock::time_point>
         object_clean_since;
     auto next_dynamic_sync = previous_tick;
+    auto next_partition_sweep = previous_tick;
 
     const auto server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (server == invalid_socket) return 1;
@@ -2820,6 +2801,10 @@ int main(int argc, char* argv[]) {
     std::unordered_map<std::string,
         std::unordered_map<homeworldz::scene::EntityId, SentDynamicTransform>>
         sent_dynamic_transforms;
+    // Each entity's last known containing facet (ADR 0036): the partition
+    // sweep compares against this to emit the atomic kill-then-update when a
+    // root crosses an internal line. Never populated on a square region.
+    std::unordered_map<homeworldz::scene::EntityId, int> entity_last_facets;
     std::unordered_map<homeworldz::scene::EntityId, std::chrono::steady_clock::time_point>
         temporary_expirations;
     std::unordered_map<std::string, std::deque<std::string>> queued_viewer_events;
@@ -3030,6 +3015,23 @@ int main(int argc, char* argv[]) {
         }
         return homeworldz::session::encode_envelope("kill", {}, "{\"ids\":[" + list + "]}");
     };
+    // Every circuit a viewer holds (ADR 0036) — the primary plus any facet
+    // children. A square region yields exactly the primary. For removals: a
+    // KillObject is routed to whichever circuit knew the object, and an id a
+    // circuit never carried is ignored by the viewer, so a kill may fan out to
+    // all of them.
+    const auto for_each_viewer_circuit = [&](std::string_view recipient_endpoint,
+                                             auto&& deliver) {
+        if (facet_count <= 1) {
+            deliver(std::string(recipient_endpoint));
+            return;
+        }
+        const std::string transport(endpoint_transport(recipient_endpoint));
+        for (int facet = 0; facet < facet_count; ++facet) {
+            auto key = facet_endpoint_key(transport, facet);
+            if (circuits.identity(key)) deliver(std::move(key));
+        }
+    };
     // An attachment is an ordinary scene entity parented to its wearer's avatar
     // entity, with a non-zero attachment_point. Taking one off has to reach both
     // viewers and sessions, and it happens from three places: wearing something
@@ -3049,8 +3051,10 @@ int main(int argc, char* argv[]) {
         const auto kill = homeworldz::viewer::encode_kill_object(killed);
         for (const auto& [recipient_endpoint, recipient] : avatars) {
             static_cast<void>(recipient);
-            if (const auto outgoing = circuits.send(recipient_endpoint, kill, true, when))
-                static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+            for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                if (const auto outgoing = circuits.send(route, kill, true, when))
+                    static_cast<void>(send_udp(viewer_server, route, *outgoing));
+            });
         }
         deliver_to_embodied(session_kill_many(killed));
         return killed;
@@ -3081,8 +3085,10 @@ int main(int argc, char* argv[]) {
         for (const auto& [recipient_endpoint, recipient] : avatars) {
             static_cast<void>(recipient);
             if (recipient_endpoint == participant_key) continue;
-            if (const auto outgoing = circuits.send(recipient_endpoint, kill, true, kill_now, true))
-                static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+            for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                if (const auto outgoing = circuits.send(route, kill, true, kill_now, true))
+                    static_cast<void>(send_udp(viewer_server, route, *outgoing));
+            });
         }
         if (physics_world && found->second.physics_character != 0)
             physics_world->remove_character(found->second.physics_character);
@@ -3152,18 +3158,61 @@ int main(int argc, char* argv[]) {
         return homeworldz::viewer::encode_avatar_object_update(
             facet_handle(facet), local_id, agent_id, position, velocity, rotation);
     };
-    const auto broadcast_object_update = [&](const homeworldz::scene::Entity& entity,
-                                             std::chrono::steady_clock::time_point when) {
+    // Which facet an entity's world presence belongs to (ADR 0036): a root by
+    // its own macro position, a linkset child by its root's, an attachment by
+    // its wearer's — the wearer's live controller position, since the scene
+    // entity for an avatar can lag a tick behind where it stands.
+    const auto entity_facet = [&](const homeworldz::scene::Entity& entity) {
+        const auto* root = &entity;
+        while (root->parent_id != 0) {
+            const auto* parent = scene.find(root->parent_id);
+            if (!parent) break;
+            root = parent;
+        }
+        for (const auto& [live_endpoint, live] : avatars) {
+            static_cast<void>(live_endpoint);
+            if (live.entity_id != root->id) continue;
+            const auto& standing = live.controller.state().position;
+            return facet_of_position(standing.x, standing.y);
+        }
+        return facet_of_position(root->position.x, root->position.y);
+    };
+    // The circuit that carries facet `facet` to the viewer whose avatar is
+    // keyed `recipient_endpoint`: the primary when the avatar stands there, a
+    // child circuit otherwise, empty when the viewer holds no circuit on that
+    // facet (ADR 0036's partition rule — skip such viewers). On a square
+    // region this is always the recipient's own key.
+    const auto facet_route_for = [&](std::string_view recipient_endpoint,
+                                     int facet) -> std::string {
+        if (facet_count <= 1) return std::string(recipient_endpoint);
+        auto key = facet_endpoint_key(
+            std::string(endpoint_transport(recipient_endpoint)), facet);
+        if (!circuits.identity(key)) return {};
+        return key;
+    };
+    // The partitioned form of "tell every viewer about this entity" (ADR
+    // 0036): ObjectUpdate on each viewer's circuit for the entity's facet —
+    // primary or child — skipping viewers without one. Viewer wire only;
+    // session delivery stays with the callers, whose batching differs.
+    const auto send_entity_update = [&](const homeworldz::scene::Entity& entity,
+                                        std::chrono::steady_clock::time_point when) {
+        const auto facet = entity_facet(entity);
         for (const auto& [recipient_endpoint, recipient] : avatars) {
+            const auto route = facet_route_for(recipient_endpoint, facet);
+            if (route.empty()) continue;
             const auto object =
                 static_object_from_entity(scene, entity, recipient.user_id, falcon);
             if (!object) continue;
             if (const auto sent = circuits.send(
-                    recipient_endpoint,
-                    object_update_for(recipient_endpoint, *object),
+                    route,
+                    object_update_for(route, *object),
                     true, when, true))
-                static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
+                static_cast<void>(send_udp(viewer_server, route, *sent));
         }
+    };
+    const auto broadcast_object_update = [&](const homeworldz::scene::Entity& entity,
+                                             std::chrono::steady_clock::time_point when) {
+        send_entity_update(entity, when);
         if (session_object_visible(entity)) deliver_to_embodied(session_object_envelope(entity));
     };
     // The outcome of one wear. `refused` is empty only when the object is on,
@@ -3431,11 +3480,15 @@ int main(int argc, char* argv[]) {
             for (const auto& [recipient_endpoint, recipient] : avatars) {
                 static_cast<void>(recipient);
                 if (recipient_endpoint == endpoint) continue;
-                if (const auto outgoing = circuits.send(
-                        recipient_endpoint, kill, true, kill_now, true)) {
-                    static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
-                    ++kill_recipients;
-                }
+                bool killed_any = false;
+                for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                    if (const auto outgoing = circuits.send(
+                            route, kill, true, kill_now, true)) {
+                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                        killed_any = true;
+                    }
+                });
+                if (killed_any) ++kill_recipients;
             }
             std::cout << "{\"level\":\"info\",\"message\":\"avatar departure kill broadcast\","
                          "\"localId\":" << kill_ids[0] << ",\"recipients\":" << kill_recipients
@@ -3499,6 +3552,23 @@ int main(int argc, char* argv[]) {
             close_socket(pending.client);
             return true;
         });
+        // A departing viewer's child circuits go with it (ADR 0036): each is
+        // removed from the registry and told DisableSimulator, or it lingers
+        // in the viewer as a dead neighbor until its ping timeout. Children
+        // carry no avatar state of their own — the erasures above covered
+        // everything keyed by the primary.
+        if (facet_count > 1) {
+            const std::string transport(endpoint_transport(endpoint));
+            for (int facet = 0; facet < facet_count; ++facet) {
+                const auto key = facet_endpoint_key(transport, facet);
+                if (key == endpoint || !circuits.identity(key)) continue;
+                homeworldz::viewer::Packet disable_packet;
+                disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
+                static_cast<void>(send_udp(viewer_server, key,
+                    homeworldz::viewer::encode_packet(disable_packet)));
+                static_cast<void>(circuits.remove(key));
+            }
+        }
     };
 
     // Re-key a viewer from one facet's endpoint to another's (ADR 0036). An
@@ -3571,6 +3641,35 @@ int main(int argc, char* argv[]) {
     const auto enqueue_viewer_event = [&](const std::string& session_id, std::string event) {
         queued_viewer_events[session_id].push_back(std::move(event));
         flush_pending_viewer_events(session_id);
+    };
+
+    // The connection half of the facet ceremony (ADR 0036): EnableSimulator
+    // opens the viewer's child connection to a sibling facet and
+    // EstablishAgentCommunication hands it that facet's seed. Used standing at
+    // arrival — every sibling becomes a live child circuit — and by the
+    // crossing, which promotes the connection with CrossedRegion carrying the
+    // same seed. Returns that seed; nullopt when the facet's simulator
+    // endpoint does not resolve (the events are then withheld entirely — a
+    // half-ceremony stalls the viewer).
+    const auto enqueue_facet_child_events = [&](const std::string& session_id,
+                                                const std::string& agent_id,
+                                                int facet) -> std::optional<std::string> {
+        const auto& target = region_facets[static_cast<std::size_t>(facet)];
+        const auto simulator = simulator_event_endpoint(
+            region_public_endpoint, target.viewer_port);
+        if (!simulator) return std::nullopt;
+        const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
+        auto facet_seed = region_public_endpoint + "/caps/seed/" + session_id + "/" +
+            homeworldz::viewer::random_uuid();
+        enqueue_viewer_event(session_id,
+            homeworldz::viewer::enable_simulator_event_xml(
+                facet_handle(facet), *simulator, edge, edge));
+        enqueue_viewer_event(session_id,
+            homeworldz::viewer::establish_agent_communication_event_xml({
+                agent_id,
+                simulator_endpoint(region_public_endpoint, target.viewer_port),
+                facet_seed}));
+        return facet_seed;
     };
 
     // Estate owner/manager check: the estate owner and any listed manager (and the
@@ -3877,10 +3976,116 @@ int main(int argc, char* argv[]) {
             if (const auto outgoing = circuits.send(viewer_endpoint, std::move(packet), true, when, true))
                 static_cast<void>(send_udp(viewer_server, viewer_endpoint, *outgoing));
     };
-    // Refresh parcel boundaries for every connected viewer after a land change.
+    // Refresh parcel boundaries for every connected viewer after a land
+    // change — on every circuit each viewer holds, since each facet's overlay
+    // is its own window (ADR 0036).
     const auto broadcast_parcel_overlay = [&](std::chrono::steady_clock::time_point when) {
         for (const auto& [recipient_endpoint, recipient] : avatars)
-            send_parcel_overlay(recipient_endpoint, recipient.user_id, when);
+            for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                send_parcel_overlay(route, recipient.user_id, when);
+            });
+    };
+    // One facet's window of the macro heightmap (ADR 0036) — the whole map
+    // when the region is square — on the given circuit. The facet is the
+    // endpoint key's own.
+    const auto send_facet_terrain_window = [&](const std::string& viewer_endpoint,
+                                               std::chrono::steady_clock::time_point when) {
+        const auto facet = endpoint_facet_of(viewer_endpoint);
+        const auto terrain_window_x = static_cast<std::size_t>(facet_origin_x(facet));
+        const auto terrain_window_y = static_cast<std::size_t>(facet_origin_y(facet));
+        const auto facet_patches_per_axis =
+            static_cast<std::size_t>(facet_edge_metres) / 16;
+        constexpr std::size_t terrain_patches_per_packet = 16;
+        for (std::size_t y = 0; y < facet_patches_per_axis; ++y)
+            for (std::size_t first_x = 0; first_x < facet_patches_per_axis;
+                 first_x += terrain_patches_per_packet) {
+                std::array<homeworldz::viewer::TerrainPatch,
+                    terrain_patches_per_packet> row{};
+                const auto count = (std::min)(terrain_patches_per_packet,
+                    facet_patches_per_axis - first_x);
+                for (std::size_t index = 0; index < count; ++index)
+                    row[index] = {
+                        static_cast<std::uint8_t>(first_x + index),
+                        static_cast<std::uint8_t>(y)};
+                const auto terrain_payload = homeworldz::viewer::encode_terrain_window(
+                    std::span<const homeworldz::viewer::TerrainPatch>(
+                        row.data(), count), *terrain_heightmap,
+                    terrain_width, terrain_height,
+                    terrain_window_x, terrain_window_y,
+                    static_cast<std::size_t>(facet_edge_metres));
+                if (const auto terrain = circuits.send(
+                        viewer_endpoint, terrain_payload, true, when))
+                    static_cast<void>(send_udp(viewer_server, viewer_endpoint, *terrain));
+            }
+    };
+    // A child circuit's backfill (ADR 0036): a UseCircuitCode arriving on a
+    // facet key that has no avatar, while the same session's avatar lives
+    // under another key of the same transport, is a standing child being
+    // established. Fill it with its own facet's world — terrain window,
+    // parcel overlay, and the objects and avatars that live in that facet —
+    // each in facet-local coordinates. The viewer's own avatar is excluded:
+    // its object belongs to the primary circuit alone.
+    const auto backfill_child_circuit = [&](const std::string& child_endpoint,
+                                            const homeworldz::viewer::UseCircuitCode& identity,
+                                            const std::string& viewer_user_id,
+                                            std::chrono::steady_clock::time_point when) {
+        const auto facet = endpoint_facet_of(child_endpoint);
+        const auto session_id = homeworldz::viewer::format_uuid(identity.session_id);
+        send_facet_terrain_window(child_endpoint, when);
+        send_parcel_overlay(child_endpoint,
+            homeworldz::viewer::format_uuid(identity.agent_id), when);
+        std::size_t objects_sent = 0;
+        for (const auto& [entity_id, entity] : scene.entities()) {
+            static_cast<void>(entity_id);
+            if (entity_facet(entity) != facet) continue;
+            const auto object = static_object_from_entity(scene, entity, viewer_user_id, falcon);
+            if (!object) continue;
+            if (const auto sent = circuits.send(child_endpoint,
+                    object_update_for(child_endpoint, *object), true, when, true)) {
+                static_cast<void>(send_udp(viewer_server, child_endpoint, *sent));
+                ++objects_sent;
+            }
+        }
+        std::size_t avatars_sent = 0;
+        for (const auto& [other_endpoint, other] : avatars) {
+            if (other.session_id == session_id) continue;
+            const auto& standing = other.controller.state().position;
+            if (facet_of_position(standing.x, standing.y) != facet) continue;
+            const auto other_id = homeworldz::viewer::parse_uuid(other.user_id);
+            if (!other_id) continue;
+            const auto viewer_position = other.controller.viewer_position();
+            const auto& state = other.controller.state();
+            const auto update = avatar_update_for(child_endpoint,
+                static_cast<std::uint32_t>(other.entity_id), *other_id,
+                {static_cast<float>(viewer_position.x),
+                 static_cast<float>(viewer_position.y),
+                 static_cast<float>(viewer_position.z)},
+                {static_cast<float>(state.velocity.x),
+                 static_cast<float>(state.velocity.y),
+                 static_cast<float>(state.velocity.z)},
+                state.rotation);
+            if (const auto sent = circuits.send(child_endpoint, update, true, when, true)) {
+                static_cast<void>(send_udp(viewer_server, child_endpoint, *sent));
+                ++avatars_sent;
+            }
+            if (const auto seeded = avatar_appearances.find(other_endpoint);
+                seeded != avatar_appearances.end()) {
+                const auto appearance = homeworldz::viewer::encode_avatar_appearance({
+                    seeded->second.agent_id, seeded->second.serial,
+                    seeded->second.texture_entry, seeded->second.visual_params,
+                    {}, seeded->second.appearance_version});
+                if (!appearance.empty())
+                    if (const auto dressed = circuits.send(
+                            child_endpoint, appearance, true, when, true))
+                        static_cast<void>(send_udp(viewer_server, child_endpoint, *dressed));
+            }
+        }
+        std::cout << "{\"level\":\"info\",\"message\":\"facet child circuit backfilled\""
+                     ",\"endpoint\":" << homeworldz::api::json_string(child_endpoint)
+                  << ",\"facet\":" << facet
+                  << ",\"objects\":" << objects_sent
+                  << ",\"avatars\":" << avatars_sent
+                  << "}" << std::endl;
     };
     // Return one root object (and its linkset) to its owner's inventory: serialize
     // the linkset, store and register the asset, create an object item in the
@@ -6518,6 +6723,25 @@ int main(int argc, char* argv[]) {
                     if (identity && homeworldz::viewer::decode_use_circuit_code(packet->payload)) {
                         handshake_replies.erase(endpoint);
                         static_cast<void>(send_region_handshake(endpoint, identity->agent_id));
+                        // A child circuit coming up (ADR 0036): this facet key
+                        // holds no avatar, but the same session stands on
+                        // another facet of the same transport. Before the
+                        // relaxed eviction this state was unreachable.
+                        if (facet_count > 1 && !avatars.contains(endpoint)) {
+                            const auto session_id =
+                                homeworldz::viewer::format_uuid(identity->session_id);
+                            const auto transport = endpoint_transport(endpoint);
+                            std::string primary_user;
+                            for (const auto& [live_endpoint, live] : avatars) {
+                                if (live.session_id != session_id ||
+                                    endpoint_transport(live_endpoint) != transport)
+                                    continue;
+                                primary_user = live.user_id;
+                                break;
+                            }
+                            if (!primary_user.empty())
+                                backfill_child_circuit(endpoint, *identity, primary_user, now);
+                        }
                     } else if (identity) {
                         if (const auto ping_id = homeworldz::viewer::decode_start_ping_check(packet->payload)) {
                             if (const auto pong = circuits.send(endpoint,
@@ -6903,10 +7127,13 @@ int main(int argc, char* argv[]) {
                                     deliver_to_embodied(session_kill_many(removed_ids));
                                     for (const auto& [recipient_endpoint, recipient] : avatars) {
                                         static_cast<void>(recipient);
-                                        if (const auto outgoing = circuits.send(
-                                                recipient_endpoint, kill, true, now))
-                                            static_cast<void>(send_udp(
-                                                viewer_server, recipient_endpoint, *outgoing));
+                                        for_each_viewer_circuit(recipient_endpoint,
+                                            [&](const std::string& route) {
+                                                if (const auto outgoing = circuits.send(
+                                                        route, kill, true, now))
+                                                    static_cast<void>(send_udp(
+                                                        viewer_server, route, *outgoing));
+                                            });
                                     }
                                     std::cout << "{\"level\":\"info\",\"message\":\"parcel objects returned\","
                                                  "\"parcel\":" << ret->local_id << ",\"removed\":"
@@ -9469,6 +9696,32 @@ int main(int argc, char* argv[]) {
                             response.timestamp = static_cast<std::uint32_t>(
                                 std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
                             response.channel_version = "Homeworldz " + region_version;
+                            // The primary swap of an internal facet crossing
+                            // (ADR 0036): with standing child circuits nothing
+                            // is evicted when the viewer connects to a sibling
+                            // socket, so CompleteAgentMovement is where the
+                            // move shows — the avatar this session keeps under
+                            // another facet key of the same transport migrates
+                            // here. The old key's circuit lives on as a child;
+                            // no DisableSimulator, no teardown.
+                            if (facet_count > 1 && !avatars.contains(endpoint)) {
+                                const auto transport = endpoint_transport(endpoint);
+                                std::string previous_key;
+                                for (const auto& [live_endpoint, live] : avatars) {
+                                    if (live.session_id != session_id ||
+                                        endpoint_transport(live_endpoint) != transport)
+                                        continue;
+                                    previous_key = live_endpoint;
+                                    break;
+                                }
+                                if (!previous_key.empty()) {
+                                    migrate_viewer_endpoint(previous_key, endpoint, session_id);
+                                    std::cout << "{\"level\":\"info\",\"message\":\"viewer primary circuit promoted\""
+                                                 ",\"from\":" << homeworldz::api::json_string(previous_key)
+                                              << ",\"to\":" << homeworldz::api::json_string(endpoint)
+                                              << "}" << std::endl;
+                                }
+                            }
                             if (!avatars.contains(endpoint)) {
                                 const auto name = agent_id;
                                 homeworldz::scene::EntityId entity{};
@@ -9605,15 +9858,30 @@ int main(int argc, char* argv[]) {
                                 static_cast<float>(initial_viewer_position.y),
                                 static_cast<float>(initial_viewer_position.z)};
                             for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                const auto new_avatar_update = avatar_update_for(
-                                    recipient_endpoint,
-                                    static_cast<std::uint32_t>(live_avatar.entity_id),
-                                    identity->agent_id, avatar_position);
-                                if (const auto avatar = circuits.send(
-                                        recipient_endpoint, new_avatar_update, true, now, true))
-                                    static_cast<void>(send_udp(
-                                        viewer_server, recipient_endpoint, *avatar));
+                                // The arriving avatar is announced on each
+                                // recipient's circuit for the facet it stands
+                                // on (ADR 0036) — its own facet, primary or a
+                                // recipient's child.
+                                const auto announce_route =
+                                    facet_route_for(recipient_endpoint, arrival_facet);
+                                if (!announce_route.empty()) {
+                                    const auto new_avatar_update = avatar_update_for(
+                                        announce_route,
+                                        static_cast<std::uint32_t>(live_avatar.entity_id),
+                                        identity->agent_id, avatar_position);
+                                    if (const auto avatar = circuits.send(
+                                            announce_route, new_avatar_update, true, now, true))
+                                        static_cast<void>(send_udp(
+                                            viewer_server, announce_route, *avatar));
+                                }
                                 if (recipient_endpoint == endpoint) continue;
+                                // Existing avatars standing on the arrival
+                                // facet, on the joiner's new circuit; those on
+                                // sibling facets arrive with each child
+                                // circuit's own backfill.
+                                const auto& recipient_standing = recipient.controller.state().position;
+                                if (facet_of_position(recipient_standing.x, recipient_standing.y) !=
+                                    arrival_facet) continue;
                                 const auto recipient_position = recipient.controller.viewer_position();
                                 const auto recipient_id =
                                     homeworldz::viewer::parse_uuid(recipient.user_id);
@@ -9749,36 +10017,13 @@ int main(int argc, char* argv[]) {
                             // The arriving viewer gets its facet's window of
                             // the macro heightmap (ADR 0036) — the whole map,
                             // when the region is square.
-                            const auto terrain_window_x =
-                                static_cast<std::size_t>(facet_origin_x(arrival_facet));
-                            const auto terrain_window_y =
-                                static_cast<std::size_t>(facet_origin_y(arrival_facet));
-                            const auto facet_patches_per_axis =
-                                static_cast<std::size_t>(facet_edge_metres) / 16;
-                            constexpr std::size_t terrain_patches_per_packet = 16;
-                            for (std::size_t y = 0; y < facet_patches_per_axis; ++y)
-                                for (std::size_t first_x = 0; first_x < facet_patches_per_axis;
-                                     first_x += terrain_patches_per_packet) {
-                                    std::array<homeworldz::viewer::TerrainPatch,
-                                        terrain_patches_per_packet> row{};
-                                    const auto count = (std::min)(terrain_patches_per_packet,
-                                        facet_patches_per_axis - first_x);
-                                    for (std::size_t index = 0; index < count; ++index)
-                                        row[index] = {
-                                            static_cast<std::uint8_t>(first_x + index),
-                                            static_cast<std::uint8_t>(y)};
-                                    const auto terrain_payload = homeworldz::viewer::encode_terrain_window(
-                                        std::span<const homeworldz::viewer::TerrainPatch>(
-                                            row.data(), count), *terrain_heightmap,
-                                        terrain_width, terrain_height,
-                                        terrain_window_x, terrain_window_y,
-                                        static_cast<std::size_t>(facet_edge_metres));
-                                    if (const auto terrain = circuits.send(
-                                            endpoint, terrain_payload, true, now))
-                                        static_cast<void>(send_udp(viewer_server, endpoint, *terrain));
-                                }
+                            send_facet_terrain_window(endpoint, now);
+                            // And its facet's objects: entities on sibling
+                            // facets belong to the child circuits (the ADR's
+                            // partition rule) and ride each child's backfill.
                             for (const auto& [entity_id, entity] : scene.entities()) {
                                 static_cast<void>(entity_id);
+                                if (entity_facet(entity) != arrival_facet) continue;
                                 const auto restored_object = static_object_from_entity(scene, entity, live_avatar.user_id, falcon);
                                 if (!restored_object) continue;
                                 if (const auto object = circuits.send(endpoint,
@@ -9823,6 +10068,29 @@ int main(int argc, char* argv[]) {
                                         homeworldz::viewer::encode_chat_from_simulator(welcome),
                                         true, now, true))
                                     static_cast<void>(send_udp(viewer_server, endpoint, *sent));
+                            }
+                            // Standing child circuits (ADR 0036): every sibling
+                            // facet is enabled and established now, at arrival,
+                            // so the viewer sees into all of them without
+                            // crossing first. A sibling the viewer already
+                            // holds a circuit on (a crossing's re-arrival) is
+                            // left alone. Squares have no siblings.
+                            if (facet_count > 1) {
+                                const std::string transport(endpoint_transport(endpoint));
+                                int offered = 0;
+                                for (int sibling = 0; sibling < facet_count; ++sibling) {
+                                    if (sibling == arrival_facet) continue;
+                                    if (circuits.identity(facet_endpoint_key(transport, sibling)))
+                                        continue;
+                                    if (enqueue_facet_child_events(session_id, agent_id, sibling))
+                                        ++offered;
+                                }
+                                if (offered != 0)
+                                    std::cout << "{\"level\":\"info\",\"message\":\"facet child circuits offered\""
+                                                 ",\"arrivalFacet\":" << arrival_facet
+                                              << ",\"offered\":" << offered
+                                              << ",\"agent\":" << homeworldz::api::json_string(agent_id)
+                                              << "}" << std::endl;
                             }
                         }
                         const auto object_link = homeworldz::viewer::decode_object_link(packet->payload);
@@ -9869,28 +10137,14 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                             if (valid) {
-                                const auto region_handle =
-                                    (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                    static_cast<std::uint32_t>(region_grid_y * 256);
                                 synchronize_physics_object(*root);
                                 std::vector<homeworldz::scene::EntityId> updates{root->id};
                                 updates.insert(updates.end(), changed.begin(), changed.end());
-                                for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                    for (const auto entity_id : updates) {
-                                        const auto* entity = scene.find(entity_id);
-                                        const auto object = entity
-                                            ? static_object_from_entity(scene, *entity, recipient.user_id, falcon) : std::nullopt;
-                                        if (!object) continue;
-                                        if (const auto sent = circuits.send(recipient_endpoint,
-                                                object_update_for(recipient_endpoint, *object), true, now, true))
-                                            static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
-                                    }
-                                }
-                                // And to session clients. Separate pass rather than a line inside
-                                // the loop above: that one is nested avatars-then-entities, so the
-                                // inner body runs once per recipient and would send each entity to
-                                // every session client as many times as there are viewers present.
-                                // See the note at multiple_object_update.
+                                for (const auto entity_id : updates)
+                                    if (const auto* entity = scene.find(entity_id))
+                                        send_entity_update(*entity, now);
+                                // And to session clients. Separate pass — see
+                                // the note at multiple_object_update.
                                 for (const auto entity_id : updates)
                                     if (const auto* entity = scene.find(entity_id);
                                         entity && session_object_visible(*entity))
@@ -9933,9 +10187,6 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                             if (persisted) {
-                                const auto region_handle =
-                                    (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                    static_cast<std::uint32_t>(region_grid_y * 256);
                                 for (const auto root_id : affected_roots)
                                     if (const auto* root = scene.find(root_id))
                                         synchronize_physics_object(*root);
@@ -9943,13 +10194,7 @@ int main(int argc, char* argv[]) {
                                     const auto* entity = scene.find(entity_id);
                                     if (!entity) continue;
                                     synchronize_physics_object(*entity);
-                                    for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                        const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                        if (!object) continue;
-                                        if (const auto sent = circuits.send(recipient_endpoint,
-                                                object_update_for(recipient_endpoint, *object), true, now, true))
-                                            static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
-                                    }
+                                    send_entity_update(*entity, now);
                                     if (session_object_visible(*entity))
                                         deliver_to_embodied(session_object_envelope(*entity));
                                 }
@@ -10290,20 +10535,11 @@ int main(int argc, char* argv[]) {
                                               << homeworldz::api::json_string(error.what()) << "}" << std::endl;
                                 }
                             }
-                            const auto region_handle =
-                                (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                static_cast<std::uint32_t>(region_grid_y * 256);
                             for (const auto entity_id : requested_entities) {
                                 const auto* entity = scene.find(entity_id);
                                 if (!entity) continue;
                                 if (persisted) synchronize_physics_object(*entity);
-                                for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                    const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                    if (!object) continue;
-                                    if (const auto sent = circuits.send(recipient_endpoint,
-                                            object_update_for(recipient_endpoint, *object), true, now, true))
-                                        static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
-                                }
+                                send_entity_update(*entity, now);
                                 // Session clients get the move as well. Until 2026-08-08 this
                                 // loop, and twelve like it, sent only over UDP: every
                                 // viewer-originated object change reached other viewers and no
@@ -10485,21 +10721,11 @@ int main(int argc, char* argv[]) {
                                     static_cast<void>(send_udp(viewer_server, endpoint, *outgoing));
                             }
                             if (persisted) {
-                                const auto region_handle =
-                                    (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                    static_cast<std::uint32_t>(region_grid_y * 256);
                                 for (const auto& [entity_id, original] : originals) {
                                     static_cast<void>(original);
                                     const auto* entity = scene.find(entity_id);
                                     if (!entity) continue;
-                                    for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                        const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                        if (!object) continue;
-                                        if (const auto sent = circuits.send(recipient_endpoint,
-                                                object_update_for(recipient_endpoint, *object), true, now, true))
-                                            static_cast<void>(send_udp(
-                                                viewer_server, recipient_endpoint, *sent));
-                                    }
+                                    send_entity_update(*entity, now);
                                     if (session_object_visible(*entity))
                                         deliver_to_embodied(session_object_envelope(*entity));
                                 }
@@ -10598,23 +10824,23 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                             if (persisted) {
-                                const auto region_handle =
-                                    (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                    static_cast<std::uint32_t>(region_grid_y * 256);
                                 for (const auto entity_id : created_entities) {
                                     const auto* entity = scene.find(entity_id);
                                     if (!entity) continue;
                                     synchronize_physics_object(*entity);
+                                    const auto duplicate_facet = entity_facet(*entity);
                                     for (const auto& [recipient_endpoint, recipient] : avatars) {
+                                        const auto route = facet_route_for(recipient_endpoint, duplicate_facet);
+                                        if (route.empty()) continue;
                                         auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                         if (!object) continue;
                                         if (recipient_endpoint == endpoint)
                                             object->update_flags |=
                                                 object_duplicate->duplicate_flags & create_selected;
-                                        if (const auto sent = circuits.send(recipient_endpoint,
-                                                object_update_for(recipient_endpoint, *object), true, now, true))
+                                        if (const auto sent = circuits.send(route,
+                                                object_update_for(route, *object), true, now, true))
                                             static_cast<void>(send_udp(
-                                                viewer_server, recipient_endpoint, *sent));
+                                                viewer_server, route, *sent));
                                     }
                                     // An insert, not an update: these local_ids are new to every
                                     // session client. Same envelope kind as any other object
@@ -10672,20 +10898,10 @@ int main(int argc, char* argv[]) {
                                               << homeworldz::api::json_string(error.what()) << "}" << std::endl;
                                 }
                             }
-                            const auto region_handle =
-                                (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                static_cast<std::uint32_t>(region_grid_y * 256);
                             for (const auto entity_id : requested_entities) {
                                 const auto* entity = scene.find(entity_id);
                                 if (!entity) continue;
-                                for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                    const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                    if (!object) continue;
-                                    if (const auto sent = circuits.send(recipient_endpoint,
-                                            object_update_for(recipient_endpoint, *object), true, now, true))
-                                        static_cast<void>(send_udp(
-                                            viewer_server, recipient_endpoint, *sent));
-                                }
+                                send_entity_update(*entity, now);
                                 // And to session clients. See the note at multiple_object_update.
                                 if (session_object_visible(*entity))
                                     deliver_to_embodied(session_object_envelope(*entity));
@@ -10781,20 +10997,10 @@ int main(int argc, char* argv[]) {
                                               << homeworldz::api::json_string(error.what()) << "}" << std::endl;
                                 }
                             }
-                            const auto region_handle =
-                                (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                static_cast<std::uint32_t>(region_grid_y * 256);
                             for (const auto entity_id : requested_entities) {
                                 const auto* entity = scene.find(entity_id);
                                 if (!entity) continue;
-                                for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                    const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                    if (!object) continue;
-                                    if (const auto sent = circuits.send(recipient_endpoint,
-                                            object_update_for(recipient_endpoint, *object), true, now, true))
-                                        static_cast<void>(send_udp(
-                                            viewer_server, recipient_endpoint, *sent));
-                                }
+                                send_entity_update(*entity, now);
                                 // And to session clients. See the note at multiple_object_update.
                                 if (session_object_visible(*entity))
                                     deliver_to_embodied(session_object_envelope(*entity));
@@ -10843,20 +11049,10 @@ int main(int argc, char* argv[]) {
                                               << homeworldz::api::json_string(error.what()) << "}" << std::endl;
                                 }
                             }
-                            const auto region_handle =
-                                (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                static_cast<std::uint32_t>(region_grid_y * 256);
                             for (const auto entity_id : requested_entities) {
                                 const auto* entity = scene.find(entity_id);
                                 if (!entity) continue;
-                                for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                    const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                    if (!object) continue;
-                                    if (const auto sent = circuits.send(recipient_endpoint,
-                                            object_update_for(recipient_endpoint, *object), true, now, true))
-                                        static_cast<void>(send_udp(
-                                            viewer_server, recipient_endpoint, *sent));
-                                }
+                                send_entity_update(*entity, now);
                                 // And to session clients. See the note at multiple_object_update.
                                 if (session_object_visible(*entity))
                                     deliver_to_embodied(session_object_envelope(*entity));
@@ -10923,17 +11119,7 @@ int main(int argc, char* argv[]) {
                                             homeworldz::viewer::format_uuid(identity->session_id),
                                             homeworldz::viewer::object_physics_properties_event_xml(
                                                 physics_properties_of(*entity)));
-                                    const auto region_handle =
-                                        (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                        static_cast<std::uint32_t>(region_grid_y * 256);
-                                    for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                        const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                        if (!object) continue;
-                                        if (const auto sent = circuits.send(recipient_endpoint,
-                                                object_update_for(recipient_endpoint, *object), true, now, true))
-                                            static_cast<void>(send_udp(
-                                                viewer_server, recipient_endpoint, *sent));
-                                    }
+                                    send_entity_update(*entity, now);
                                     // And to session clients. See the note at
                                     // multiple_object_update.
                                     if (session_object_visible(*entity))
@@ -11085,18 +11271,18 @@ int main(int argc, char* argv[]) {
                                         temporary_expirations.insert_or_assign(
                                             entity->id, now + std::chrono::seconds(60));
                                     synchronize_physics_object(*entity);
-                                    const auto region_handle =
-                                        (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                        static_cast<std::uint32_t>(region_grid_y * 256);
+                                    const auto added_facet = entity_facet(*entity);
                                     for (const auto& [recipient_endpoint, recipient] : avatars) {
+                                        const auto route = facet_route_for(recipient_endpoint, added_facet);
+                                        if (route.empty()) continue;
                                         auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                                         if (!object) continue;
                                         if (recipient.user_id == entity->owner_id &&
                                             (object_add->add_flags & add_create_selected) != 0)
                                             object->update_flags |= add_create_selected;
-                                        if (const auto sent = circuits.send(recipient_endpoint,
-                                                object_update_for(recipient_endpoint, *object), true, now, true))
-                                            static_cast<void>(send_udp(viewer_server, recipient_endpoint, *sent));
+                                        if (const auto sent = circuits.send(route,
+                                                object_update_for(route, *object), true, now, true))
+                                            static_cast<void>(send_udp(viewer_server, route, *sent));
                                     }
                                     // And to session clients: this is the insert. The loop above
                                     // is a hand-inlined copy of broadcast_object_update's UDP
@@ -11264,9 +11450,12 @@ int main(int argc, char* argv[]) {
                                 deliver_to_embodied(session_kill_many(removed_ids));
                                 for (const auto& [recipient_endpoint, recipient] : avatars) {
                                     static_cast<void>(recipient);
-                                    if (const auto outgoing = circuits.send(
-                                            recipient_endpoint, kill, true, now))
-                                        static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+                                    for_each_viewer_circuit(recipient_endpoint,
+                                        [&](const std::string& route) {
+                                            if (const auto outgoing = circuits.send(
+                                                    route, kill, true, now))
+                                                static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                                        });
                                 }
                             }
                             std::cout << "{\"level\":"
@@ -11437,17 +11626,7 @@ int main(int argc, char* argv[]) {
                                     const auto* entity = scene.find(entity_id);
                                     if (!entity) continue;
                                     synchronize_physics_object(*entity);
-                                    const auto region_handle =
-                                        (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                                        static_cast<std::uint32_t>(region_grid_y * 256);
-                                    for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                        const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
-                                        if (!object) continue;
-                                        if (const auto outgoing = circuits.send(
-                                                recipient_endpoint,
-                                                object_update_for(recipient_endpoint, *object), true, now, true))
-                                            static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
-                                    }
+                                    send_entity_update(*entity, now);
                                     // An insert, like duplicate: a local_id no session client has
                                     // seen. See the note at multiple_object_update.
                                     if (session_object_visible(*entity))
@@ -11969,23 +12148,28 @@ int main(int argc, char* argv[]) {
                             appearance = homeworldz::viewer::encode_avatar_appearance({
                                 *session_agent, seeded->second.serial, seeded->second.texture_entry,
                                 seeded->second.visual_params, {}, seeded->second.appearance_version});
+                        const auto spawned_facet = facet_of_position(
+                            live.controller.state().position.x,
+                            live.controller.state().position.y);
                         for (const auto& [recipient_endpoint, recipient] : avatars) {
                             static_cast<void>(recipient);
                             if (recipient_endpoint == participant_key) continue;
+                            const auto route = facet_route_for(recipient_endpoint, spawned_facet);
+                            if (route.empty()) continue;
                             const auto announce = avatar_update_for(
-                                recipient_endpoint, static_cast<std::uint32_t>(entity), *session_agent,
+                                route, static_cast<std::uint32_t>(entity), *session_agent,
                                 {static_cast<float>(live.controller.state().position.x),
                                  static_cast<float>(live.controller.state().position.y),
                                  static_cast<float>(live.controller.state().position.z)});
                             if (const auto sent = circuits.send(
-                                    recipient_endpoint, announce, true, now, true))
+                                    route, announce, true, now, true))
                                 static_cast<void>(send_udp(
-                                    viewer_server, recipient_endpoint, *sent));
+                                    viewer_server, route, *sent));
                             if (appearance.empty()) continue;
                             if (const auto dressed = circuits.send(
-                                    recipient_endpoint, appearance, true, now, true))
+                                    route, appearance, true, now, true))
                                 static_cast<void>(send_udp(
-                                    viewer_server, recipient_endpoint, *dressed));
+                                    viewer_server, route, *dressed));
                         }
                     }
                     const auto arrival_envelope = session_avatar_envelope(live, participant_key);
@@ -12241,11 +12425,15 @@ int main(int argc, char* argv[]) {
                 }
                 for (const auto& [recipient_endpoint, recipient] : avatars) {
                     static_cast<void>(recipient);
-                    if (endpoint_facet_of(recipient_endpoint) != facet) continue;
+                    // Any circuit on the edited facet — primary or child (ADR
+                    // 0036): a viewer watching from a sibling facet sees the
+                    // edit through its child circuit.
+                    const auto route = facet_route_for(recipient_endpoint, facet);
+                    if (route.empty()) continue;
                     for (const auto& payload : payloads)
                         if (const auto outgoing = circuits.send(
-                                recipient_endpoint, payload, true, now))
-                            static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+                                route, payload, true, now))
+                            static_cast<void>(send_udp(viewer_server, route, *outgoing));
                 }
             }
             pending_viewer_terrain_patches.clear();
@@ -12428,47 +12616,44 @@ int main(int argc, char* argv[]) {
                 const auto circuit_facet = endpoint_facet_of(endpoint);
                 if (inside_region && standing_facet != circuit_facet) {
                     const auto* identity = circuits.identity(endpoint);
-                    const auto& target = region_facets[static_cast<std::size_t>(standing_facet)];
                     const auto simulator = simulator_event_endpoint(
-                        region_public_endpoint, target.viewer_port);
+                        region_public_endpoint,
+                        region_facets[static_cast<std::size_t>(standing_facet)].viewer_port);
                     if (identity && simulator) {
                         const auto session_id = homeworldz::viewer::format_uuid(identity->session_id);
                         const auto agent_id = homeworldz::viewer::format_uuid(identity->agent_id);
-                        const auto target_handle = facet_handle(standing_facet);
                         const std::array<float, 3> facet_position{
                             static_cast<float>(macro_position.x - facet_origin_x(standing_facet)),
                             static_cast<float>(macro_position.y - facet_origin_y(standing_facet)),
                             static_cast<float>(macro_position.z)};
                         const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
-                        const auto facet_seed = region_public_endpoint + "/caps/seed/" +
-                            session_id + "/" + homeworldz::viewer::random_uuid();
                         // The full ceremony, in the order a viewer expects it:
                         // EnableSimulator opens the child connection,
                         // EstablishAgentCommunication hands it the sibling
-                        // facet's seed, and CrossedRegion promotes it. Without
-                        // the middle event the viewer stalls mid-crossing —
-                        // frozen controls, no CompleteAgentMovement, no
-                        // backfill (found live, 2026-08-19).
-                        enqueue_viewer_event(session_id,
-                            homeworldz::viewer::enable_simulator_event_xml(
-                                target_handle, *simulator, edge, edge));
-                        enqueue_viewer_event(session_id,
-                            homeworldz::viewer::establish_agent_communication_event_xml({
-                                agent_id,
-                                simulator_endpoint(region_public_endpoint, target.viewer_port),
-                                facet_seed}));
-                        enqueue_viewer_event(session_id,
-                            homeworldz::viewer::crossed_region_event_xml({
-                                agent_id, session_id, target_handle, *simulator,
-                                facet_seed,
-                                facet_position, avatar.controller.look_direction(),
-                                edge, edge}));
-                        avatar.next_crossing_attempt = now + std::chrono::seconds(2);
-                        std::cout << "{\"level\":\"info\",\"message\":\"avatar facet crossing signaled\""
-                                     ",\"fromFacet\":" << circuit_facet
-                                  << ",\"toFacet\":" << standing_facet
-                                  << ",\"agent\":" << homeworldz::api::json_string(avatar.user_id)
-                                  << "}" << std::endl;
+                        // facet's seed (both via the shared helper), and
+                        // CrossedRegion promotes it. Without the middle event
+                        // the viewer stalls mid-crossing — frozen controls, no
+                        // CompleteAgentMovement, no backfill (found live,
+                        // 2026-08-19). With standing child circuits the first
+                        // two are redundant for a viewer that already holds
+                        // the child; a re-establish is harmless and covers a
+                        // viewer whose child never came up.
+                        const auto facet_seed = enqueue_facet_child_events(
+                            session_id, agent_id, standing_facet);
+                        if (facet_seed) {
+                            enqueue_viewer_event(session_id,
+                                homeworldz::viewer::crossed_region_event_xml({
+                                    agent_id, session_id, facet_handle(standing_facet), *simulator,
+                                    *facet_seed,
+                                    facet_position, avatar.controller.look_direction(),
+                                    edge, edge}));
+                            avatar.next_crossing_attempt = now + std::chrono::seconds(2);
+                            std::cout << "{\"level\":\"info\",\"message\":\"avatar facet crossing signaled\""
+                                         ",\"fromFacet\":" << circuit_facet
+                                      << ",\"toFacet\":" << standing_facet
+                                      << ",\"agent\":" << homeworldz::api::json_string(avatar.user_id)
+                                      << "}" << std::endl;
+                        }
                     }
                 }
             }
@@ -12669,13 +12854,19 @@ int main(int argc, char* argv[]) {
                     const std::array<float, 3> velocity{
                         static_cast<float>(state.velocity.x), static_cast<float>(state.velocity.y),
                         static_cast<float>(state.velocity.z)};
+                    // On each recipient's circuit for the facet this avatar
+                    // stands on (ADR 0036) — a watcher one facet over sees the
+                    // move through its child circuit.
+                    const auto standing_facet =
+                        facet_of_position(state.position.x, state.position.y);
                     for (const auto& recipient_entry : avatars) {
-                        const auto& recipient_endpoint = recipient_entry.first;
+                        const auto route = facet_route_for(recipient_entry.first, standing_facet);
+                        if (route.empty()) continue;
                         const auto update = avatar_update_for(
-                            recipient_endpoint, static_cast<std::uint32_t>(avatar.entity_id),
+                            route, static_cast<std::uint32_t>(avatar.entity_id),
                             *agent_id, position, velocity, state.rotation);
-                        if (const auto outgoing = circuits.send(recipient_endpoint, update, false, now, true))
-                            static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+                        if (const auto outgoing = circuits.send(route, update, false, now, true))
+                            static_cast<void>(send_udp(viewer_server, route, *outgoing));
                     }
                     // Avatar transforms reach the sessions that hold this
                     // avatar in interest — the sweep below owns enter and
@@ -12751,9 +12942,6 @@ int main(int argc, char* argv[]) {
             for (std::size_t step = 0; step < fixed_steps; ++step)
                 physics_world->step(simulation.step_seconds());
         if (physics_world && physics_scene && now >= next_dynamic_sync) {
-            const auto region_handle =
-                (static_cast<std::uint64_t>(region_grid_x * 256) << 32) |
-                static_cast<std::uint32_t>(region_grid_y * 256);
             for (const auto& [entity_id, current] : scene.entities()) {
                 if (!current.physical || current.phantom || current.object_id.empty()) continue;
                 const auto body_id = physics_scene->body_id(entity_id);
@@ -12833,11 +13021,16 @@ int main(int argc, char* argv[]) {
                             entity_id, SentDynamicTransform{state, now});
                         continue;
                     }
+                    // On the recipient's circuit for the facet the moving
+                    // object is in (ADR 0036); the interest cache stays keyed
+                    // by the recipient's primary endpoint.
+                    const auto route = facet_route_for(recipient_endpoint, entity_facet(*entity));
+                    if (route.empty()) continue;
                     const auto object = static_object_from_entity(scene, *entity, recipient.user_id, falcon);
                     if (!object) continue;
-                    if (const auto sent = circuits.send(recipient_endpoint,
-                            object_update_for(recipient_endpoint, *object), false, now, true)) {
-                        if (send_udp(viewer_server, recipient_endpoint, *sent))
+                    if (const auto sent = circuits.send(route,
+                            object_update_for(route, *object), false, now, true)) {
+                        if (send_udp(viewer_server, route, *sent))
                             recipient_cache.insert_or_assign(
                                 entity_id, SentDynamicTransform{state, now});
                     }
@@ -12851,6 +13044,137 @@ int main(int argc, char* argv[]) {
                 });
             }
             next_dynamic_sync = now + std::chrono::milliseconds(100);
+        }
+        // The partition change (ADR 0036): a root whose containing facet moved
+        // since the last sweep leaves the old facet with a KillObject on every
+        // viewer's old-facet circuit and arrives on the new facet with fresh
+        // updates — kill first, update second, one pass, because the viewer
+        // namespaces objects per region and the same entity live on two of a
+        // viewer's circuits draws twice. Avatars partition the same way for
+        // OTHER viewers; the crossing avatar's own view moves with the
+        // ceremony, so its own session is skipped for its avatar and the
+        // attachments it wears.
+        if (facet_count > 1 && now >= next_partition_sweep) {
+            std::erase_if(entity_last_facets, [&](const auto& entry) {
+                return scene.find(entry.first) == nullptr;
+            });
+            for (const auto& [root_id, root] : scene.entities()) {
+                if (root.parent_id != 0) continue;
+                const auto facet = entity_facet(root);
+                const auto tracked = entity_last_facets.find(root_id);
+                if (tracked == entity_last_facets.end()) {
+                    entity_last_facets.emplace(root_id, facet);
+                    continue;
+                }
+                if (tracked->second == facet) continue;
+                const auto from_facet = tracked->second;
+                tracked->second = facet;
+                // Everything that rides this root: linked children, and — when
+                // the root is an avatar — its attachments and their children.
+                std::vector<homeworldz::scene::EntityId> moved{root_id};
+                for (const auto& [candidate_id, candidate] : scene.entities())
+                    if (candidate.parent_id == root_id) moved.push_back(candidate_id);
+                {
+                    std::vector<homeworldz::scene::EntityId> riders;
+                    for (const auto& [candidate_id, candidate] : scene.entities())
+                        if (std::find(moved.begin(), moved.end(), candidate.parent_id) != moved.end() &&
+                            std::find(moved.begin(), moved.end(), candidate_id) == moved.end())
+                            riders.push_back(candidate_id);
+                    moved.insert(moved.end(), riders.begin(), riders.end());
+                }
+                // An avatar root belongs to a live session whose own viewer is
+                // excluded from both halves.
+                std::string crossing_session;
+                std::string crossing_endpoint;
+                for (const auto& [live_endpoint, live] : avatars)
+                    if (live.entity_id == root_id) {
+                        crossing_session = live.session_id;
+                        crossing_endpoint = live_endpoint;
+                        break;
+                    }
+                std::vector<std::uint32_t> moved_ids;
+                moved_ids.reserve(moved.size());
+                for (const auto id : moved)
+                    moved_ids.push_back(static_cast<std::uint32_t>(id));
+                const auto kill = homeworldz::viewer::encode_kill_object(moved_ids);
+                for (const auto& [recipient_endpoint, recipient] : avatars) {
+                    if (!crossing_session.empty() && recipient.session_id == crossing_session)
+                        continue;
+                    const auto old_route = facet_route_for(recipient_endpoint, from_facet);
+                    if (old_route.empty()) continue;
+                    if (const auto outgoing = circuits.send(old_route, kill, true, now, true))
+                        static_cast<void>(send_udp(viewer_server, old_route, *outgoing));
+                }
+                for (const auto& [recipient_endpoint, recipient] : avatars) {
+                    if (!crossing_session.empty() && recipient.session_id == crossing_session)
+                        continue;
+                    const auto new_route = facet_route_for(recipient_endpoint, facet);
+                    if (new_route.empty()) continue;
+                    if (!crossing_session.empty()) {
+                        // The avatar form: announce it and re-dress it where
+                        // it now stands.
+                        const auto crossing_agent = homeworldz::viewer::parse_uuid(root.name);
+                        const auto crossing_avatar = avatars.find(crossing_endpoint);
+                        if (!crossing_agent || crossing_avatar == avatars.end()) break;
+                        const auto& mover = crossing_avatar->second;
+                        const auto viewer_position = mover.controller.viewer_position();
+                        const auto& state = mover.controller.state();
+                        const auto update = avatar_update_for(new_route,
+                            static_cast<std::uint32_t>(root_id), *crossing_agent,
+                            {static_cast<float>(viewer_position.x),
+                             static_cast<float>(viewer_position.y),
+                             static_cast<float>(viewer_position.z)},
+                            {static_cast<float>(state.velocity.x),
+                             static_cast<float>(state.velocity.y),
+                             static_cast<float>(state.velocity.z)},
+                            state.rotation);
+                        if (const auto sent = circuits.send(new_route, update, true, now, true))
+                            static_cast<void>(send_udp(viewer_server, new_route, *sent));
+                        if (const auto seeded = avatar_appearances.find(crossing_endpoint);
+                            seeded != avatar_appearances.end()) {
+                            const auto appearance = homeworldz::viewer::encode_avatar_appearance({
+                                seeded->second.agent_id, seeded->second.serial,
+                                seeded->second.texture_entry, seeded->second.visual_params,
+                                {}, seeded->second.appearance_version});
+                            if (!appearance.empty())
+                                if (const auto dressed = circuits.send(
+                                        new_route, appearance, true, now, true))
+                                    static_cast<void>(send_udp(viewer_server, new_route, *dressed));
+                        }
+                        // The wearer's attachments arrive as objects below.
+                        for (const auto id : moved) {
+                            if (id == root_id) continue;
+                            const auto* part = scene.find(id);
+                            if (!part) continue;
+                            const auto object = static_object_from_entity(
+                                scene, *part, recipient.user_id, falcon);
+                            if (!object) continue;
+                            if (const auto sent = circuits.send(new_route,
+                                    object_update_for(new_route, *object), true, now, true))
+                                static_cast<void>(send_udp(viewer_server, new_route, *sent));
+                        }
+                    } else {
+                        for (const auto id : moved) {
+                            const auto* part = scene.find(id);
+                            if (!part) continue;
+                            const auto object = static_object_from_entity(
+                                scene, *part, recipient.user_id, falcon);
+                            if (!object) continue;
+                            if (const auto sent = circuits.send(new_route,
+                                    object_update_for(new_route, *object), true, now, true))
+                                static_cast<void>(send_udp(viewer_server, new_route, *sent));
+                        }
+                    }
+                }
+                std::cout << "{\"level\":\"info\",\"message\":\"entity crossed facet partition\""
+                             ",\"rootEntityId\":" << static_cast<std::uint64_t>(root_id)
+                          << ",\"fromFacet\":" << from_facet
+                          << ",\"toFacet\":" << facet
+                          << ",\"parts\":" << moved.size()
+                          << (crossing_session.empty() ? "" : ",\"avatar\":true")
+                          << "}" << std::endl;
+            }
+            next_partition_sweep = now + std::chrono::milliseconds(100);
         }
         std::unordered_set<homeworldz::scene::EntityId> expired_temporary_roots;
         std::vector<homeworldz::scene::EntityId> stale_temporary_expirations;
@@ -12882,9 +13206,11 @@ int main(int argc, char* argv[]) {
             deliver_to_embodied(session_kill_many(local_ids));
             for (const auto& [recipient_endpoint, recipient] : avatars) {
                 static_cast<void>(recipient);
-                if (const auto outgoing = circuits.send(
-                        recipient_endpoint, payload, true, now, true))
-                    static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+                for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                    if (const auto outgoing = circuits.send(
+                            route, payload, true, now, true))
+                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                });
             }
             std::cout << "{\"level\":\"info\",\"message\":\"temporary object expired\",\"rootEntityId\":"
                       << root_id << ",\"parts\":" << part_ids.size() << "}" << std::endl;
@@ -12944,8 +13270,10 @@ int main(int argc, char* argv[]) {
                 deliver_to_embodied(session_kill_many(auto_removed));
                 for (const auto& [recipient_endpoint, recipient] : avatars) {
                     static_cast<void>(recipient);
-                    if (const auto outgoing = circuits.send(recipient_endpoint, kill, true, now))
-                        static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+                    for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                        if (const auto outgoing = circuits.send(route, kill, true, now))
+                            static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                    });
                 }
                 std::cout << "{\"level\":\"info\",\"message\":\"parcel objects auto-returned\","
                              "\"count\":" << auto_removed.size() << "}" << std::endl;

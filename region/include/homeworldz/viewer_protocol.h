@@ -1288,6 +1288,19 @@ private:
     std::chrono::seconds idle_timeout_;
 };
 
+// Facet-qualified endpoint keys (ADR 0036). A viewer talking to facet i > 0 is
+// keyed "ip:port/f<i>", so the circuit registry, the avatars map, and every
+// endpoint-keyed side map distinguish the same transport endpoint per facet
+// without knowing facets exist. Facet 0 keeps the bare "ip:port" form, which
+// makes a square region byte-identical to what it was before facets.
+std::string facet_endpoint_key(std::string endpoint, int facet);
+
+// Which facet an endpoint key belongs to; 0 for a bare key.
+int endpoint_facet(std::string_view endpoint);
+
+// The transport half of an endpoint key: "ip:port" with any facet suffix gone.
+std::string_view endpoint_transport(std::string_view endpoint);
+
 struct OutboundDatagram {
     std::string endpoint;
     std::vector<std::byte> bytes;

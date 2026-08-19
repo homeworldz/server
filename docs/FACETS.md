@@ -6,6 +6,39 @@ child circuits real crossings already exercise. Every facet is a permanently
 live neighbor served from the same memory."* Written at the end of the first
 live acceptance day (2026-08-19) for the session that builds it.
 
+## Status: built 2026-08-19, awaiting live acceptance
+
+All eight steps below are implemented and compile; the eviction rule is
+unit-tested (`circuit_registry_facet_children`, viewer-protocol tests). Not
+yet proven in a viewer. Decisions made while building, where the plan left
+room:
+
+- Removal kills (derez, return, expiry, departure) fan out to **every**
+  circuit a viewer holds (`for_each_viewer_circuit`) rather than tracking
+  which facet knew the object — a kill for an id a circuit never carried is
+  ignored by the viewer. The precise old-facet kill is reserved for the
+  partition sweep, where a same-tick update on the new facet makes ordering
+  matter.
+- The partition change (step 6) is a 100 ms sweep over scene roots
+  (`entity_last_facets`, beside the dynamic-transform cache), not a hook in
+  every mover: it catches physics drift, edit drags, and avatars with one
+  mechanism. An avatar's own session is excluded from both halves — its move
+  is the ceremony's.
+- Chat, avatar animations, and AvatarAppearance broadcasts stay on primary
+  circuits: they are agent-UUID-scoped, and the viewer resolves them
+  region-independently. Watch animations live; partition them if a sibling
+  facet's avatar animates wrongly.
+- The crossing still sends the full EnableSimulator → establish →
+  CrossedRegion ceremony (via the shared `enqueue_facet_child_events`), so a
+  child circuit that silently died is revived by the crossing that needs it.
+  Dropping the first two events remains the post-proof cleanup.
+
+Live checks for the first session: stand in Sandbox and watch a prim rezzed
+in Sandbox 2 (child backfill); walk across and back (promotion via
+CompleteAgentMovement, old facet stays live — no DisableSimulator); a second
+avatar crossing while watched (partition sweep kill+update, no double-draw,
+no gap); relog and logout (child teardown, no dead neighbors on the minimap).
+
 ## Where the shipped v1 stands
 
 A rectangular region runs as one macro simulation and serves one square facet

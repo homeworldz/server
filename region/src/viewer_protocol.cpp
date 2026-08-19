@@ -3505,6 +3505,26 @@ std::vector<std::uint32_t> Circuit::take_acks() {
     return result;
 }
 
+std::string facet_endpoint_key(std::string endpoint, int facet) {
+    if (facet <= 0 || endpoint.empty()) return endpoint;
+    return endpoint + "/f" + std::to_string(facet);
+}
+
+int endpoint_facet(std::string_view endpoint) {
+    const auto marker = endpoint.rfind("/f");
+    if (marker == std::string_view::npos) return 0;
+    int facet{};
+    const auto text = endpoint.substr(marker + 2);
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), facet);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || facet < 0) return 0;
+    return facet;
+}
+
+std::string_view endpoint_transport(std::string_view endpoint) {
+    const auto marker = endpoint.rfind("/f");
+    return marker == std::string_view::npos ? endpoint : endpoint.substr(0, marker);
+}
+
 std::optional<Packet> CircuitRegistry::receive(std::string_view endpoint, std::span<const std::byte> datagram,
                                                Clock::time_point now) {
     auto found = circuits_.find(std::string(endpoint));
@@ -3522,8 +3542,17 @@ std::optional<Packet> CircuitRegistry::receive(std::string_view endpoint, std::s
         if (!authorized) return std::nullopt;
         for (auto iterator = circuits_.begin(); iterator != circuits_.end();) {
             const auto& entry = iterator->second;
-            if (entry.identity.circuit_code == requested->circuit_code ||
-                entry.identity.session_id == requested->session_id || entry.identity.agent_id == requested->agent_id) {
+            const bool same_identity = entry.identity.circuit_code == requested->circuit_code ||
+                entry.identity.session_id == requested->session_id || entry.identity.agent_id == requested->agent_id;
+            // A matching identity on the same transport but a different facet is
+            // a child circuit (ADR 0036): one viewer holds a circuit per facet,
+            // and they coexist. Evict only a genuine relogin from a new address
+            // (different transport takes every facet with it) or a reconnect to
+            // the same facet.
+            const bool coexisting_facet = same_identity &&
+                endpoint_transport(iterator->first) == endpoint_transport(endpoint) &&
+                endpoint_facet(iterator->first) != endpoint_facet(endpoint);
+            if (same_identity && !coexisting_facet) {
                 replaced_.push_back(ReplacedCircuit{iterator->first, entry.identity});
                 iterator = circuits_.erase(iterator);
             } else {
