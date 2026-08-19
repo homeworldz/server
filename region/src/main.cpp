@@ -3529,6 +3529,10 @@ int main(int argc, char* argv[]) {
         handshake_replies.erase(to);
         sent_dynamic_transforms.erase(from);
         parcel_overlay_sent.erase(session_id);
+        // The next event-queue poll re-establishes agent communication naming
+        // the NEW facet's simulator; without this the viewer keeps the old
+        // facet's address as its sim and never finishes the crossing.
+        established_events.erase(session_id);
         std::erase_if(pending_agent_movement_completes,
             [&](const PendingAgentMovementComplete& pending) {
                 return pending.endpoint == from;
@@ -5400,6 +5404,22 @@ int main(int argc, char* argv[]) {
                                 authorized = transit &&
                                     transit->destination_region_id == registration->region_id();
                             }
+                            if (!authorized && authorized_session) {
+                                // A crossed-in avatar outlives its transit: the
+                                // grid session still names the region it logged
+                                // into, and the transit record was consumed at
+                                // activation. The avatar standing here is the
+                                // proof of authorization those two no longer
+                                // carry — without this, the destination's event
+                                // queue dies the moment a crossing completes.
+                                for (const auto& [live_endpoint, live] : avatars) {
+                                    static_cast<void>(live_endpoint);
+                                    if (live.session_id == session_id) {
+                                        authorized = true;
+                                        break;
+                                    }
+                                }
+                            }
                             if (authorized) authorized_agent_id = authorized_session->agent_id;
                         }
                         if (authorized && seed) {
@@ -5423,8 +5443,20 @@ int main(int argc, char* argv[]) {
                                     session_id, capability_visit_id));
                         } else if (authorized && event_queue) {
                             if (established_events.insert(session_id).second) {
+                                // The simulator named here is the facet the
+                                // avatar's circuit is on (ADR 0036), not the
+                                // base port: naming facet 0 to an avatar on
+                                // facet 1 hands the viewer a different sim
+                                // than the one it is standing in.
+                                auto establish_port = region_viewer_port;
+                                for (const auto& [live_endpoint, live] : avatars)
+                                    if (live.session_id == session_id) {
+                                        establish_port = region_facets[static_cast<std::size_t>(
+                                            endpoint_facet_of(live_endpoint))].viewer_port;
+                                        break;
+                                    }
                                 const auto sim_ip_and_port =
-                                    simulator_endpoint(region_public_endpoint, region_viewer_port);
+                                    simulator_endpoint(region_public_endpoint, establish_port);
                                 if (authorized_session && !sim_ip_and_port.empty()) {
                                     enqueue_viewer_event(session_id,
                                         homeworldz::viewer::establish_agent_communication_event_xml({
@@ -9532,6 +9564,20 @@ int main(int argc, char* argv[]) {
                                     static_cast<float>(current.x - facet_origin_x(arrival_facet)),
                                     static_cast<float>(current.y - facet_origin_y(arrival_facet)),
                                     static_cast<float>(current.z)};
+                                // To the viewer this facet is a new region, and
+                                // its avatar object there is new: without its
+                                // appearance re-sent it rezzes as a cloud until
+                                // a manual rebake (found live, 2026-08-19).
+                                if (const auto seeded = avatar_appearances.find(endpoint);
+                                    seeded != avatar_appearances.end()) {
+                                    const auto appearance = homeworldz::viewer::encode_avatar_appearance({
+                                        identity->agent_id, seeded->second.serial,
+                                        seeded->second.texture_entry, seeded->second.visual_params,
+                                        {}, seeded->second.appearance_version});
+                                    if (const auto dressed = circuits.send(
+                                            endpoint, appearance, true, now, true))
+                                        static_cast<void>(send_udp(viewer_server, endpoint, *dressed));
+                                }
                             }
                             const auto& live_avatar = avatars.at(endpoint);
                             auto& animations = avatar_animations[endpoint];
