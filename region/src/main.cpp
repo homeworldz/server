@@ -12899,6 +12899,13 @@ int main(int argc, char* argv[]) {
             if (!avatar.outbound_transit_id.empty())
                 avatar.controller.expire_transient_controls();
             avatar.controller.step(elapsed);
+            // The viewer's agent parcel updates the moment a step crosses a
+            // parcel line: parcel_at plus one integer compare per avatar per
+            // tick, a no-op while the parcel is unchanged. It used to ride
+            // the 30-second parcel sweep below, so the menu-bar parcel name
+            // lagged a crossing by up to the whole period (operator report,
+            // 2026-08-20).
+            push_agent_parcel(avatar);
             // An internal facet line (ADR 0036) is crossed with the ordinary
             // ceremony and no handoff: the destination is this same process,
             // one socket over. The viewer connects there, its circuit re-tags
@@ -13593,8 +13600,6 @@ int main(int argc, char* argv[]) {
             // or access-restricts it to the nearest parcel that admits it. Avoids a
             // teleport loop because the destination parcel admits the avatar.
             for (auto& [viewer_endpoint, avatar] : avatars) {
-                // Refresh the viewer's agent parcel if it has crossed a boundary.
-                push_agent_parcel(avatar);
                 const auto& position = avatar.controller.state().position;
                 const auto* parcel = parcels->parcel_at(
                     static_cast<float>(position.x), static_cast<float>(position.y));
