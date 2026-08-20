@@ -6,7 +6,14 @@ child circuits real crossings already exercise. Every facet is a permanently
 live neighbor served from the same memory."* Written at the end of the first
 live acceptance day (2026-08-19) for the session that builds it.
 
-## Status: built 2026-08-19, awaiting live acceptance
+## Status: built 2026-08-19; crossings proven live 2026-08-20
+
+Sandbox ↔ Sandbox 2 crossings accepted in Firestorm after five same-day
+fixes (below): fast hand-off, correct facet in the title bar, attachments
+intact, movement immediately live after promotion. Still to verify: a
+sibling facet's objects/avatars visible before crossing, a second avatar
+crossing while watched, clean teardown at relog/logout, and a
+symmetric-NAT login (Ed Ashford's case, fixed in e20a8a8).
 
 All eight steps below are implemented and compile; the eviction rule is
 unit-tested (`circuit_registry_facet_children`, viewer-protocol tests). Not
