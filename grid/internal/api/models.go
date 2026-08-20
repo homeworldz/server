@@ -199,8 +199,9 @@ type mapPositionRequest struct {
 }
 
 // passwordResetRequest is the body of POST /v1/password-resets. The identifier
-// may be an account name or the email address on file; either is accepted so
-// somebody who has forgotten one can use the other.
+// is the userid, in first.last form — the same one login takes. An email
+// address is deliberately not accepted: nothing constrains it to one account,
+// so it cannot name whose password to change (see RequestPasswordReset).
 type passwordResetRequest struct {
 	Identifier string `json:"identifier"`
 }

@@ -4,27 +4,285 @@ info:
   version: 0.1.0
   description: |
     The browser-facing API, consumed by the management site at
-    `https://my.homeworldz.com` (see `web/src/config.js`). Served by the grid's
-    `[website]` service, which listens on port 8003 by default.
-
-    **This document is incomplete and its absences mean nothing.** The service
-    also serves `/v1/account`, `/v1/account/password`, `/v1/account/profile`,
-    `/v1/registrations`, `/v1/verifications`, `/v1/tokens`, `/v1/client/*` and
-    `/v1/admin/*`, none of which are described here yet. A route missing from
-    this file is undocumented, not unimplemented — do not read this as the
-    service's surface. Documenting the rest is tracked in the roadmap.
+    `https://my.homeworldz.com` (see `web/src/config.js`) and by the Homeworldz
+    client ([ADR 0030](../docs/adr/0030-client-architecture.md) and
+    `docs/CLIENT2.md`). Served by the grid's `[website]` service, which listens
+    on port 8003 by default.
 
     Distinct from `openapi.yaml`, which describes the internal grid API used by
-    regions and tools rather than by browsers.
+    regions and tools rather than by browsers. The two share no credentials: a
+    service token is not accepted here, and a website token is not accepted
+    there.
+
+    ## Conventions
+
+    Every request body is one JSON object, at most 64 KiB, with **unknown
+    fields rejected** — a misspelled property is `400 invalid_json` rather than
+    a silently ignored field. Every error body is the `Error` schema, whose
+    `code` is the stable machine-readable part; `message` is prose and may
+    change.
+
+    Two 404 codes mean different things and are deliberately distinguishable.
+    `not_found` says the resource you named is absent or is not yours;
+    `route_not_found` says this deployment serves no such endpoint, usually
+    that it predates one. That way a client running ahead of a deployment can
+    tell "not deployed" from "not allowed" without parsing prose.
+
+    Requests may carry `X-Request-ID`; the value is echoed on the response, and
+    an unsafe or absent one is replaced by a generated identifier.
+
+    Cross-origin requests are answered only for allowlisted origins (`[website]
+    allowed_origins`). A preflight from any other origin is
+    `403 origin_forbidden`.
+
+    Public endpoints — everything under Registration and Authentication, plus
+    `GET /version` and the channel upgrade — are rate limited per client
+    address and answer `429 rate_limited` with `Retry-After` when exceeded. The
+    rest are bounded by the cost of authenticating instead.
 servers:
   - url: https://api.homeworldz.com/v1
     description: Production.
   - url: http://127.0.0.1:8003/v1
     description: A local deployment on the service's default port.
+tags:
+  - name: Discovery
+    description: What this grid is and what it supports, before any credential.
+  - name: Registration
+    description: Creating an avatar and confirming its email address.
+  - name: Authentication
+    description: Obtaining a website token, and recovering a forgotten password.
+  - name: Account
+    description: The signed-in account's own identity, profile, and password.
+  - name: Client
+    description: World entry, the grid channel, and inventory for the Homeworldz client.
+  - name: Administration
+    description: |
+      Privileged user, ban, and region management. Every operation here needs a
+      named privilege as well as a valid token; see the `Privileges` schema.
 paths:
+  /version:
+    get:
+      operationId: getVersion
+      tags: [Discovery]
+      summary: Probe the grid for compatibility
+      description: |
+        The first request the Homeworldz client makes, and the only one before
+        it decides whether this grid is usable at all. Everything here is
+        universal across the grid; per-region facts belong to
+        `POST /client/session` instead.
+
+        `client.protocol` and `client.minimumProtocol` gate the modern path: a
+        client compares its own declared minimum and either proceeds or reports
+        the grid incompatible. Nothing is negotiated.
+
+        Empty `regions.transports` and `regions.assetFormats` lists are
+        deliberate honesty while the region session transport and modern asset
+        formats are unbuilt. An entry appears only once the region protocol
+        that introduces it becomes the registration requirement.
+      responses:
+        "200":
+          description: The probe document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Version" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /registrations:
+    post:
+      operationId: registerAvatar
+      tags: [Registration]
+      summary: Register an avatar
+      description: |
+        Creates an unverified account and mails a confirmation code to the
+        supplied address. The account cannot sign in — here or in a viewer —
+        until `POST /verifications` consumes that code and sets a password.
+
+        The `userid` is derived from the display name, which must be two words
+        forming a 3-32 character `first.last` login ID. That derived userid is
+        what login and password recovery take: the display name can change
+        later, the userid cannot.
+
+        A mail delivery failure does not fail the request. The account exists
+        and the code can be re-requested from `POST /verifications/resend`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName, email]
+              additionalProperties: false
+              properties:
+                displayName:
+                  type: string
+                  description: Two words, forming a 3-32 character userid.
+                  example: Jim Tarber
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+      responses:
+        "201":
+          description: The account was created and a confirmation code was mailed.
+          headers:
+            Location:
+              description: Always `/v1/account`, readable once the caller holds a token.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userid, displayName]
+                properties:
+                  userid: { type: string, example: jim.tarber }
+                  displayName: { type: string, example: Jim Tarber }
+        "400":
+          description: "`invalid_display_name`, `invalid_email`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`userid_taken` — that display name is already registered."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/AccountStoreUnavailable" }
+  /verifications:
+    post:
+      operationId: verifyRegistration
+      tags: [Registration]
+      summary: Confirm a registration and set its password
+      description: |
+        Consumes the emailed confirmation code, sets the account's password,
+        and signs the caller in — the response is the same `TokenResponse` that
+        `POST /tokens` returns, so a freshly verified account needs no second
+        round trip.
+
+        The code expires 24 hours after it was issued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, password]
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  description: The code from the confirmation email.
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  maxLength: 128
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        "400":
+          description: "`invalid_code` (missing or oversized), `invalid_password`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            `invalid_code` — the code is unknown, already used, or expired. The
+            status differs from the 400 above on purpose: this one says the
+            request was well formed and the code was not accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/AccountStoreUnavailable" }
+  /verifications/resend:
+    post:
+      operationId: resendVerification
+      tags: [Registration]
+      summary: Re-send a confirmation code
+      description: |
+        Mails a fresh confirmation code to the address on file.
+
+        **The response is 202 whether or not the account exists**, whether or
+        not it is already verified, and whether or not mail was sent, so this
+        cannot be used to discover which accounts are registered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userid]
+              additionalProperties: false
+              properties:
+                userid:
+                  type: string
+                  description: The `first.last` login ID.
+      responses:
+        "202":
+          description: Accepted. Returned for every outcome.
+        "400":
+          description: "`invalid_userid` (empty) or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /tokens:
+    post:
+      operationId: createToken
+      tags: [Authentication]
+      summary: Sign in and obtain a website token
+      description: |
+        Exchanges a userid and password for a short-lived website token. The
+        token carries no in-world meaning: it authenticates this API only, and
+        a viewer login is a separate exchange against the grid.
+
+        A token stops being accepted the moment the account's authorization
+        version changes, which a password change, a privilege change, and a ban
+        all do. There is no refresh; sign in again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userid, password]
+              additionalProperties: false
+              properties:
+                userid:
+                  type: string
+                  description: |
+                    The `first.last` login ID. Case and spacing are normalized,
+                    so `First Last` resolves to `first.last`.
+                password:
+                  type: string
+                  format: password
+                  maxLength: 128
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        "400":
+          description: "`invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: |
+            `invalid_credentials` — one reply for a wrong password, an unknown
+            account, and an unverified one.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/AccountStoreUnavailable" }
   /password-resets:
     post:
       operationId: requestPasswordReset
+      tags: [Authentication]
       summary: Request a password reset link
       description: |
         Sends a single-use reset link to the address on file for the named
@@ -43,6 +301,7 @@ paths:
             schema:
               type: object
               required: [identifier]
+              additionalProperties: false
               properties:
                 identifier:
                   type: string
@@ -64,15 +323,24 @@ paths:
             not mail was sent.
         "400":
           description: The request body was missing or malformed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
         "429":
           description: Too many requests. The caller should retry later.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/AccountStoreUnavailable" }
   /password-resets/{token}:
     post:
       operationId: consumePasswordReset
+      tags: [Authentication]
       summary: Set a new password using a reset token
       description: |
         Consumes a reset token and writes the new password. The token is
-        single-use and expires.
+        single-use and expires one hour after it was issued.
 
         This performs exactly the same operation as an authenticated password
         change: it writes the password digests and nothing else. **Existing
@@ -93,6 +361,7 @@ paths:
             schema:
               type: object
               required: [password]
+              additionalProperties: false
               properties:
                 password:
                   type: string
@@ -107,5 +376,1370 @@ paths:
             The token is unknown, already used, or expired, or the new password
             fails the length rules. **These are deliberately one response**:
             distinguishing them would say whether a token had ever existed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
         "429":
           description: Too many attempts. The caller should retry later.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/AccountStoreUnavailable" }
+  /account:
+    get:
+      operationId: getAccount
+      tags: [Account]
+      summary: Read the signed-in account
+      description: |
+        Returns the caller's own identity, freshly loaded rather than decoded
+        from the token, so a change made elsewhere is visible here immediately.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200":
+          description: The caller's identity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Identity" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/AccountStoreUnavailable" }
+  /account/profile:
+    patch:
+      operationId: updateAccountProfile
+      tags: [Account]
+      summary: Change the signed-in account's display name
+      description: |
+        The display name is the only mutable part of an identity. The `userid`
+        derived at registration is permanent, and changing the display name
+        never changes it.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              additionalProperties: false
+              properties:
+                displayName: { type: string }
+      responses:
+        "200":
+          description: The updated identity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Identity" }
+        "400":
+          description: "`empty_update`, `invalid_display_name`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "409":
+          description: "`display_name_taken`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /account/password:
+    put:
+      operationId: changeAccountPassword
+      tags: [Account]
+      summary: Change the signed-in account's password
+      description: |
+        Requires the current password even though the caller is already
+        authenticated: the token proves the session, and this proves the person.
+
+        A successful change bumps the account's authorization version, so
+        **every existing token stops working, including the one that made this
+        request**. The caller must sign in again.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              additionalProperties: false
+              properties:
+                currentPassword: { type: string, format: password, maxLength: 128 }
+                newPassword: { type: string, format: password, minLength: 8, maxLength: 128 }
+      responses:
+        "204":
+          description: The password was changed.
+        "400":
+          description: "`wrong_password`, `invalid_password`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+  /client/session:
+    post:
+      operationId: openClientSession
+      tags: [Client]
+      summary: Enter the world
+      description: |
+        Resolves a destination region, opens a session in the store shared with
+        viewer logins, and mints the **region ticket** — the only credential a
+        region ever sees. The acting user comes from the bearer token and never
+        from the path or body (`docs/CLIENT2.md`, "Arrival on the grid user
+        tier").
+
+        The ticket carries the arrival position, so the region learns where
+        world entry placed the session rather than taking a spawn position from
+        the client. It is region-scoped and short-lived, and a new one is
+        minted for each region.
+
+        `capabilities` is data, not a negotiation: it states what this
+        particular region serves, and it is re-resolved on every crossing. An
+        empty `transports` list means this region serves no session transport.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                start:
+                  type: string
+                  default: last
+                  description: |
+                    `last` (the default), `home`, or an explicit `Region/x/y/z`
+                    arrival point.
+
+                    `last` and `home` fall back to the configured welcome
+                    locations when the stored region is offline. **A named
+                    region that is offline is a 404, not a diversion**: the user
+                    asked for somewhere particular.
+                  example: Sandbox/128/128/25
+      responses:
+        "200":
+          description: The session, its region, its ticket, and the region's capabilities.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientSession" }
+        "400":
+          description: "`invalid_start` or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`destination_unavailable` — the named region is not online."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503":
+          description: |
+            `world_entry_unavailable` when this deployment serves no world
+            entry, or `destination_unavailable` when no online region can accept
+            the session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /client/channel:
+    get:
+      operationId: openGridChannel
+      tags: [Client]
+      summary: Open the grid channel (WebSocket)
+      description: |
+        Upgrades to the grid channel: the persistent connection carrying what
+        must reach a user regardless of which region they occupy. It is
+        anchored to the grid precisely so it survives region crossings
+        (`docs/CLIENT2.md`, "The communication mechanisms").
+
+        **Authentication is the first message, not a header**, because a browser
+        cannot set `Authorization` on a WebSocket. The connection must send an
+        `auth` envelope carrying a website token within 10 seconds or it is
+        closed. A region ticket is refused here, which is what its audience is
+        for.
+
+        Every message is a JSON envelope, and the encoding is self-describing by
+        its first byte — `{` is an envelope, and any other leading byte is an
+        encoding this server does not speak, refused by name rather than fed to
+        the JSON parser. One inbound message is capped at 64 KiB.
+
+        After a successful `auth` the server sends `hello`, then replays the
+        undelivered instant-message backlog in sent order, then live traffic.
+        The client may send `ping` (answered `pong`, correlation preserved); any
+        other type is answered `error` with code `unsupported_type`.
+
+        Server-initiated envelopes are `type: "notification"`, whose payload
+        `kind` is `system_notice` (from `POST /admin/users/{userId}/notice`) or
+        `instant_message` (from `POST /client/messages`).
+      responses:
+        "101":
+          description: Switching protocols. The channel is open but not yet authenticated.
+        "403":
+          description: The `Origin` is not allowlisted.
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /client/messages:
+    post:
+      operationId: sendInstantMessage
+      tags: [Client]
+      summary: Send an instant message
+      description: |
+        Stores a message and then attempts live delivery over the recipient's
+        open grid channels. **Durability comes first** — that is what
+        distinguishes an instant message from a system notice — so
+        `delivered: 0` means the recipient was not connected and the message
+        waits in their backlog, not that anything was lost.
+
+        The sender is the bearer token's account, never a body field.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, message]
+              additionalProperties: false
+              properties:
+                to:
+                  type: string
+                  format: uuid
+                  description: The recipient's user id.
+                message:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                  description: |
+                    Bounded in characters, not bytes — a byte limit would shrink
+                    it up to fourfold for non-ASCII text.
+      responses:
+        "200":
+          description: The message was stored, and reached this many live connections.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, sentAt, delivered]
+                properties:
+                  id: { type: string, format: uuid }
+                  sentAt: { type: string, format: date-time }
+                  delivered:
+                    type: integer
+                    description: Live connections that took it; 0 means it waits in the backlog.
+        "400":
+          description: "`invalid_message`, `invalid_recipient`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`not_found` — no such recipient."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503":
+          description: "`messages_unavailable` — this deployment stores no messages."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /client/inventory:
+    get:
+      operationId: listClientInventoryFolders
+      tags: [Client]
+      summary: List the caller's whole folder skeleton
+      description: |
+        Returns every folder the caller owns — the whole navigable skeleton in
+        one call — plus the id of the root, so a client need not infer it from a
+        parent that is empty and must not hard-code one.
+
+        These are the same rows the viewer's AIS capability serves; only the
+        credential and the encoding differ. **Read-only on purpose**: every
+        mutation AIS supports carries ordering and permission rules that deserve
+        their own design rather than a JSON transcription of the LLSD ones.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200":
+          description: The root folder id and every folder the caller owns.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rootId, folders]
+                properties:
+                  rootId: { type: string, format: uuid }
+                  folders:
+                    type: array
+                    items: { $ref: "#/components/schemas/InventoryFolder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/InventoryUnavailable" }
+  /client/inventory/folder/{folderId}:
+    get:
+      operationId: getClientInventoryFolder
+      tags: [Client]
+      summary: Read one folder with its children
+      description: |
+        Looked up among the caller's own folders only, so another user's folder
+        is not refused by a check — it is simply not there.
+      security: [{ WebsiteToken: [] }]
+      parameters:
+        - name: folderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The folder, its child folders, and its items.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [folder, folders, items]
+                properties:
+                  folder: { $ref: "#/components/schemas/InventoryFolder" }
+                  folders:
+                    type: array
+                    items: { $ref: "#/components/schemas/InventoryFolder" }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/InventoryItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/InventoryNotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/InventoryUnavailable" }
+  /client/inventory/item/{itemId}:
+    get:
+      operationId: getClientInventoryItem
+      tags: [Client]
+      summary: Read one inventory item
+      security: [{ WebsiteToken: [] }]
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The item.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: "#/components/schemas/InventoryItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/InventoryNotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/InventoryUnavailable" }
+  /admin/users:
+    get:
+      operationId: listUsers
+      tags: [Administration]
+      summary: List or search accounts
+      description: |
+        Requires the `users` privilege. Results are a cursor page; a response
+        with no `nextCursor` is the last one.
+      security: [{ WebsiteToken: [] }]
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: Matches userid and display name.
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, maxLength: 512 }
+          description: The `nextCursor` from the previous page.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: A page of accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: "#/components/schemas/ManagedUser" }
+                  nextCursor: { type: string }
+        "400":
+          description: "`invalid_query` or `invalid_limit`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+  /admin/users/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: getUser
+      tags: [Administration]
+      summary: Read one account with its administrative state
+      description: Requires the `users` privilege.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    patch:
+      operationId: updateUser
+      tags: [Administration]
+      summary: Change an account's display name
+      description: Requires the `users` privilege. The userid is immutable.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              additionalProperties: false
+              properties:
+                displayName: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedUser" }
+        "400":
+          description: "`empty_update`, `invalid_display_name`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`display_name_taken`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /admin/users/{userId}/privileges:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    put:
+      operationId: replaceUserPrivileges
+      tags: [Administration]
+      summary: Replace an account's privileges
+      description: |
+        Requires the `admin` privilege. The list **replaces** what the account
+        had; it is not merged.
+
+        Two rules constrain it beyond that: only a `super` account may grant or
+        revoke `super`, and the final `super` account cannot be demoted, since a
+        grid with no super account has no way back.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [privs]
+              additionalProperties: false
+              properties:
+                privs: { $ref: "#/components/schemas/Privileges" }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedUser" }
+        "400":
+          description: "`invalid_privileges` or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            `forbidden` — the caller lacks `admin`, or lacks `super` and tried
+            to grant or revoke it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "409":
+          description: "`last_super` — the final super account cannot be demoted."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /admin/users/{userId}/ban:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    put:
+      operationId: banUser
+      tags: [Administration]
+      summary: Ban an account
+      description: |
+        Requires the `bans` privilege. Bumps the account's authorization
+        version, so every token it holds stops working immediately.
+
+        Omitting `expiresAt` makes the ban permanent until lifted. A ban whose
+        expiry has passed leaves the account active without any further call.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              additionalProperties: false
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 1024 }
+                expiresAt:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        "200": { $ref: "#/components/responses/ManagedUser" }
+        "400":
+          description: "`invalid_reason` or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    delete:
+      operationId: unbanUser
+      tags: [Administration]
+      summary: Lift a ban
+      description: Requires the `bans` privilege. Idempotent.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /admin/users/{userId}/tags:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    put:
+      operationId: setUserTags
+      tags: [Administration]
+      summary: Classify an account
+      description: |
+        Requires the `users` privilege. `kind` is provenance and `tags` are free
+        classification; both are replaced wholesale.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, tags]
+              additionalProperties: false
+              properties:
+                kind:
+                  type: string
+                  enum: [system, testing, default]
+                tags: { $ref: "#/components/schemas/Tags" }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedUser" }
+        "400":
+          description: "`invalid_kind`, `invalid_tags`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+  /admin/users/{userId}/notice:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    post:
+      operationId: sendUserNotice
+      tags: [Administration]
+      summary: Send a system notice to a user's open channels
+      description: |
+        Requires the `users` privilege. Best-effort delivery to what is
+        connected now: **notices are not stored**, unlike instant messages, so
+        `delivered: 0` is an honest answer for a user who is offline rather than
+        a failure.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              additionalProperties: false
+              properties:
+                message:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                  description: Bounded in characters, not bytes.
+      responses:
+        "200":
+          description: How many of the user's open channel connections took the notice.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivered]
+                properties:
+                  delivered: { type: integer }
+        "400":
+          description: "`invalid_message` or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+  /admin/regions:
+    get:
+      operationId: listRegions
+      tags: [Administration]
+      summary: List provisioned regions
+      description: |
+        Requires the `regions` privilege. `state` is derived, not stored: a
+        disabled region is `undeployed`, an enabled one with a live lease is
+        `online`, and an enabled one without is `offline`.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200":
+          description: Every provisioned region.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [regions]
+                properties:
+                  regions:
+                    type: array
+                    items: { $ref: "#/components/schemas/ManagedRegion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+    post:
+      operationId: createRegion
+      tags: [Administration]
+      summary: Provision a region
+      description: |
+        Requires the `deploy` privilege. Creates the region enabled and returns
+        its **access key exactly once**: the key is stored only as a hash, so a
+        lost one is replaced by redeploying rather than recovered.
+
+        Size follows the
+        [ADR 0036](../docs/adr/0036-rectangular-regions-via-facet-presentation.md)
+        shape rule — the shorter side must be 1, 2, or 4 tiles of 256 m, and the
+        longer side must be a whole multiple of the shorter. A rectangle is
+        presented to viewers as square facets, named by `facetNames` beyond the
+        first.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateRegionRequest" }
+      responses:
+        "201":
+          description: The region and its one-time access key.
+          headers:
+            Location:
+              description: The new region's URL.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegionDeployment" }
+        "400":
+          description: "`invalid_region`, `invalid_kind`, `invalid_tags`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`region_conflict` — the name or coordinates collide with an existing region."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+  /admin/regions/{regionId}:
+    parameters:
+      - $ref: "#/components/parameters/RegionId"
+    get:
+      operationId: getRegion
+      tags: [Administration]
+      summary: Read one provisioned region
+      description: Requires the `regions` privilege.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedRegion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+    patch:
+      operationId: updateRegion
+      tags: [Administration]
+      summary: Change a region's name, owner, or endpoint
+      description: |
+        Requires the `regions` privilege. Map coordinates move through
+        `PUT /admin/regions/{regionId}/map-position` instead, which is gated on
+        the separate `map` privilege; size is fixed at creation.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                name: { type: string, minLength: 1, maxLength: 128 }
+                ownerUserId: { type: string, format: uuid }
+                publicEndpoint: { type: string, format: uri }
+                viewerPort: { type: integer, minimum: 1, maximum: 65535 }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedRegion" }
+        "400":
+          description: "`empty_update`, `invalid_region`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`region_conflict`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+  /admin/regions/{regionId}/map-position:
+    parameters:
+      - $ref: "#/components/parameters/RegionId"
+    put:
+      operationId: moveRegion
+      tags: [Administration]
+      summary: Relocate a region on the world map
+      description: |
+        Requires the `map` privilege, kept separate from `regions` because a
+        move changes what every other region's neighbor resolution sees. The
+        store refuses a position that would overlap an existing region,
+        including one overlapped only by a larger region's extent.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gridX, gridY]
+              additionalProperties: false
+              properties:
+                gridX: { type: integer, minimum: 0 }
+                gridY: { type: integer, minimum: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedRegion" }
+        "400":
+          description: "`invalid_position` or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "409":
+          description: "`region_conflict` — the target coordinates overlap another region."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+  /admin/regions/{regionId}/deployment:
+    parameters:
+      - $ref: "#/components/parameters/RegionId"
+    post:
+      operationId: deployRegion
+      tags: [Administration]
+      summary: Enable a region and issue a fresh access key
+      description: |
+        Requires the `deploy` privilege. Enables the region and **rotates its
+        access key**, returning the new one exactly once. Redeploying is
+        therefore also how a lost key is replaced — and it invalidates the
+        previous key, so a region still running on that key fails its next
+        registration.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200":
+          description: The region and its new one-time access key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegionDeployment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+    delete:
+      operationId: undeployRegion
+      tags: [Administration]
+      summary: Disable a region and revoke its access key
+      description: |
+        Requires the `undeploy` privilege — deliberately not granted by `admin`,
+        because this drops a running region out of discovery.
+
+        Disables the region, rotates its access key to an undisclosed value, and
+        ends any live lease so it leaves discovery immediately.
+
+        **The map position is retained**, which is the one documented deviation
+        from the contract: `provisioned_regions` stores the coordinates NOT
+        NULL, so reusing them means moving or deleting the region.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/ManagedRegion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+  /admin/regions/{regionId}/tags:
+    parameters:
+      - $ref: "#/components/parameters/RegionId"
+    put:
+      operationId: setRegionTags
+      tags: [Administration]
+      summary: Classify a region
+      description: |
+        Requires the `regions` privilege. `kind` is provenance and is mutually
+        exclusive: `grid` for a region the operator provides, `user` for one a
+        resident created. Essential or protected status is a tag (for example
+        `system`), never a kind.
+      security: [{ WebsiteToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, tags]
+              additionalProperties: false
+              properties:
+                kind:
+                  type: string
+                  enum: [grid, user]
+                tags: { $ref: "#/components/schemas/Tags" }
+      responses:
+        "200": { $ref: "#/components/responses/ManagedRegion" }
+        "400":
+          description: "`invalid_kind`, `invalid_tags`, or `invalid_json`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+  /admin/system/status:
+    get:
+      operationId: getSystemStatus
+      tags: [Administration]
+      summary: Read the grid overview
+      description: |
+        Requires the `system` privilege. A read-only aggregate of provisioned
+        regions by derived state and of active viewer presences, per region and
+        in total.
+      security: [{ WebsiteToken: [] }]
+      responses:
+        "200":
+          description: The overview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { $ref: "#/components/responses/RegionStoreUnavailable" }
+components:
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: |
+        A UUID. A path segment that is not a UUID answers `404 route_not_found`
+        rather than a validation error: the router never matched an endpoint.
+      schema: { type: string, format: uuid }
+    RegionId:
+      name: regionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  securitySchemes:
+    WebsiteToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A website token from `POST /tokens` or `POST /verifications`. It is
+        checked against the account's current authorization version on every
+        request, so a password change, a privilege change, or a ban invalidates
+        outstanding tokens at once. A region ticket from `POST /client/session`
+        is not accepted here.
+  responses:
+    Token:
+      description: A website token and the authenticated identity.
+      headers:
+        Cache-Control:
+          description: Always `no-store`.
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/TokenResponse" }
+    ManagedUser:
+      description: The account with its administrative state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ManagedUser" }
+    ManagedRegion:
+      description: The provisioned region with its derived state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ManagedRegion" }
+    Unauthorized:
+      description: |
+        `unauthorized` — the token is absent, malformed, expired, or superseded
+        by an authorization-version change. Carries `WWW-Authenticate: Bearer`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "`forbidden` — the account lacks the privilege this operation requires."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found` — no such resource."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InventoryNotFound:
+      description: |
+        `not_found`. One message for a folder that does not exist, an item that
+        does not exist, and either owned by somebody else: distinguishing them
+        would let a caller probe other people's inventory by id.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MethodNotAllowed:
+      description: "`method_not_allowed`. The `Allow` header lists what this route accepts."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: "`rate_limited`. Carries `Retry-After`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AccountStoreUnavailable:
+      description: "`account_store_unavailable` — account storage is not configured or not reachable."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RegionStoreUnavailable:
+      description: "`region_store_unavailable` — region storage is not configured or not reachable."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InventoryUnavailable:
+      description: "`inventory_unavailable` — inventory storage is not configured or not reachable."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: A stable machine-readable slug. Branch on this, not on `message`.
+        message:
+          type: string
+          description: Prose for a human. Wording may change without notice.
+        field:
+          type: string
+          description: The offending request property, when one can be named.
+    Privileges:
+      type: string
+      description: |
+        A comma-separated list of privilege names, normalized to sorted and
+        deduplicated on write. Empty means no privileges.
+
+        `admin` expands to a curated common set — `users`, `bans`, `regions`,
+        `map`, `deploy` — and deliberately **excludes** `undeploy`, which must
+        be granted on its own. `super` grants everything, including itself.
+      pattern: "^$|^[a-z][a-z0-9_-]*(,[a-z][a-z0-9_-]*)*$"
+      example: users,bans
+    Tags:
+      type: string
+      description: A comma-separated list of lowercase tokens, normalized on write.
+      example: system,beta
+    Identity:
+      type: object
+      description: |
+        An avatar identity. **Not a third-party profile**: `email` is on it, and
+        no route serves an Identity to anyone but its owner or an administrator.
+      required: [id, userid, displayName, rezDate, privs]
+      properties:
+        id: { type: string, format: uuid }
+        userid:
+          type: string
+          description: The immutable `first.last` login ID.
+        displayName: { type: string }
+        email:
+          type: string
+          format: email
+          description: Present for the account's own session and for administrators.
+        rezDate:
+          type: string
+          format: date-time
+          description: When the avatar was created.
+        privs: { $ref: "#/components/schemas/Privileges" }
+    Ban:
+      type: object
+      required: [reason, bannedAt, bannedBy]
+      properties:
+        reason: { type: string }
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absent for a ban with no end.
+        bannedAt: { type: string, format: date-time }
+        bannedBy:
+          type: string
+          format: uuid
+          description: The administrator who imposed it.
+    ManagedUser:
+      allOf:
+        - $ref: "#/components/schemas/Identity"
+        - type: object
+          required: [state, kind, tags]
+          properties:
+            state:
+              type: string
+              enum: [active, banned]
+              description: |
+                Derived, not stored. `banned` only while a ban exists and has
+                not expired; an expired ban leaves the account active with no
+                further call.
+            ban: { $ref: "#/components/schemas/Ban" }
+            kind:
+              type: string
+              enum: [system, testing, default]
+            tags: { $ref: "#/components/schemas/Tags" }
+    TokenResponse:
+      type: object
+      required: [accessToken, tokenType, expiresAt, identity]
+      properties:
+        accessToken: { type: string }
+        tokenType: { type: string, enum: [Bearer] }
+        expiresAt: { type: string, format: date-time }
+        identity: { $ref: "#/components/schemas/Identity" }
+    Version:
+      type: object
+      required: [service, version, apiVersion, client]
+      properties:
+        service: { type: string, example: homeworldz-api }
+        version:
+          type: string
+          description: The build version. Matches the internal tier's `/version` shape.
+        apiVersion: { type: string, example: v1 }
+        client:
+          type: object
+          required: [protocol, minimumProtocol, grid, regions]
+          properties:
+            protocol:
+              type: integer
+              description: The client-facing protocol version this grid speaks.
+            minimumProtocol:
+              type: integer
+              description: The oldest client protocol this grid still accepts.
+            grid:
+              type: object
+              description: |
+                Capabilities the grid services serve themselves, and therefore
+                guaranteed by the software answering this request.
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: The operator-facing grid name.
+                channel:
+                  type: string
+                  example: websocket
+                channelURL:
+                  type: string
+                  format: uri
+                  description: |
+                    Absolute `wss://` URL of the grid channel, present when the
+                    deployment knows its public URL. A client that probed can
+                    otherwise derive it from the API base it already used.
+            regions:
+              type: object
+              description: |
+                What every leased region serves, guaranteed by the registration
+                handshake rather than by this service, and only to its protocol
+                floor.
+              required: [transports, assetFormats, meshedPrims]
+              properties:
+                transports:
+                  type: array
+                  items: { type: string }
+                assetFormats:
+                  type: array
+                  items: { type: string }
+                meshedPrims: { type: boolean }
+            welcome:
+              type: object
+              description: |
+                The default landing region for a login screen. **No endpoint,
+                deliberately**, so the probe does not become a region directory.
+                Absent when no arrival point is configured: a fabricated default
+                would re-create the undefined landing this setting exists to
+                remove.
+              required: [name]
+              properties:
+                name: { type: string }
+                gridX: { type: integer }
+                gridY: { type: integer }
+    ClientSession:
+      type: object
+      required: [session, region, ticket, capabilities]
+      properties:
+        session:
+          type: object
+          required: [id, expiresAt]
+          properties:
+            id: { type: string, format: uuid }
+            expiresAt:
+              type: string
+              format: date-time
+              description: 12 hours out, matching the viewer session lifetime.
+        region:
+          type: object
+          required: [id, name, gridX, gridY, endpoint]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            gridX: { type: integer }
+            gridY: { type: integer }
+            endpoint: { type: string, format: uri }
+            position:
+              type: array
+              description: The arrival position, when one was resolved.
+              items: { type: number }
+              minItems: 3
+              maxItems: 3
+        ticket:
+          type: object
+          description: |
+            The region-scoped credential: short-lived, audience-bound, the only
+            thing a region is ever shown, and the carrier of the arrival
+            position.
+          required: [token, expiresAt]
+          properties:
+            token: { type: string }
+            expiresAt: { type: string, format: date-time }
+        capabilities:
+          type: object
+          required: [version, transports]
+          properties:
+            version: { type: integer }
+            transports:
+              type: array
+              description: Empty when this region serves no session transport.
+              items: { type: string }
+            sessionURL: { type: string, format: uri }
+    InventoryFolder:
+      type: object
+      required: [id, ownerUserId, parentId, name, typeDefault, version]
+      properties:
+        id: { type: string, format: uuid }
+        ownerUserId: { type: string, format: uuid }
+        parentId:
+          type: string
+          format: uuid
+          description: The root's parent is not itself a folder the user owns.
+        name: { type: string }
+        typeDefault:
+          type: integer
+          description: The asset type this folder is the default destination for, or -1.
+        version: { type: integer, format: int64 }
+    InventoryItem:
+      type: object
+      required:
+        [id, ownerUserId, creatorUserId, folderId, assetId, assetType,
+         inventoryType, name, description, flags, basePermissions,
+         currentPermissions, everyonePermissions, nextPermissions, saleType,
+         salePrice, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerUserId: { type: string, format: uuid }
+        creatorUserId: { type: string, format: uuid }
+        folderId: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        assetType: { type: integer }
+        inventoryType: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        flags: { type: integer, format: int64 }
+        basePermissions: { type: integer, format: int64 }
+        currentPermissions: { type: integer, format: int64 }
+        everyonePermissions: { type: integer, format: int64 }
+        nextPermissions: { type: integer, format: int64 }
+        saleType: { type: integer }
+        salePrice: { type: integer }
+        createdAt: { type: string, format: date-time }
+    CreateRegionRequest:
+      type: object
+      required: [name, ownerUserId, gridX, gridY, publicEndpoint]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        ownerUserId: { type: string, format: uuid }
+        gridX: { type: integer, minimum: 0 }
+        gridY: { type: integer, minimum: 0 }
+        publicEndpoint:
+          type: string
+          format: uri
+          description: An `http` or `https` URL with a host.
+        viewerPort:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          default: 42002
+          description: |
+            The first facet's viewer port. A rectangle's remaining facets take
+            consecutive ports from there.
+        size:
+          type: integer
+          enum: [1, 2, 4]
+          description: Square shorthand for `sizeX` and `sizeY`, in 256 m tiles.
+        sizeX:
+          type: integer
+          minimum: 1
+          description: Supersedes `size`. Tiles across.
+        sizeY:
+          type: integer
+          minimum: 1
+          description: Supersedes `size`. Tiles up.
+        facetNames:
+          type: array
+          description: |
+            Per-facet viewer names for a rectangle, one per facet beyond the
+            first, which uses the region name.
+          items: { type: string }
+        kind:
+          type: string
+          enum: [grid, user]
+          default: user
+        tags: { $ref: "#/components/schemas/Tags" }
+    ManagedRegion:
+      type: object
+      required:
+        [id, name, ownerUserId, gridX, gridY, publicEndpoint, viewerPort,
+         enabled, state, size, sizeX, sizeY, kind, tags]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        ownerUserId: { type: string, format: uuid }
+        gridX: { type: integer, nullable: true }
+        gridY: { type: integer, nullable: true }
+        publicEndpoint: { type: string, format: uri }
+        viewerPort: { type: integer }
+        enabled:
+          type: boolean
+          description: Whether the region is deployed. `state` folds this together with the lease.
+        state:
+          type: string
+          enum: [online, offline, undeployed]
+          description: |
+            Derived: `undeployed` when disabled, `online` when a live lease
+            exists, `offline` otherwise.
+        leaseExpiresAt:
+          type: string
+          format: date-time
+          description: Present only while online.
+        size:
+          type: integer
+          description: |
+            The square edge in tiles, or 0 for a rectangle. Predates
+            `sizeX`/`sizeY`
+            ([ADR 0036](../docs/adr/0036-rectangular-regions-via-facet-presentation.md))
+            and is kept so existing clients keep rendering square regions.
+        sizeX: { type: integer }
+        sizeY: { type: integer }
+        facetNames:
+          type: array
+          items: { type: string }
+        kind:
+          type: string
+          enum: [grid, user]
+        tags: { $ref: "#/components/schemas/Tags" }
+    RegionDeployment:
+      type: object
+      required: [region, accessKey]
+      properties:
+        region: { $ref: "#/components/schemas/ManagedRegion" }
+        accessKey:
+          type: string
+          description: |
+            **Shown once.** Stored only as a hash; a lost key is replaced by
+            redeploying, not recovered.
+    SystemStatus:
+      type: object
+      required: [regions, sessions, regionStatus]
+      properties:
+        regions:
+          type: object
+          required: [total, online, offline, undeployed]
+          properties:
+            total: { type: integer }
+            online: { type: integer }
+            offline: { type: integer }
+            undeployed: { type: integer }
+        sessions:
+          type: object
+          required: [total]
+          properties:
+            total:
+              type: integer
+              description: Active viewer presences across the grid.
+        regionStatus:
+          type: array
+          items:
+            type: object
+            required: [id, name, kind, state, sessions]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              kind: { type: string }
+              state:
+                type: string
+                enum: [online, offline, undeployed]
+              sessions: { type: integer }
+              leaseExpiresAt: { type: string, format: date-time }

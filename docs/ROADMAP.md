@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="88" aria-label="Phase 2 progress: 88%">88%</progress> | 88% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="89" aria-label="Phase 2 progress: 89%">89%</progress> | 89% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -121,7 +121,7 @@ client.
 - [x] Enforce build, rez, entry, script, and object-return policy at authoritative boundaries, including walk-in ejection, viewer-initiated return to Lost and Found, and periodic `OtherCleanTime` auto-return.
 - [x] Implement estate and region settings needed for terrain, access, maturity, and covenant, including the Region/Estate Terrain tab in full.
 - [x] Pin the walkable slope limit with a test.
-- [ ] Document the rest of the browser-facing API in `api/openapi-public.yaml`, which currently covers only the password-reset endpoints.
+- [x] Document the whole browser-facing API in `api/openapi-public.yaml`: discovery, registration, authentication, account, client world entry, the grid channel, client inventory, and every administrative user and region operation.
 - [x] Server support for password recovery.
 - [x] Password recovery screens on the management site.
 - [ ] Apply permissions recursively and consistently to linksets, object contents, attachments, and inventory transfers.
