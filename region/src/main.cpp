@@ -2761,6 +2761,15 @@ int main(int argc, char* argv[]) {
     // and each is a full decode — without this, every repeat re-sent the whole
     // facet backfill. Erased when the circuit is replaced or torn down.
     std::unordered_set<std::string> child_backfilled;
+    // The seed each of a session's facets was established with (ADR 0036),
+    // session id -> facet -> seed URL. A CrossedRegion into a facet the
+    // viewer already holds must carry the seed that facet already has: the
+    // viewer treats a matching seed as a no-op, where a fresh one tears down
+    // and rebuilds the region's capabilities and event poll — done on a live
+    // region in quick succession that crashed Firestorm mid-crossing
+    // (2026-08-20, KERNELBASE abort straight after process_enable_simulator
+    // for a region "already exists and is alive").
+    std::unordered_map<std::string, std::unordered_map<int, std::string>> session_facet_seeds;
     std::unordered_set<std::string> established_events;
     std::unordered_set<std::string> parcel_overlay_sent;
     std::unordered_map<std::string, LiveAvatar> avatars;
@@ -3525,6 +3534,7 @@ int main(int argc, char* argv[]) {
         movement_animations.erase(endpoint);
         handshake_replies.erase(endpoint);
         established_events.erase(session_id);
+        session_facet_seeds.erase(session_id);
         parcel_overlay_sent.erase(session_id);
         queued_viewer_events.erase(session_id);
         capability_arrival_gate.clear_session(session_id);
@@ -3676,6 +3686,7 @@ int main(int argc, char* argv[]) {
         const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
         auto facet_seed = region_public_endpoint + "/caps/seed/" + session_id + "/" +
             homeworldz::viewer::random_uuid();
+        session_facet_seeds[session_id][facet] = facet_seed;
         enqueue_viewer_event(session_id,
             homeworldz::viewer::enable_simulator_event_xml(
                 facet_handle(facet), *simulator, edge, edge));
@@ -10110,6 +10121,23 @@ int main(int argc, char* argv[]) {
                             // holds a circuit on (a crossing's re-arrival) is
                             // left alone. Squares have no siblings.
                             if (facet_count > 1) {
+                                // The arrival facet's seed is whatever the
+                                // viewer reached this circuit with — the login
+                                // seed, or a transit's suffixed one — so a
+                                // later CrossedRegion back here can repeat it
+                                // verbatim. Recorded only when absent: a
+                                // promotion arrives on a facet whose child
+                                // seed is already on file, and that one is
+                                // the viewer's truth.
+                                session_facet_seeds[session_id].try_emplace(
+                                    arrival_facet,
+                                    arrival ? region_public_endpoint + "/caps/seed/" +
+                                                  session_id + "/" + arrival->id
+                                            : region_public_endpoint + "/caps/seed/" + session_id);
+                                // The arrival backfill above already carried
+                                // this facet's world; a stray UseCircuitCode
+                                // on this key must not re-send it.
+                                child_backfilled.insert(endpoint);
                                 const std::string transport(endpoint_transport(endpoint));
                                 int offered = 0;
                                 for (int sibling = 0; sibling < facet_count; ++sibling) {
@@ -12661,19 +12689,30 @@ int main(int argc, char* argv[]) {
                             static_cast<float>(macro_position.y - facet_origin_y(standing_facet)),
                             static_cast<float>(macro_position.z)};
                         const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
-                        // The full ceremony, in the order a viewer expects it:
-                        // EnableSimulator opens the child connection,
-                        // EstablishAgentCommunication hands it the sibling
-                        // facet's seed (both via the shared helper), and
-                        // CrossedRegion promotes it. Without the middle event
-                        // the viewer stalls mid-crossing — frozen controls, no
-                        // CompleteAgentMovement, no backfill (found live,
-                        // 2026-08-19). With standing child circuits the first
-                        // two are redundant for a viewer that already holds
-                        // the child; a re-establish is harmless and covers a
-                        // viewer whose child never came up.
-                        const auto facet_seed = enqueue_facet_child_events(
-                            session_id, agent_id, standing_facet);
+                        // A viewer that already holds a live circuit on the
+                        // target facet gets CrossedRegion ALONE, carrying the
+                        // seed that facet was established with: a matching
+                        // seed is a no-op in the viewer, where re-enabling and
+                        // re-establishing a live region tears down and
+                        // rebuilds its capabilities and event poll — done in
+                        // quick succession that crashed Firestorm mid-crossing
+                        // (2026-08-20). The full EnableSimulator → establish →
+                        // CrossedRegion ceremony remains for a viewer whose
+                        // child circuit never came up or has died; without
+                        // the middle event such a viewer stalls mid-crossing
+                        // (found live, 2026-08-19).
+                        const auto target_key = facet_endpoint_key(
+                            std::string(endpoint_transport(endpoint)), standing_facet);
+                        std::optional<std::string> facet_seed;
+                        if (circuits.identity(target_key)) {
+                            const auto& seeds = session_facet_seeds[session_id];
+                            const auto known = seeds.find(standing_facet);
+                            facet_seed = known != seeds.end() ? known->second :
+                                region_public_endpoint + "/caps/seed/" + session_id;
+                        } else {
+                            facet_seed = enqueue_facet_child_events(
+                                session_id, agent_id, standing_facet);
+                        }
                         if (facet_seed) {
                             enqueue_viewer_event(session_id,
                                 homeworldz::viewer::crossed_region_event_xml({
