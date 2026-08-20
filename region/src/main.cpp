@@ -3777,6 +3777,25 @@ int main(int argc, char* argv[]) {
         flush_pending_viewer_events(session_id);
     };
 
+    // A facet's child seed for one session is DETERMINISTIC: the same session
+    // and facet always name the same visit id, so a repeated offer and every
+    // crossing ceremony carry exactly the seed the viewer's region was
+    // established with. A mismatched seed makes Firestorm tear down and
+    // rebuild that region's capabilities and event poll in place, and doing
+    // so on every crossing crashed it after a few round trips — the previous
+    // random visit id plus a bookkeeping lookup delivered exactly that
+    // (found live, 2026-08-20 evening). The arrival facet's seed stays the
+    // bare grid-issued one; siblings get this.
+    const auto facet_visit_id = [](int facet) {
+        char visit[37];
+        std::snprintf(visit, sizeof visit, "0000000f-ace0-4000-8000-%012x",
+                      static_cast<unsigned>(facet));
+        return std::string(visit);
+    };
+    const auto facet_child_seed = [&](const std::string& session_id, int facet) {
+        return region_public_endpoint + "/caps/seed/" + session_id + "/" +
+               facet_visit_id(facet);
+    };
     // The connection half of the facet ceremony (ADR 0036): EnableSimulator
     // opens the viewer's child connection to a sibling facet and
     // EstablishAgentCommunication hands it that facet's seed. Used standing at
@@ -3793,8 +3812,7 @@ int main(int argc, char* argv[]) {
             region_public_endpoint, target.viewer_port);
         if (!simulator) return std::nullopt;
         const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
-        auto facet_seed = region_public_endpoint + "/caps/seed/" + session_id + "/" +
-            homeworldz::viewer::random_uuid();
+        auto facet_seed = facet_child_seed(session_id, facet);
         session_facet_seeds[session_id][facet] = facet_seed;
         enqueue_viewer_event(session_id,
             homeworldz::viewer::enable_simulator_event_xml(
@@ -8019,15 +8037,17 @@ int main(int argc, char* argv[]) {
                                                 destination_facet)].viewer_port);
                                         // The seed rule of the crossing ceremony: a
                                         // standing circuit keeps the seed it was
-                                        // established with, a dead one gets the full
-                                        // EnableSimulator/establish preamble and a
-                                        // fresh seed.
+                                        // established with — computed, never looked
+                                        // up, same as the walking crossing — and a
+                                        // dead one gets the full preamble.
                                         std::optional<std::string> facet_seed;
                                         if (circuits.endpoint_for_facet(endpoint, destination_facet)) {
-                                            const auto& seeds = session_facet_seeds[session_id];
-                                            const auto known = seeds.find(destination_facet);
-                                            facet_seed = known != seeds.end() ? known->second :
-                                                region_public_endpoint + "/caps/seed/" + session_id;
+                                            const auto arrival =
+                                                session_arrival_facets.find(session_id);
+                                            facet_seed = (arrival != session_arrival_facets.end() &&
+                                                          arrival->second == destination_facet) ?
+                                                region_public_endpoint + "/caps/seed/" + session_id :
+                                                facet_child_seed(session_id, destination_facet);
                                         } else {
                                             facet_seed = enqueue_facet_child_events(
                                                 session_id, agent_id, destination_facet);
@@ -13015,10 +13035,19 @@ int main(int argc, char* argv[]) {
                             endpoint, standing_facet);
                         std::optional<std::string> facet_seed;
                         if (target_key) {
-                            const auto& seeds = session_facet_seeds[session_id];
-                            const auto known = seeds.find(standing_facet);
-                            facet_seed = known != seeds.end() ? known->second :
-                                region_public_endpoint + "/caps/seed/" + session_id;
+                            // Computed, never looked up: the seed the target
+                            // facet's region holds is the bare grid-issued one
+                            // for the facet the session arrived on and the
+                            // deterministic child seed for every other. The
+                            // old bookkeeping lookup could miss and fall back
+                            // wrong, and each mismatch made Firestorm rebuild
+                            // that region's caps mid-crossing — fatal after a
+                            // few round trips (found live, 2026-08-20).
+                            const auto arrival = session_arrival_facets.find(session_id);
+                            facet_seed = (arrival != session_arrival_facets.end() &&
+                                          arrival->second == standing_facet) ?
+                                region_public_endpoint + "/caps/seed/" + session_id :
+                                facet_child_seed(session_id, standing_facet);
                         } else {
                             facet_seed = enqueue_facet_child_events(
                                 session_id, agent_id, standing_facet);
