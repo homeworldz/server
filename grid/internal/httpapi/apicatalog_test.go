@@ -73,6 +73,23 @@ func TestAPICatalog(t *testing.T) {
 	}
 }
 
+// The site root is an index, not a 404 — discovery scanners refuse a site
+// whose root does not exist — while unrouted paths stay 404.
+func TestRootIndex(t *testing.T) {
+	handler := New(checker{}, "test", Options{GridPublicURL: "https://grid.example.com"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/", nil))
+	if response.Code != 200 ||
+		!strings.Contains(response.Body.String(), "/.well-known/api-catalog") {
+		t.Fatalf("root answered %d: %.80s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/no-such-route", nil))
+	if response.Code != 404 {
+		t.Fatalf("unrouted path answered %d", response.Code)
+	}
+}
+
 // An unconfigured website API is omitted from the catalog rather than
 // advertised as a dead anchor.
 func TestAPICatalogOmitsUnconfiguredWebsiteAPI(t *testing.T) {

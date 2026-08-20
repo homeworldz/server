@@ -234,7 +234,7 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 	mux.HandleFunc("/api/v1/task-extractions/", a.taskExtractionByID)
 	mux.HandleFunc("/api/v1/object-rezzes", a.objectRezzesRoot)
 	mux.HandleFunc("/api/v1/object-rezzes/", a.objectRezByID)
-	mux.HandleFunc("/", a.notFound)
+	mux.HandleFunc("/", a.root)
 	return withRequestID(withRequestLogging(
 		authenticateInternal(mux, options.ServiceToken, options.WorkerToken), options.Logger,
 	))
@@ -501,6 +501,39 @@ func (a *API) buildVersion(w http.ResponseWriter, _ *http.Request) {
 
 func (a *API) notFound(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "route not found"})
+}
+
+// root answers the bare site root with a small index naming the grid and its
+// public artifacts — a person landing on the service host sees where things
+// are instead of a 404, and automated discovery scanners accept the site as
+// existing. Every other unrouted path stays a 404; this handler is the mux's
+// catch-all, so it must tell the two apart itself.
+func (a *API) root(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		a.notFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeJSON(w, http.StatusMethodNotAllowed, Error{
+			Code: "method_not_allowed", Message: "the index answers GET"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	page := "<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\">" +
+		"<title>" + a.gridName + " grid</title></head>\n<body>\n" +
+		"<h1>" + a.gridName + " grid service</h1>\n" +
+		"<p>Version " + a.version + ".</p>\n<ul>\n" +
+		"<li><a href=\"/get_grid_info\">Grid information</a></li>\n" +
+		"<li><a href=\"/stats.csv\">Daily statistics</a></li>\n" +
+		"<li><a href=\"/.well-known/api-catalog\">API catalog</a> (RFC 9727)</li>\n" +
+		"<li><a href=\"/openapi.yaml\">Grid API description</a></li>\n" +
+		"<li><a href=\"/openapi-public.yaml\">Public API description</a></li>\n"
+	if a.aboutURL != "" {
+		page += "<li><a href=\"" + a.aboutURL + "\">About</a></li>\n"
+	}
+	page += "</ul>\n</body>\n</html>\n"
+	_, _ = w.Write([]byte(page))
 }
 
 func (a *API) regionsRoot(w http.ResponseWriter, r *http.Request) {
