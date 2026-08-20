@@ -360,6 +360,10 @@ struct PendingEventResponse {
     std::string request;
     std::string session_id;
     std::chrono::steady_clock::time_point deadline{};
+    // The facet whose region this poll belongs to (ADR 0036). Events are
+    // delivered only through the avatar's primary facet's poll, matching
+    // where a viewer expects every event: its current region's queue.
+    int facet{};
 };
 
 // A mesh upload whose publish is running on the worker thread. The socket stays
@@ -2875,6 +2879,9 @@ int main(int argc, char* argv[]) {
         temporary_expirations;
     std::unordered_map<std::string, std::deque<std::string>> queued_viewer_events;
     std::vector<PendingEventResponse> pending_event_responses;
+    // The facet a session's avatar arrived on (login or teleport arrival),
+    // which is the facet its unsuffixed event poll belongs to (ADR 0036).
+    std::unordered_map<std::string, int> session_arrival_facets;
     // Uploads whose publish is running off the loop, each holding the socket
     // its 201 will be written to (mesh_publish.h). The same deferral the
     // viewer's event queue uses, for the same reason: the loop must keep
@@ -3584,6 +3591,7 @@ int main(int argc, char* argv[]) {
         handshake_replies.erase(endpoint);
         established_events.erase(session_id);
         session_facet_seeds.erase(session_id);
+        session_arrival_facets.erase(session_id);
         parcel_overlay_sent.erase(session_id);
         queued_viewer_events.erase(session_id);
         capability_arrival_gate.clear_session(session_id);
@@ -3696,11 +3704,45 @@ int main(int argc, char* argv[]) {
         queued_viewer_events.erase(queued);
         return events;
     };
+    // Which facet's region an event poll belongs to (ADR 0036): a suffixed
+    // visit id names the child facet whose seed carries that suffix; the
+    // unsuffixed login poll and a transit-arrival poll are the facet the
+    // avatar arrived on.
+    const auto event_poll_facet = [&](const std::string& session_id,
+                                      const std::string& visit_id) {
+        if (!visit_id.empty()) {
+            if (const auto seeds = session_facet_seeds.find(session_id);
+                seeds != session_facet_seeds.end())
+                for (const auto& [facet, seed] : seeds->second)
+                    if (seed.size() > visit_id.size() + 1 &&
+                        seed.ends_with(visit_id) &&
+                        seed[seed.size() - visit_id.size() - 1] == '/')
+                        return facet;
+        }
+        const auto arrival = session_arrival_facets.find(session_id);
+        return arrival != session_arrival_facets.end() ? arrival->second : 0;
+    };
+    // The facet of the session's primary circuit; nullopt before the avatar
+    // exists (the login poll starts before CompleteAgentMovement).
+    const auto session_primary_facet = [&](const std::string& session_id) -> std::optional<int> {
+        for (const auto& [live_endpoint, live] : avatars)
+            if (live.session_id == session_id)
+                return endpoint_facet_of(live_endpoint);
+        return std::nullopt;
+    };
     const auto flush_pending_viewer_events = [&](const std::string& session_id) {
         const auto queued = queued_viewer_events.find(session_id);
         if (queued == queued_viewer_events.end() || queued->second.empty()) return;
+        // Only the primary facet's poll may carry events: a viewer expects
+        // everything on its current region's queue, and an event drained by a
+        // sibling facet's poll is attributed to that sibling — About Land then
+        // asks about the wrong region's ground (found live, 2026-08-20).
+        const auto primary = session_primary_facet(session_id);
         const auto pending = std::find_if(pending_event_responses.begin(), pending_event_responses.end(),
-            [&](const PendingEventResponse& candidate) { return candidate.session_id == session_id; });
+            [&](const PendingEventResponse& candidate) {
+                return candidate.session_id == session_id &&
+                       (!primary || candidate.facet == *primary);
+            });
         if (pending == pending_event_responses.end()) return;
         const auto events = take_viewer_events(session_id);
         const auto response = homeworldz::http::response_for_content(
@@ -5760,7 +5802,12 @@ int main(int argc, char* argv[]) {
                                               << "}" << std::endl;
                                 }
                             }
-                            const auto events = take_viewer_events(session_id);
+                            const auto poll_facet =
+                                event_poll_facet(session_id, capability_visit_id);
+                            const auto primary = session_primary_facet(session_id);
+                            const bool may_drain = !primary || *primary == poll_facet;
+                            const auto events = may_drain ? take_viewer_events(session_id)
+                                                          : std::vector<std::string>{};
                             if (!events.empty()) {
                                 response = homeworldz::http::response_for_content(
                                     request, 200, "application/llsd+xml",
@@ -5768,7 +5815,8 @@ int main(int argc, char* argv[]) {
                             } else {
                                 pending_event_responses.push_back(PendingEventResponse{
                                     client, std::string(request), session_id,
-                                    std::chrono::steady_clock::now() + std::chrono::seconds(20)});
+                                    std::chrono::steady_clock::now() + std::chrono::seconds(20),
+                                    poll_facet});
                                 response_deferred = true;
                             }
                         } else if (authorized && texture && homeworldz::viewer::parse_uuid(texture->texture)) {
@@ -10045,6 +10093,10 @@ int main(int argc, char* argv[]) {
                                     now + std::chrono::seconds(5);
                                 avatar_iterator->second.session_id =
                                     homeworldz::viewer::format_uuid(identity->session_id);
+                                // The unsuffixed event poll (login) and the
+                                // transit-arrival poll belong to this facet.
+                                session_arrival_facets[avatar_iterator->second.session_id] =
+                                    arrival_facet;
                                 push_agent_parcel(avatar_iterator->second);
                                 avatar_iterator->second.restored_flying_until =
                                     avatar_iterator->second.controller.state().flying ?
