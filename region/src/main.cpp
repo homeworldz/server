@@ -1813,7 +1813,31 @@ int main(int argc, char* argv[]) {
     // the record has no owner (older provisioning) the default parcel is public land.
     std::optional<homeworldz::parcel::ParcelSet> parcels;
     try {
-        if (auto restored = storage->load_parcels()) {
+        auto restored = storage->load_parcels();
+        // "Bitmaps must match this region size" is the restore contract, and a
+        // provisioning resize breaks it invisibly: a bitmap saved on the old
+        // shape reads as garbage coverage on the new grid, so ground beyond
+        // the old extent belongs to no parcel and every parcel request there
+        // goes unanswered — the viewer's land selection draws and immediately
+        // vanishes (found live on the remapped Sandbox, 2026-08-20). Byte
+        // length is shape for every size the grid can provision except a pure
+        // 90-degree swap, which nothing stored distinguishes; a stale set is
+        // discarded loudly and the region starts over as one default parcel.
+        if (restored) {
+            const auto expected_bytes = homeworldz::parcel::ParcelSet::full_bitmap(
+                region_size_x / 4, region_size_y / 4).size();
+            const auto stale = std::count_if(restored->begin(), restored->end(),
+                [&](const auto& parcel) { return parcel.bitmap.size() != expected_bytes; });
+            if (stale != 0) {
+                std::cout << "{\"level\":\"warn\",\"message\":\"stored parcels predate the region's"
+                             " current shape and were discarded\",\"discarded\":"
+                          << restored->size() << ",\"mismatched\":" << stale
+                          << ",\"sizeX\":" << region_size_x
+                          << ",\"sizeY\":" << region_size_y << "}" << std::endl;
+                restored.reset();
+            }
+        }
+        if (restored) {
             parcels.emplace(region_size_x, region_size_y, std::move(*restored));
             std::cout << "{\"level\":\"info\",\"message\":\"parcels restored\",\"count\":"
                       << parcels->parcels().size() << "}" << std::endl;
