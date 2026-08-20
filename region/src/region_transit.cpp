@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -39,7 +41,7 @@ std::optional<std::array<float, 3>> resolve_region_teleport_position(
     return requested_position;
 }
 
-std::optional<AvatarBorderCrossing> plan_avatar_border_crossing(
+std::optional<BorderCrossing> plan_border_crossing(
     int source_grid_x, int source_grid_y, int source_size_x, int source_size_y,
     std::array<double, 3> source_position,
     std::span<const grid::RegionNeighbor> neighbors, double destination_inset) {
@@ -84,7 +86,7 @@ std::optional<AvatarBorderCrossing> plan_avatar_border_crossing(
             if (!orthogonal_match) continue;
             const auto maximum_x = std::max(destination_inset, neighbor.size_x - destination_inset);
             const auto maximum_y = std::max(destination_inset, neighbor.size_y - destination_inset);
-            return AvatarBorderCrossing{
+            return BorderCrossing{
                 neighbor,
                 {static_cast<float>(std::clamp(global_x - neighbor_x,
                                                destination_inset, maximum_x)),
@@ -94,6 +96,241 @@ std::optional<AvatarBorderCrossing> plan_avatar_border_crossing(
         }
     }
     return std::nullopt;
+}
+
+namespace {
+
+// The envelope is written and read here and nowhere else, so it uses the
+// smallest reader that can do the job rather than a JSON library the region
+// does not otherwise carry. Every field is emitted, so every field is there to
+// be found; a document missing one is rejected rather than defaulted, because
+// a crossing that quietly defaults an owner or a position produces a plausible
+// wrong object instead of a visible failure.
+std::string_view json_string_field(std::string_view document, std::string_view name) {
+    const std::string marker = "\"" + std::string(name) + "\":\"";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return {};
+    const auto value_start = start + marker.size();
+    const auto end = document.find('"', value_start);
+    if (end == std::string_view::npos) return {};
+    return document.substr(value_start, end - value_start);
+}
+
+std::optional<double> json_number_field(std::string_view document, std::string_view name) {
+    const std::string marker = "\"" + std::string(name) + "\":";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return std::nullopt;
+    const auto rest = document.substr(start + marker.size());
+    double value{};
+    const auto result = std::from_chars(rest.data(), rest.data() + rest.size(), value);
+    if (result.ec != std::errc{} || result.ptr == rest.data()) return std::nullopt;
+    return value;
+}
+
+// A bracketed run of numbers, read as exactly `count` of them. A vector that
+// arrived short is a malformed document, not a vector of zeroes.
+template <std::size_t count>
+std::optional<std::array<double, count>> json_number_array(
+    std::string_view document, std::string_view name) {
+    const std::string marker = "\"" + std::string(name) + "\":[";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return std::nullopt;
+    auto rest = document.substr(start + marker.size());
+    std::array<double, count> values{};
+    for (std::size_t index = 0; index < count; ++index) {
+        while (!rest.empty() && (rest.front() == ' ' || rest.front() == ',')) rest.remove_prefix(1);
+        const auto result = std::from_chars(rest.data(), rest.data() + rest.size(), values[index]);
+        if (result.ec != std::errc{} || result.ptr == rest.data()) return std::nullopt;
+        rest.remove_prefix(static_cast<std::size_t>(result.ptr - rest.data()));
+    }
+    while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
+    if (rest.empty() || rest.front() != ']') return std::nullopt;
+    return values;
+}
+
+std::vector<std::string> json_string_array(std::string_view document, std::string_view name) {
+    std::vector<std::string> values;
+    const std::string marker = "\"" + std::string(name) + "\":[";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return values;
+    auto rest = document.substr(start + marker.size());
+    while (!rest.empty() && rest.front() != ']') {
+        if (rest.front() != '"') {
+            rest.remove_prefix(1);
+            continue;
+        }
+        rest.remove_prefix(1);
+        const auto end = rest.find('"');
+        if (end == std::string_view::npos) return values;
+        values.emplace_back(rest.substr(0, end));
+        rest.remove_prefix(end + 1);
+    }
+    return values;
+}
+
+// The nested linkset asset, lifted out whole. It is itself JSON, so it travels
+// raw rather than escaped into a string: the crossing hands the destination
+// the same bytes a take would have written, and the destination reads them
+// with the same parser.
+std::string_view json_nested_object(std::string_view document, std::string_view name) {
+    const std::string marker = "\"" + std::string(name) + "\":{";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return {};
+    const auto object_start = start + marker.size() - 1;
+    std::size_t depth = 0;
+    bool quoted_text = false;
+    bool escaped = false;
+    for (auto index = object_start; index < document.size(); ++index) {
+        const auto character = document[index];
+        if (quoted_text) {
+            if (escaped) escaped = false;
+            else if (character == '\\') escaped = true;
+            else if (character == '"') quoted_text = false;
+            continue;
+        }
+        if (character == '"') quoted_text = true;
+        else if (character == '{') ++depth;
+        else if (character == '}' && --depth == 0)
+            return document.substr(object_start, index - object_start + 1);
+    }
+    return {};
+}
+
+std::string quoted_string(std::string_view value) {
+    std::string result{'"'};
+    for (const auto character : value) {
+        if (character == '"' || character == '\\') result.push_back('\\');
+        result.push_back(character);
+    }
+    result.push_back('"');
+    return result;
+}
+
+// Round-trip precision, deliberately: a crossing that rounded a position would
+// move the object, and one that rounded a velocity would bend its path.
+std::string number(double value) {
+    std::array<char, 32> buffer{};
+    const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    return std::string(buffer.data(), result.ptr);
+}
+
+template <std::size_t count>
+std::string number_array(const std::array<double, count>& values) {
+    std::string result{'['};
+    for (std::size_t index = 0; index < count; ++index) {
+        if (index != 0) result.push_back(',');
+        result += number(values[index]);
+    }
+    result.push_back(']');
+    return result;
+}
+
+} // namespace
+
+std::string encode_object_transit(const ObjectTransit& transit) {
+    std::string children{'['};
+    for (std::size_t index = 0; index < transit.child_object_ids.size(); ++index) {
+        if (index != 0) children.push_back(',');
+        children += quoted_string(transit.child_object_ids[index]);
+    }
+    children.push_back(']');
+    return std::string{"{\"id\":"} + quoted_string(transit.id) +
+        ",\"sourceRegionId\":" + quoted_string(transit.source_region_id) +
+        ",\"destinationRegionId\":" + quoted_string(transit.destination_region_id) +
+        ",\"objectId\":" + quoted_string(transit.object_id) +
+        ",\"childObjectIds\":" + children +
+        ",\"ownerId\":" + quoted_string(transit.owner_id) +
+        ",\"creationDate\":" + std::to_string(transit.creation_date) +
+        ",\"position\":" + number_array(transit.position) +
+        ",\"rotation\":" + number_array(transit.rotation) +
+        ",\"linearVelocity\":" + number_array(transit.linear_velocity) +
+        ",\"angularVelocity\":" + number_array(transit.angular_velocity) +
+        ",\"linkset\":" + transit.linkset + "}";
+}
+
+std::optional<ObjectTransit> parse_object_transit(std::string_view document) {
+    ObjectTransit transit;
+    transit.id = json_string_field(document, "id");
+    transit.source_region_id = json_string_field(document, "sourceRegionId");
+    transit.destination_region_id = json_string_field(document, "destinationRegionId");
+    transit.object_id = json_string_field(document, "objectId");
+    transit.child_object_ids = json_string_array(document, "childObjectIds");
+    transit.owner_id = json_string_field(document, "ownerId");
+    transit.linkset = json_nested_object(document, "linkset");
+    const auto creation_date = json_number_field(document, "creationDate");
+    const auto position = json_number_array<3>(document, "position");
+    const auto rotation = json_number_array<4>(document, "rotation");
+    const auto linear = json_number_array<3>(document, "linearVelocity");
+    const auto angular = json_number_array<3>(document, "angularVelocity");
+    if (transit.id.empty() || transit.source_region_id.empty() ||
+        transit.destination_region_id.empty() || transit.object_id.empty() ||
+        transit.owner_id.empty() || transit.linkset.empty() ||
+        transit.source_region_id == transit.destination_region_id ||
+        !creation_date || !position || !rotation || !linear || !angular)
+        return std::nullopt;
+    transit.creation_date = static_cast<std::uint64_t>(*creation_date);
+    transit.position = *position;
+    transit.rotation = *rotation;
+    transit.linear_velocity = *linear;
+    transit.angular_velocity = *angular;
+    for (const auto& values : {transit.position, transit.linear_velocity, transit.angular_velocity})
+        for (const auto value : values)
+            if (!std::isfinite(value)) return std::nullopt;
+    for (const auto value : transit.rotation)
+        if (!std::isfinite(value)) return std::nullopt;
+    return transit;
+}
+
+bool InboundObjectRegistry::stage(ObjectTransit transit, std::string_view local_region_id,
+                                  std::chrono::steady_clock::time_point now,
+                                  std::chrono::seconds lifetime) {
+    purge(now);
+    if (transit.id.empty() || transit.destination_region_id != local_region_id ||
+        transit.source_region_id.empty() ||
+        transit.source_region_id == transit.destination_region_id ||
+        lifetime <= std::chrono::seconds::zero())
+        return false;
+    // An already-arrived transit does not stage again. The source is retrying
+    // a call whose answer it never heard, and re-staging would let a second
+    // activation rez the object a second time.
+    if (arrived(transit.id)) return true;
+    const auto found = staged_.find(transit.id);
+    if (found != staged_.end() && found->second.transit.object_id != transit.object_id)
+        return false;
+    const auto id = transit.id;
+    staged_.insert_or_assign(id, Entry{std::move(transit), now + lifetime});
+    return true;
+}
+
+std::optional<ObjectTransit> InboundObjectRegistry::activate(
+    std::string_view transit_id, std::chrono::steady_clock::time_point now) {
+    purge(now);
+    const auto found = staged_.find(std::string(transit_id));
+    if (found == staged_.end()) return std::nullopt;
+    auto transit = std::move(found->second.transit);
+    staged_.erase(found);
+    return transit;
+}
+
+bool InboundObjectRegistry::arrived(std::string_view transit_id) const {
+    return arrived_.find(std::string(transit_id)) != arrived_.end();
+}
+
+void InboundObjectRegistry::note_arrival(std::string_view transit_id,
+                                         std::chrono::steady_clock::time_point now,
+                                         std::chrono::seconds memory) {
+    if (transit_id.empty()) return;
+    arrived_.insert_or_assign(std::string(transit_id), now + memory);
+}
+
+std::size_t InboundObjectRegistry::size(std::chrono::steady_clock::time_point now) {
+    purge(now);
+    return staged_.size();
+}
+
+void InboundObjectRegistry::purge(std::chrono::steady_clock::time_point now) {
+    std::erase_if(staged_, [&](const auto& entry) { return entry.second.expires_at <= now; });
+    std::erase_if(arrived_, [&](const auto& entry) { return entry.second <= now; });
 }
 
 bool InboundTransitRegistry::stage(const grid::AvatarTransit& transit,

@@ -140,16 +140,27 @@ client.
 - [ ] Transfer the complete attachment set with the avatar and prevent duplicate activation at source and destination.
 - [ ] Handle disconnects, destination failure, retries, stale transit records, and reconciliation after process restart.
 
-### Object and vehicle crossings
+### Object crossings
 
-- [ ] Define an off-region disposition for every moving entity.
+Vehicle crossings are **not** here. A vehicle is a scripted object driven by
+the Second Life vehicle parameter model, neither of which exists yet, so
+crossing one waits on Phase 6 and is listed at the end of it. What this phase
+owns is every crossing a vehicle would later be built on: a physical object
+carrying its motion across the line, an object with avatars attached to it, and
+an object with avatars seated on it.
+
+The seated bundle has a dependency outside this phase: **there is no seating
+yet**. Sit targets, seating, unsit, and seated transforms are Phase 3 work, and
+until they exist there is nothing to seat and nothing to carry. The crossing is
+shaped to take a bundle when there is one.
+
+- [x] Define an off-region disposition for every moving entity ([ADR 0037](adr/0037-object-border-crossings.md)): avatars, child prims, attachments, temporary-on-rez objects, non-physical objects, and the no-neighbor case each have a stated answer rather than whichever one the containment clamp produced.
 - [x] At a border with no eligible online neighbor, constrain avatar and physical-object origins to the configured Region extent and cancel outward velocity at the crossed edge.
 - [x] Resolve border neighbors from persistent grid region records plus their current online leases before choosing crossing versus containment.
-
-- [ ] Cross individual objects and complete linksets without changing creator, owner, permissions, inventory, or physical state.
-- [ ] Cross scripted and unscripted attachments as part of their avatar bundle.
-- [ ] Cross vehicles while preserving linear and angular motion, vehicle parameters, and object inventory.
-- [ ] Transfer a vehicle and all seated avatars as one coordinated bundle, with no passenger briefly becoming authoritative in both regions or neither.
+- [ ] Cross individual objects and complete linksets without changing creator, owner, permissions, inventory, or physical state. *Built and unit-tested; awaiting proof between two live regions.*
+- [ ] Carry a physical object's linear and angular motion across the border so its path is continuous through the crossing. *Built and unit-tested; awaiting proof between two live regions.*
+- [ ] Cross attachments as part of their avatar bundle.
+- [ ] Transfer an object and every avatar seated on it as one coordinated bundle, with no passenger briefly becoming authoritative in both regions or neither.
 - [ ] Establish event and collision cutoffs so crossing does not duplicate or silently lose observable actions.
 
 ### World navigation
@@ -317,6 +328,7 @@ run.
 - [ ] Synchronize driver controls, vehicle motion, cameras, passengers, and seated-avatar transforms.
 - [ ] Preserve object, linkset, inventory, permission, passenger, and physical state as one transferable vehicle bundle.
 - [ ] Add load, tunneling, stacking, recovery, and abusive-object safeguards.
+- [ ] Cross a vehicle at a region border with its linear and angular motion, vehicle parameters, script state, and seated passengers intact, on top of the Phase 2 object crossing.
 
 ## Phase 7: Reliable Operations and Distribution
 

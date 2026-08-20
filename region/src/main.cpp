@@ -2724,6 +2724,9 @@ int main(int argc, char* argv[]) {
     }
     auto previous_tick = std::chrono::steady_clock::now();
     auto next_snapshot = previous_tick + std::chrono::seconds(30);
+    // When an object whose crossing was refused may try the border again.
+    std::unordered_map<homeworldz::scene::EntityId, std::chrono::steady_clock::time_point>
+        next_object_crossing_attempt;
     auto next_parcel_sweep = previous_tick + std::chrono::seconds(30);
     // Monotonic sequence id for "agent parcel" ParcelProperties updates. The viewer
     // uses a positive, increasing sequence to know which parcel the avatar stands in
@@ -2774,6 +2777,7 @@ int main(int argc, char* argv[]) {
     }
     const auto viewer_server = viewer_facet_sockets.front();
     homeworldz::region::InboundTransitRegistry inbound_transits;
+    homeworldz::region::InboundObjectRegistry inbound_objects;
     homeworldz::region::CapabilityArrivalGate capability_arrival_gate;
     homeworldz::viewer::CircuitRegistry circuits([&](const homeworldz::viewer::UseCircuitCode& request) {
         const auto reject = [&](std::string_view reason) {
@@ -3286,6 +3290,231 @@ int main(int argc, char* argv[]) {
                                              std::chrono::steady_clock::time_point when) {
         send_entity_update(entity, when);
         if (session_object_visible(entity)) deliver_to_embodied(session_object_envelope(entity));
+    };
+    // The destination half of an object crossing: a staged transit becomes live
+    // entities here. The object it produces is the same object, not a copy of
+    // it — identity, ownership, creator, permissions, contents, and motion all
+    // come across unchanged, and the only thing this region decides is the
+    // local entity id, which never left the region it was minted in anyway.
+    //
+    // Nothing is announced until the scene is persisted. A crossing that told
+    // the source "landed", showed the object to viewers, and then lost it to a
+    // restart would be worse than one that refused.
+    const auto materialize_object_transit =
+        [&](const homeworldz::region::ObjectTransit& transit,
+            std::chrono::steady_clock::time_point when) -> bool {
+        const auto linkset = homeworldz::asset::parse_linkset_asset(
+            std::as_bytes(std::span{transit.linkset.data(), transit.linkset.size()}));
+        if (!linkset) return false;
+        const homeworldz::scene::Vector3 position{
+            transit.position[0], transit.position[1], transit.position[2]};
+        std::vector<homeworldz::scene::EntityId> created;
+        // Contents keep the item ids they had. apply_object_asset reissues them,
+        // which is right for a rez — that makes a new object — and wrong for a
+        // crossing, where a script or a pending task transfer still names them.
+        const auto apply_crossed_asset = [](homeworldz::scene::Entity& entity,
+                                            const homeworldz::asset::ObjectAsset& asset) {
+            apply_object_asset(entity, asset);
+            entity.task_inventory = asset.task_inventory;
+            entity.task_inventory_serial = asset.task_inventory_serial;
+            entity.description = asset.description;
+            entity.base_permissions = asset.base_permissions;
+            entity.owner_permissions = asset.owner_permissions;
+            entity.group_permissions = asset.group_permissions;
+            entity.everyone_permissions = asset.everyone_permissions;
+            entity.next_owner_permissions = asset.next_owner_permissions;
+        };
+        try {
+            const auto root_id = scene.create(linkset->root.name, position);
+            created.push_back(root_id);
+            auto* root = scene.find(root_id);
+            if (!root) throw std::runtime_error("create arriving object root");
+            root->object_id = transit.object_id;
+            root->owner_id = transit.owner_id;
+            root->creator_id = linkset->root.creator_id;
+            apply_crossed_asset(*root, linkset->root);
+            root->position = position;
+            root->creation_date = transit.creation_date;
+            root->velocity = {transit.linear_velocity[0], transit.linear_velocity[1],
+                              transit.linear_velocity[2]};
+            for (std::size_t index = 0; index < linkset->children.size(); ++index) {
+                const auto& child_asset = linkset->children[index];
+                const auto child_id = scene.create(
+                    child_asset.name.empty() ? "Primitive" : child_asset.name);
+                created.push_back(child_id);
+                auto* child = scene.find(child_id);
+                if (!child) throw std::runtime_error("create arriving object child");
+                child->object_id = index < transit.child_object_ids.size() &&
+                        !transit.child_object_ids[index].empty()
+                    ? transit.child_object_ids[index]
+                    : homeworldz::viewer::random_uuid();
+                child->owner_id = transit.owner_id;
+                child->creator_id = child_asset.creator_id.empty()
+                    ? linkset->root.creator_id : child_asset.creator_id;
+                apply_crossed_asset(*child, child_asset);
+                child->creation_date = transit.creation_date;
+                child->parent_id = root_id;
+                child->local_position = child_asset.local_position;
+                child->local_rotation = child_asset.local_rotation;
+                homeworldz::scene::update_linked_world_transform(*child, *root);
+            }
+            storage->save_snapshot(scene);
+        } catch (const std::exception& error) {
+            for (auto entity = created.rbegin(); entity != created.rend(); ++entity)
+                scene.remove(*entity);
+            std::cout << "{\"level\":\"error\",\"message\":\"arriving object not materialized\""
+                         ",\"transitId\":" << homeworldz::api::json_string(transit.id)
+                      << ",\"error\":" << homeworldz::api::json_string(error.what()) << "}"
+                      << std::endl;
+            return false;
+        }
+        for (const auto entity_id : created) {
+            const auto* entity = scene.find(entity_id);
+            if (!entity) continue;
+            synchronize_physics_object(*entity);
+            broadcast_object_update(*entity, when);
+        }
+        // Motion, restored after the body exists. The quaternion and the
+        // angular velocity are the two things the object asset cannot say, and
+        // they are exactly what makes an arriving object continue its path
+        // rather than land dead at the border.
+        if (physics_world && physics_scene) {
+            const auto* root = scene.find(created.front());
+            if (root && root->physical && !root->phantom) {
+                const auto body_id = physics_scene->body_id(created.front());
+                if (auto state = physics_world->body_state(body_id)) {
+                    state->position = position;
+                    state->rotation = transit.rotation;
+                    state->linear_velocity = {transit.linear_velocity[0],
+                                              transit.linear_velocity[1],
+                                              transit.linear_velocity[2]};
+                    state->angular_velocity = {transit.angular_velocity[0],
+                                               transit.angular_velocity[1],
+                                               transit.angular_velocity[2]};
+                    physics_world->set_body_state(*state);
+                }
+            }
+        }
+        // The object stands here now, so its whole closure must live here too
+        // (ADR 0026, region completeness) — the same rule a rez obeys.
+        std::vector<std::pair<std::string, int>> closure;
+        for (const auto entity_id : created)
+            if (const auto* entity = scene.find(entity_id))
+                for (const auto& item : entity->task_inventory)
+                    if (!item.asset_id.empty())
+                        closure.emplace_back(item.asset_id, item.asset_type);
+        if (!closure.empty()) materialize_asset_closure(std::move(closure), "object crossing");
+        return true;
+    };
+    // The source half of an object crossing.
+    //
+    // The order is stage, remove, activate, and it is chosen so the two ways
+    // this can go wrong are not equally bad. Removing before activating means
+    // the object is briefly nowhere rather than briefly in two regions at once,
+    // and "briefly nowhere" is recoverable: if activation fails, the object is
+    // rebuilt here from the same document that was going to build it there.
+    // Two live copies of one object, colliding with the world in two places,
+    // is not recoverable — somebody has to be told which one is real.
+    const auto cross_object = [&](homeworldz::scene::EntityId root_id,
+                                  const homeworldz::region::BorderCrossing& crossing,
+                                  const homeworldz::physics::BodyState& state,
+                                  std::chrono::steady_clock::time_point when) -> bool {
+        auto* root = scene.find(root_id);
+        if (!root || !registration || crossing.destination.id.empty() ||
+            crossing.destination.public_endpoint.empty())
+            return false;
+        std::vector<const homeworldz::scene::Entity*> children;
+        std::vector<homeworldz::scene::EntityId> part_ids{root_id};
+        for (const auto& [candidate_id, candidate] : scene.entities())
+            if (candidate.parent_id == root_id) {
+                children.push_back(&candidate);
+                part_ids.push_back(candidate_id);
+            }
+        homeworldz::region::ObjectTransit transit;
+        transit.id = homeworldz::viewer::random_uuid();
+        transit.source_region_id = registration->region_id();
+        transit.destination_region_id = crossing.destination.id;
+        transit.object_id = root->object_id;
+        transit.child_object_ids.reserve(children.size());
+        for (const auto* child : children) transit.child_object_ids.push_back(child->object_id);
+        transit.owner_id = root->owner_id;
+        transit.creation_date = root->creation_date;
+        transit.position = {crossing.position[0], crossing.position[1], crossing.position[2]};
+        transit.rotation = state.rotation;
+        transit.linear_velocity = {state.linear_velocity.x, state.linear_velocity.y,
+                                   state.linear_velocity.z};
+        transit.angular_velocity = {state.angular_velocity.x, state.angular_velocity.y,
+                                    state.angular_velocity.z};
+        transit.linkset = homeworldz::asset::serialize_linkset_asset(*root, children);
+        // The same document, addressed back here: what rebuilds the object if
+        // the far side never takes it. Built before the removal, because after
+        // it there is nothing left to serialize.
+        auto recovery = transit;
+        recovery.destination_region_id = transit.source_region_id;
+        recovery.source_region_id = transit.destination_region_id;
+        recovery.position = {root->position.x, root->position.y, root->position.z};
+        const auto document = homeworldz::region::encode_object_transit(transit);
+        std::shared_ptr<homeworldz::grid::Transport> destination;
+        try {
+            destination = homeworldz::grid::socket_transport(
+                crossing.destination.public_endpoint, service_token);
+            if (!destination ||
+                !homeworldz::grid::prepare_object_arrival(*destination, transit.id, document))
+                return false;
+        } catch (const std::exception& error) {
+            std::cout << "{\"level\":\"warn\",\"message\":\"object crossing not staged\",\"error\":"
+                      << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+            return false;
+        }
+        std::vector<std::uint32_t> killed;
+        for (const auto part : part_ids)
+            if (scene.remove(part)) killed.push_back(static_cast<std::uint32_t>(part));
+        try {
+            storage->save_snapshot(scene);
+        } catch (const std::exception& error) {
+            std::cerr << "{\"level\":\"error\",\"message\":\"object crossing departure not persisted\""
+                         ",\"error\":" << homeworldz::api::json_string(error.what()) << "}"
+                      << std::endl;
+        }
+        if (!killed.empty()) {
+            const auto kill = homeworldz::viewer::encode_kill_object(killed);
+            for (const auto& [recipient_endpoint, recipient] : avatars) {
+                static_cast<void>(recipient);
+                for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                    if (const auto outgoing = circuits.send(route, kill, true, when))
+                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                });
+            }
+            deliver_to_embodied(session_kill_many(killed));
+        }
+        bool activated = false;
+        try {
+            activated = homeworldz::grid::activate_object_arrival(*destination, transit.id);
+        } catch (const std::exception& error) {
+            std::cout << "{\"level\":\"warn\",\"message\":\"object crossing activation failed\""
+                         ",\"error\":" << homeworldz::api::json_string(error.what()) << "}"
+                      << std::endl;
+        }
+        if (!activated) {
+            const bool recovered = materialize_object_transit(recovery, when);
+            std::cout << "{\"level\":" << (recovered ? "\"warn\"" : "\"error\"")
+                      << ",\"message\":"
+                      << (recovered ? "\"object crossing rolled back\""
+                                    : "\"object crossing lost the object\"")
+                      << ",\"transitId\":" << homeworldz::api::json_string(transit.id)
+                      << ",\"objectId\":" << homeworldz::api::json_string(transit.object_id)
+                      << ",\"destinationRegionId\":"
+                      << homeworldz::api::json_string(transit.destination_region_id) << "}"
+                      << std::endl;
+            return false;
+        }
+        std::cout << "{\"level\":\"info\",\"message\":\"object crossing completed\",\"transitId\":"
+                  << homeworldz::api::json_string(transit.id) << ",\"objectId\":"
+                  << homeworldz::api::json_string(transit.object_id) << ",\"parts\":"
+                  << part_ids.size() << ",\"destinationRegionId\":"
+                  << homeworldz::api::json_string(transit.destination_region_id) << "}"
+                  << std::endl;
+        return true;
     };
     // The outcome of one wear. `refused` is empty only when the object is on,
     // and `recorded` is separate from `worn` because an attachment the grid did
@@ -5545,6 +5774,87 @@ int main(int argc, char* argv[]) {
                                 response = homeworldz::http::response_for_content(
                                     request, 200, "application/json",
                                     homeworldz::api::to_json(homeworldz::api::Status{"accepted"}));
+                            }
+                        }
+                    }
+                    // An object arriving from a neighbor. Staging and activation
+                    // are separate calls because the source removes its copy
+                    // between them: staging alone creates nothing, so a source
+                    // that dies mid-crossing leaves the object where it was.
+                    constexpr std::string_view object_arrival_prefix = "/api/v1/object-transits/";
+                    if (response.path.starts_with(object_arrival_prefix)) {
+                        const auto rest = response.path.substr(object_arrival_prefix.size());
+                        const auto separator = rest.rfind('/');
+                        const auto transit_id = separator == std::string::npos
+                            ? std::string{} : rest.substr(0, separator);
+                        const auto action = separator == std::string::npos
+                            ? std::string{} : rest.substr(separator + 1);
+                        const auto authorization =
+                            homeworldz::http::request_header_value(request, "Authorization");
+                        const auto arrival_now = std::chrono::steady_clock::now();
+                        if (action != "prepare-arrival" && action != "activate") {
+                            // Not ours; fall through to the router's own answer.
+                        } else if (response.method != "POST") {
+                            response = homeworldz::http::response_for_content(
+                                request, 405, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "method_not_allowed", "object arrival requires POST"}));
+                        } else if (service_token.empty() ||
+                                   authorization != "Bearer " + service_token) {
+                            response = homeworldz::http::response_for_content(
+                                request, 401, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "unauthorized", "a valid grid service token is required"}));
+                        } else if (!homeworldz::viewer::parse_uuid(transit_id) || !registration) {
+                            response = homeworldz::http::response_for_content(
+                                request, 404, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "transit_not_found", "object transit was not found"}));
+                        } else if (action == "prepare-arrival") {
+                            const auto body = http_request_body(request);
+                            const auto transit = homeworldz::region::parse_object_transit(body);
+                            if (!transit || transit->id != transit_id ||
+                                !inbound_objects.stage(*transit, registration->region_id(),
+                                                       arrival_now)) {
+                                response = homeworldz::http::response_for_content(
+                                    request, 409, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "transit_not_preparable",
+                                        "object transit could not be staged"}));
+                            } else {
+                                response = homeworldz::http::response_for_content(
+                                    request, 200, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Status{"staged"}));
+                            }
+                        } else if (inbound_objects.arrived(transit_id)) {
+                            // The source is retrying an activation whose answer
+                            // it never heard. Saying yes again is the whole
+                            // point of remembering arrivals: the alternative is
+                            // a second copy of the same object.
+                            response = homeworldz::http::response_for_content(
+                                request, 200, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Status{"arrived"}));
+                        } else {
+                            const auto staged = inbound_objects.activate(transit_id, arrival_now);
+                            if (staged && materialize_object_transit(*staged, arrival_now)) {
+                                inbound_objects.note_arrival(transit_id, arrival_now);
+                                std::cout << "{\"level\":\"info\",\"message\":\"object crossing accepted\""
+                                             ",\"transitId\":"
+                                          << homeworldz::api::json_string(transit_id)
+                                          << ",\"objectId\":"
+                                          << homeworldz::api::json_string(staged->object_id)
+                                          << ",\"sourceRegionId\":"
+                                          << homeworldz::api::json_string(staged->source_region_id)
+                                          << "}" << std::endl;
+                                response = homeworldz::http::response_for_content(
+                                    request, 200, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Status{"arrived"}));
+                            } else {
+                                response = homeworldz::http::response_for_content(
+                                    request, 409, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "transit_not_activatable",
+                                        "object transit could not be activated"}));
                             }
                         }
                     }
@@ -13104,7 +13414,7 @@ int main(int argc, char* argv[]) {
             }
             if (may_cross && avatar.outbound_transit_id.empty()) {
                 const auto& position = avatar.controller.state().position;
-                const auto crossing = homeworldz::region::plan_avatar_border_crossing(
+                const auto crossing = homeworldz::region::plan_border_crossing(
                     region_grid_x, region_grid_y, region_size_x, region_size_y,
                     {position.x, position.y, position.z}, region_neighbors);
                 // A session avatar's crossing is a re-entry: tell the client
@@ -13387,16 +13697,43 @@ int main(int argc, char* argv[]) {
             for (std::size_t step = 0; step < fixed_steps; ++step)
                 physics_world->step(simulation.step_seconds());
         if (physics_world && physics_scene && now >= next_dynamic_sync) {
+            // Objects that have left the extent and have somewhere to go. The
+            // crossing itself removes entities, which cannot happen while the
+            // scene is being iterated, so the decision is made here and acted
+            // on below.
+            std::vector<std::pair<homeworldz::scene::EntityId,
+                                  std::pair<homeworldz::region::BorderCrossing,
+                                            homeworldz::physics::BodyState>>> departing;
             for (const auto& [entity_id, current] : scene.entities()) {
                 if (!current.physical || current.phantom || current.object_id.empty()) continue;
                 const auto body_id = physics_scene->body_id(entity_id);
                 const auto current_state = physics_world->body_state(body_id);
                 if (!current_state) continue;
                 auto state = *current_state;
-                // Phase 1 has no neighboring regions. Keep body origins within
-                // this region and cancel only velocity still pointing through a
-                // crossed edge. Neighbor discovery will replace this with a
-                // crossing handoff when an accepting neighbor exists.
+                // The off-region disposition of a physical object: hand it to
+                // the neighbor that owns the far side, or, with no neighbor
+                // able to take it, keep it here against the edge.
+                //
+                // Only a whole standalone object crosses. A child prim goes as
+                // part of its root and never alone; an attachment belongs to
+                // its wearer and travels when the wearer does, restored there
+                // from the grid's worn list; and a temporary-on-rez object is
+                // this region's for the sixty seconds it has left, since its
+                // lifetime is not a thing the crossing can carry.
+                const bool crossable = current.parent_id == 0 &&
+                    current.attachment_point == 0 && !current.temporary &&
+                    now >= next_object_crossing_attempt[entity_id];
+                if (crossable) {
+                    if (const auto crossing = homeworldz::region::plan_border_crossing(
+                            region_grid_x, region_grid_y, region_size_x, region_size_y,
+                            {state.position.x, state.position.y, state.position.z},
+                            region_neighbors)) {
+                        departing.emplace_back(entity_id, std::make_pair(*crossing, state));
+                        continue;
+                    }
+                }
+                // Nowhere to go: keep body origins within this region and
+                // cancel only velocity still pointing through a crossed edge.
                 if (homeworldz::physics::contain_body_without_neighbors(
                         state, static_cast<double>(region_size_x),
                         static_cast<double>(region_size_y)))
@@ -13481,6 +13818,20 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
+            for (const auto& [entity_id, plan] : departing) {
+                if (cross_object(entity_id, plan.first, plan.second, now)) {
+                    next_object_crossing_attempt.erase(entity_id);
+                    continue;
+                }
+                // A refused or unreachable neighbor is not a reason to hammer
+                // it every tick. Until the retry comes round the object is
+                // contained like any other with nowhere to go, which is what
+                // the ordinary path above does once this entry is in place.
+                next_object_crossing_attempt[entity_id] = now + std::chrono::seconds(2);
+            }
+            std::erase_if(next_object_crossing_attempt, [&](const auto& entry) {
+                return scene.find(entry.first) == nullptr;
+            });
             for (auto& [recipient_endpoint, cache] : sent_dynamic_transforms) {
                 static_cast<void>(recipient_endpoint);
                 std::erase_if(cache, [&](const auto& entry) {

@@ -73,7 +73,7 @@ int main() {
          "http://region.example:42021", 42022, true},
         "east"};
     const std::vector sandbox_neighbors{beta};
-    const auto into_beta = homeworldz::region::plan_avatar_border_crossing(
+    const auto into_beta = homeworldz::region::plan_border_crossing(
         1001, 1000, 256, 256, {256.2, 200.0, 30.0}, sandbox_neighbors);
     if (!into_beta || into_beta->destination.id != "beta" ||
         into_beta->position != std::array<float, 3>{0.3F, 200.0F, 30.0F}) return 1;
@@ -83,16 +83,80 @@ int main() {
          "http://region.example:42001", 42002, true},
         "west"};
     const std::vector beta_neighbors{sandbox};
-    const auto into_sandbox = homeworldz::region::plan_avatar_border_crossing(
+    const auto into_sandbox = homeworldz::region::plan_border_crossing(
         1002, 1000, 512, 512, {-0.2, 200.0, 31.0}, beta_neighbors);
     if (!into_sandbox || into_sandbox->destination.id != "sandbox" ||
         into_sandbox->position != std::array<float, 3>{255.7F, 200.0F, 31.0F}) return 1;
-    if (homeworldz::region::plan_avatar_border_crossing(
+    if (homeworldz::region::plan_border_crossing(
             1002, 1000, 512, 512, {-0.2, 400.0, 31.0}, beta_neighbors)) return 1;
     auto offline_sandbox = sandbox;
     offline_sandbox.online = false;
     const std::vector offline_neighbors{offline_sandbox};
-    if (homeworldz::region::plan_avatar_border_crossing(
+    if (homeworldz::region::plan_border_crossing(
             1002, 1000, 512, 512, {-0.2, 200.0, 31.0}, offline_neighbors)) return 1;
+
+    // An object crossing survives the round trip whole. Every field is checked,
+    // because the fields the asset cannot carry are exactly the ones a crossing
+    // is capable of silently dropping.
+    homeworldz::region::ObjectTransit outbound{
+        "55555555-5555-4555-8555-555555555555",
+        "11111111-1111-4111-8111-111111111111", std::string(destination),
+        "66666666-6666-4666-8666-666666666666",
+        {"77777777-7777-4777-8777-777777777777"},
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        1723500000ULL,
+        {0.25, 200.5, 31.75},
+        {0.0, 0.0, 0.7071067811865476, 0.7071067811865476},
+        {-3.5, 0.125, -9.8},
+        {0.0, 1.25, -0.5},
+        std::string("{\"format\":\"homeworldz-linkset-v1\",\"parts\":[{\"name\":\"Crate\"},"
+                    "{\"name\":\"Lid\"}]}")};
+    const auto document = homeworldz::region::encode_object_transit(outbound);
+    const auto inbound = homeworldz::region::parse_object_transit(document);
+    if (!inbound || inbound->id != outbound.id ||
+        inbound->source_region_id != outbound.source_region_id ||
+        inbound->destination_region_id != outbound.destination_region_id ||
+        inbound->object_id != outbound.object_id ||
+        inbound->child_object_ids != outbound.child_object_ids ||
+        inbound->owner_id != outbound.owner_id ||
+        inbound->creation_date != outbound.creation_date ||
+        inbound->position != outbound.position ||
+        inbound->rotation != outbound.rotation ||
+        inbound->linear_velocity != outbound.linear_velocity ||
+        inbound->angular_velocity != outbound.angular_velocity ||
+        inbound->linkset != outbound.linkset)
+        return 1;
+    // A truncated vector is a malformed document, never a vector of zeroes.
+    if (homeworldz::region::parse_object_transit(
+            std::string(document).replace(document.find("\"linearVelocity\":["),
+                                          std::string_view("\"linearVelocity\":[").size() + 4,
+                                          "\"linearVelocity\":[1,2")))
+        return 1;
+    if (homeworldz::region::parse_object_transit("{}")) return 1;
+
+    homeworldz::region::InboundObjectRegistry objects;
+    if (objects.stage(outbound, "wrong-region", now)) return 1;
+    if (!objects.stage(outbound, destination, now) || objects.size(now) != 1) return 1;
+    // Re-staging the same transit is a retry, not a second object.
+    if (!objects.stage(outbound, destination, now + 1s) || objects.size(now + 1s) != 1) return 1;
+    auto impostor = outbound;
+    impostor.object_id = "88888888-8888-4888-8888-888888888888";
+    if (objects.stage(impostor, destination, now + 1s)) return 1;
+    const auto activated = objects.activate(outbound.id, now + 2s);
+    if (!activated || activated->object_id != outbound.object_id ||
+        objects.size(now + 2s) != 0)
+        return 1;
+    // Activation is one-shot until the arrival is recorded, and idempotent
+    // after: a source that never heard the reply must not rez a second object.
+    if (objects.activate(outbound.id, now + 2s) || objects.arrived(outbound.id)) return 1;
+    objects.note_arrival(outbound.id, now + 2s);
+    if (!objects.arrived(outbound.id)) return 1;
+    if (!objects.stage(outbound, destination, now + 3s) || objects.size(now + 3s) != 0) return 1;
+    if (objects.activate(outbound.id, now + 3s)) return 1;
+    // Staging that is never activated expires having created nothing.
+    homeworldz::region::ObjectTransit stale = outbound;
+    stale.id = "99999999-9999-4999-8999-999999999999";
+    if (!objects.stage(stale, destination, now + 3s, 30s)) return 1;
+    if (objects.size(now + 34s) != 0 || objects.activate(stale.id, now + 34s)) return 1;
     return 0;
 }

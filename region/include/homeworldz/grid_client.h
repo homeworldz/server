@@ -493,6 +493,19 @@ HttpResponse fetch_asset_from(std::string endpoint, std::string service_token,
                               std::string_view asset_id);
 bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id);
 
+// The two halves of an object crossing, sent region to region rather than
+// through the grid: what the destination has to trust is the *source region*,
+// which the service token already establishes, and no viewer session is moving
+// that the grid would have to authorize.
+//
+// Staging first and activating second is what keeps an object from being alive
+// in both regions at once. The source removes its own copy between the two
+// calls, so activation is the destination's authority to exist, and a staged
+// object the source never activated expires having been created nowhere.
+bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
+                            std::string_view document);
+bool activate_object_arrival(Transport& destination, std::string_view transit_id);
+
 class ViewerSessionCache {
 public:
     explicit ViewerSessionCache(Client& client,
