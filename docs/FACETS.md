@@ -28,10 +28,14 @@ room:
   circuits: they are agent-UUID-scoped, and the viewer resolves them
   region-independently. Watch animations live; partition them if a sibling
   facet's avatar animates wrongly.
-- The crossing still sends the full EnableSimulator → establish →
-  CrossedRegion ceremony (via the shared `enqueue_facet_child_events`), so a
-  child circuit that silently died is revived by the crossing that needs it.
-  Dropping the first two events remains the post-proof cleanup.
+- A crossing into a facet whose circuit is alive sends **CrossedRegion
+  alone**, carrying the seed that facet was established with
+  (`session_facet_seeds`): a matching seed is a viewer-side no-op, while
+  re-enabling a live region with a fresh seed rebuilds its capabilities and
+  event poll in place — three rapid crossings of that crashed Firestorm in
+  `process_enable_simulator` (2026-08-20, found on the first live day). The
+  full three-event ceremony survives only for a viewer whose child circuit
+  never came up or has died.
 
 Live checks for the first session: stand in Sandbox and watch a prim rezzed
 in Sandbox 2 (child backfill); walk across and back (promotion via
