@@ -218,6 +218,11 @@ std::string environment_settings_xml(std::string_view region_id);
 std::string remote_parcel_reply_xml(std::string_view parcel_id);
 // Extract the {x,y,z} location from a RemoteParcelRequest LLSD body, if present.
 std::optional<std::array<double, 3>> parse_remote_parcel_location(std::string_view xml);
+// Extract the region_handle from a RemoteParcelRequest LLSD body, if present.
+// Firestorm quantizes it to the requested point's own 256 m tile, so on a
+// rectangular region it carries the facet-to-macro shift the location needs
+// (ADR 0036). Sent as an 8-byte big-endian LLSD binary.
+std::optional<std::uint64_t> parse_remote_parcel_handle(std::string_view xml);
 std::string baked_texture_upload_xml(std::string_view uploader);
 std::string baked_texture_complete_xml(std::string_view asset_id);
 std::optional<NewFileInventoryUpload> parse_new_file_inventory_upload(std::string_view xml);

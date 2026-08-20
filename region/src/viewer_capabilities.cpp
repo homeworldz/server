@@ -507,6 +507,46 @@ std::optional<std::array<double, 3>> parse_remote_parcel_location(std::string_vi
     return location;
 }
 
+std::optional<std::uint64_t> parse_remote_parcel_handle(std::string_view xml) {
+    const auto key = xml.find("<key>region_handle</key>");
+    if (key == std::string_view::npos) return std::nullopt;
+    const auto open = xml.find("<binary", key);
+    if (open == std::string_view::npos) return std::nullopt;
+    const auto content = xml.find('>', open);
+    const auto close = xml.find("</binary>", open);
+    if (content == std::string_view::npos || close == std::string_view::npos || close < content)
+        return std::nullopt;
+    const auto text = xml.substr(content + 1, close - content - 1);
+    const auto sextet = [](char character) -> int {
+        if (character >= 'A' && character <= 'Z') return character - 'A';
+        if (character >= 'a' && character <= 'z') return character - 'a' + 26;
+        if (character >= '0' && character <= '9') return character - '0' + 52;
+        if (character == '+') return 62;
+        if (character == '/') return 63;
+        return -1;
+    };
+    std::array<std::uint8_t, 8> bytes{};
+    std::size_t produced = 0;
+    unsigned buffer = 0;
+    int bits = 0;
+    for (const char character : text) {
+        if (character == '=') break;
+        const auto value = sextet(character);
+        if (value < 0) continue;  // whitespace between the tag's text nodes
+        buffer = (buffer << 6) | static_cast<unsigned>(value);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (produced == bytes.size()) return std::nullopt;
+            bytes[produced++] = static_cast<std::uint8_t>((buffer >> bits) & 0xffu);
+        }
+    }
+    if (produced != bytes.size()) return std::nullopt;
+    std::uint64_t handle = 0;
+    for (const auto byte : bytes) handle = (handle << 8) | byte;
+    return handle;
+}
+
 std::string environment_settings_xml(std::string_view region_id) {
     return "<?xml version=\"1.0\"?><llsd><array><map>"
            "<key>messageID</key><uuid>00000000-0000-0000-0000-000000000000</uuid>"

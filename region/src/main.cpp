@@ -6141,19 +6141,37 @@ int main(int argc, char* argv[]) {
                                 homeworldz::viewer::environment_settings_xml(registration->region_id()));
                         } else if (authorized && remote_parcel) {
                             // Resolve the global parcel UUID at the requested location so
-                            // the viewer can show the parcel ID and create landmarks.
+                            // the viewer can show the parcel ID and create landmarks. The
+                            // location is local to the facet the viewer believes the
+                            // point is in; its region_handle names the point's own 256 m
+                            // tile, so the same tile-to-macro math teleports use carries
+                            // the facet shift (ADR 0036). A miss answers the null UUID
+                            // rather than some other parcel's id — every parcel on a
+                            // facet reporting the first parcel's identity is how this
+                            // path's missing rebase stayed invisible (found live,
+                            // 2026-08-20).
                             const auto body = http_request_body(request);
                             std::string parcel_id;
                             if (parcels) {
                                 if (const auto location =
                                         homeworldz::viewer::parse_remote_parcel_location(body)) {
+                                    std::array<float, 3> position{
+                                        static_cast<float>((*location)[0]),
+                                        static_cast<float>((*location)[1]),
+                                        static_cast<float>((*location)[2])};
+                                    if (const auto handle =
+                                            homeworldz::viewer::parse_remote_parcel_handle(body)) {
+                                        if (const auto resolved =
+                                                homeworldz::region::resolve_region_teleport_position(
+                                                    region_grid_x, region_grid_y,
+                                                    region_size_x, region_size_y,
+                                                    *handle, position))
+                                            position = *resolved;
+                                    }
                                     if (const auto* parcel = parcels->parcel_at(
-                                            static_cast<float>((*location)[0]),
-                                            static_cast<float>((*location)[1])))
+                                            position[0], position[1]))
                                         parcel_id = parcel->global_id;
                                 }
-                                if (parcel_id.empty() && !parcels->parcels().empty())
-                                    parcel_id = parcels->parcels().front().global_id;
                             }
                             response = homeworldz::http::response_for_content(
                                 request, 200, "application/llsd+xml",
