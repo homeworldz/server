@@ -360,10 +360,12 @@ struct PendingEventResponse {
     std::string request;
     std::string session_id;
     std::chrono::steady_clock::time_point deadline{};
-    // The facet whose region this poll belongs to (ADR 0036). Events are
-    // delivered only through the avatar's primary facet's poll, matching
-    // where a viewer expects every event: its current region's queue.
-    int facet{};
+    // The poll's capability visit id, resolved to a facet at flush time
+    // rather than at park time: the login poll parks before the avatar
+    // exists, and a facet frozen then is a guess — the guess of 0 held the
+    // whole queue hostage for the poll's full deadline after every login
+    // onto a non-zero facet (found live, 2026-08-20).
+    std::string visit_id;
 };
 
 // A mesh upload whose publish is running on the worker thread. The socket stays
@@ -3741,7 +3743,8 @@ int main(int argc, char* argv[]) {
         const auto pending = std::find_if(pending_event_responses.begin(), pending_event_responses.end(),
             [&](const PendingEventResponse& candidate) {
                 return candidate.session_id == session_id &&
-                       (!primary || candidate.facet == *primary);
+                       (!primary ||
+                        event_poll_facet(candidate.session_id, candidate.visit_id) == *primary);
             });
         if (pending == pending_event_responses.end()) return;
         const auto events = take_viewer_events(session_id);
@@ -5816,7 +5819,7 @@ int main(int argc, char* argv[]) {
                                 pending_event_responses.push_back(PendingEventResponse{
                                     client, std::string(request), session_id,
                                     std::chrono::steady_clock::now() + std::chrono::seconds(20),
-                                    poll_facet});
+                                    capability_visit_id});
                                 response_deferred = true;
                             }
                         } else if (authorized && texture && homeworldz::viewer::parse_uuid(texture->texture)) {
