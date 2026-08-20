@@ -3040,11 +3040,9 @@ int main(int argc, char* argv[]) {
             deliver(std::string(recipient_endpoint));
             return;
         }
-        const std::string transport(endpoint_transport(recipient_endpoint));
-        for (int facet = 0; facet < facet_count; ++facet) {
-            auto key = facet_endpoint_key(transport, facet);
-            if (circuits.identity(key)) deliver(std::move(key));
-        }
+        for (int facet = 0; facet < facet_count; ++facet)
+            if (auto key = circuits.endpoint_for_facet(recipient_endpoint, facet))
+                deliver(std::move(*key));
     };
     // An attachment is an ordinary scene entity parented to its wearer's avatar
     // entity, with a non-zero attachment_point. Taking one off has to reach both
@@ -3195,14 +3193,13 @@ int main(int argc, char* argv[]) {
     // keyed `recipient_endpoint`: the primary when the avatar stands there, a
     // child circuit otherwise, empty when the viewer holds no circuit on that
     // facet (ADR 0036's partition rule — skip such viewers). On a square
-    // region this is always the recipient's own key.
+    // region this is always the recipient's own key. Resolved by circuit
+    // identity, never by rewriting the address: behind a symmetric NAT each
+    // facet socket sees its own source port.
     const auto facet_route_for = [&](std::string_view recipient_endpoint,
                                      int facet) -> std::string {
         if (facet_count <= 1) return std::string(recipient_endpoint);
-        auto key = facet_endpoint_key(
-            std::string(endpoint_transport(recipient_endpoint)), facet);
-        if (!circuits.identity(key)) return {};
-        return key;
+        return circuits.endpoint_for_facet(recipient_endpoint, facet).value_or(std::string{});
     };
     // The partitioned form of "tell every viewer about this entity" (ADR
     // 0036): ObjectUpdate on each viewer's circuit for the entity's facet —
@@ -3571,18 +3568,22 @@ int main(int argc, char* argv[]) {
         // removed from the registry and told DisableSimulator, or it lingers
         // in the viewer as a dead neighbor until its ping timeout. Children
         // carry no avatar state of their own — the erasures above covered
-        // everything keyed by the primary.
+        // everything keyed by the primary. Found by session, since behind a
+        // symmetric NAT each facet circuit has its own address.
         if (facet_count > 1) {
-            const std::string transport(endpoint_transport(endpoint));
-            for (int facet = 0; facet < facet_count; ++facet) {
-                const auto key = facet_endpoint_key(transport, facet);
-                child_backfilled.erase(key);
-                if (key == endpoint || !circuits.identity(key)) continue;
-                homeworldz::viewer::Packet disable_packet;
-                disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
-                static_cast<void>(send_udp(viewer_server, key,
-                    homeworldz::viewer::encode_packet(disable_packet)));
-                static_cast<void>(circuits.remove(key));
+            child_backfilled.erase(endpoint);
+            if (const auto session_uuid = homeworldz::viewer::parse_uuid(session_id)) {
+                for (int facet = 0; facet < facet_count; ++facet) {
+                    const auto key = circuits.session_endpoint_for_facet(*session_uuid, facet);
+                    if (!key) continue;
+                    child_backfilled.erase(*key);
+                    if (*key == endpoint) continue;
+                    homeworldz::viewer::Packet disable_packet;
+                    disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
+                    static_cast<void>(send_udp(viewer_server, *key,
+                        homeworldz::viewer::encode_packet(disable_packet)));
+                    static_cast<void>(circuits.remove(*key));
+                }
             }
         }
     };
@@ -6704,9 +6705,13 @@ int main(int argc, char* argv[]) {
                     // (ADR 0036): re-key the avatar's state to the new facet
                     // rather than tearing it down. There is no handoff,
                     // because there is no second server.
+                    // Same session, different key: the viewer moved — between
+                    // facets in the pre-child-circuit flow, or to a new
+                    // address on a same-facet reconnect. Migrate its state
+                    // rather than tearing it down; the address itself proves
+                    // nothing either way behind a symmetric NAT.
                     const auto* arriving = circuits.identity(endpoint);
                     if (arriving && arriving->session_id == replaced.identity.session_id &&
-                        endpoint_transport(replaced.endpoint) == endpoint_transport(endpoint) &&
                         replaced.endpoint != endpoint) {
                         migrate_viewer_endpoint(replaced.endpoint, endpoint,
                             homeworldz::viewer::format_uuid(replaced.identity.session_id));
@@ -6763,12 +6768,10 @@ int main(int argc, char* argv[]) {
                             !child_backfilled.contains(endpoint)) {
                             const auto session_id =
                                 homeworldz::viewer::format_uuid(identity->session_id);
-                            const auto transport = endpoint_transport(endpoint);
                             std::string primary_user;
                             for (const auto& [live_endpoint, live] : avatars) {
-                                if (live.session_id != session_id ||
-                                    endpoint_transport(live_endpoint) != transport)
-                                    continue;
+                                static_cast<void>(live_endpoint);
+                                if (live.session_id != session_id) continue;
                                 primary_user = live.user_id;
                                 break;
                             }
@@ -9685,11 +9688,30 @@ int main(int argc, char* argv[]) {
                         const auto provisional_arrival = inbound_transits.authorize(
                             homeworldz::viewer::format_uuid(identity->agent_id),
                             homeworldz::viewer::format_uuid(identity->session_id), now);
+                        // An internal facet promotion needs no handshake-reply
+                        // gate: the session's avatar is already live on a
+                        // sibling circuit, fully authenticated, and the child
+                        // circuit's own handshake happened at establishment —
+                        // whether or not the viewer replied to it there (the
+                        // gate held a promotion hostage on exactly that,
+                        // 2026-08-20: CompleteAgentMovement retried every two
+                        // seconds forever, refused in silence).
+                        const bool internal_promotion = [&] {
+                            if (facet_count <= 1 || !complete || avatars.contains(endpoint))
+                                return false;
+                            const auto session = homeworldz::viewer::format_uuid(identity->session_id);
+                            for (const auto& [live_endpoint, live] : avatars) {
+                                static_cast<void>(live_endpoint);
+                                if (live.session_id == session) return true;
+                            }
+                            return false;
+                        }();
                         // A refused CompleteAgentMovement must say why: the
                         // viewer retries it silently forever, and a silent
                         // gate on this side made that loop undiagnosable
                         // (2026-08-20 — a facet promotion that never landed).
-                        if (complete && !(handshake_replies.contains(endpoint) || provisional_arrival))
+                        if (complete && !(handshake_replies.contains(endpoint) || provisional_arrival ||
+                                          internal_promotion))
                             std::cout << "{\"level\":\"warn\",\"message\":\"agent movement refused before handshake reply\""
                                          ",\"endpoint\":" << homeworldz::api::json_string(endpoint)
                                       << ",\"identityMatches\":"
@@ -9697,7 +9719,8 @@ int main(int argc, char* argv[]) {
                                            complete->session_id == identity->session_id &&
                                            complete->circuit_code == identity->circuit_code) ? "true" : "false")
                                       << "}" << std::endl;
-                        if (complete && (handshake_replies.contains(endpoint) || provisional_arrival) &&
+                        if (complete && (handshake_replies.contains(endpoint) || provisional_arrival ||
+                                         internal_promotion) &&
                             complete->agent_id == identity->agent_id &&
                             complete->session_id == identity->session_id &&
                             complete->circuit_code == identity->circuit_code) {
@@ -9752,12 +9775,9 @@ int main(int argc, char* argv[]) {
                             // here. The old key's circuit lives on as a child;
                             // no DisableSimulator, no teardown.
                             if (facet_count > 1 && !avatars.contains(endpoint)) {
-                                const auto transport = endpoint_transport(endpoint);
                                 std::string previous_key;
                                 for (const auto& [live_endpoint, live] : avatars) {
-                                    if (live.session_id != session_id ||
-                                        endpoint_transport(live_endpoint) != transport)
-                                        continue;
+                                    if (live.session_id != session_id) continue;
                                     previous_key = live_endpoint;
                                     break;
                                 }
@@ -10150,11 +10170,10 @@ int main(int argc, char* argv[]) {
                                 // this facet's world; a stray UseCircuitCode
                                 // on this key must not re-send it.
                                 child_backfilled.insert(endpoint);
-                                const std::string transport(endpoint_transport(endpoint));
                                 int offered = 0;
                                 for (int sibling = 0; sibling < facet_count; ++sibling) {
                                     if (sibling == arrival_facet) continue;
-                                    if (circuits.identity(facet_endpoint_key(transport, sibling)))
+                                    if (circuits.endpoint_for_facet(endpoint, sibling))
                                         continue;
                                     if (enqueue_facet_child_events(session_id, agent_id, sibling))
                                         ++offered;
@@ -12713,10 +12732,10 @@ int main(int argc, char* argv[]) {
                         // child circuit never came up or has died; without
                         // the middle event such a viewer stalls mid-crossing
                         // (found live, 2026-08-19).
-                        const auto target_key = facet_endpoint_key(
-                            std::string(endpoint_transport(endpoint)), standing_facet);
+                        const auto target_key = circuits.endpoint_for_facet(
+                            endpoint, standing_facet);
                         std::optional<std::string> facet_seed;
-                        if (circuits.identity(target_key)) {
+                        if (target_key) {
                             const auto& seeds = session_facet_seeds[session_id];
                             const auto known = seeds.find(standing_facet);
                             facet_seed = known != seeds.end() ? known->second :

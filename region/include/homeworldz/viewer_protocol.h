@@ -1324,6 +1324,14 @@ public:
     std::vector<OutboundDatagram> poll(Clock::time_point now);
     std::vector<ReplacedCircuit> take_replaced();
     const UseCircuitCode* identity(std::string_view endpoint) const;
+    // The endpoint key of `reference_endpoint`'s circuit family — same session
+    // and circuit code — on the given facet, or nullopt when that viewer holds
+    // no circuit there. Correlation is by identity, never by address: a
+    // symmetric NAT gives each facet socket its own source port (ADR 0036).
+    std::optional<std::string> endpoint_for_facet(std::string_view reference_endpoint, int facet) const;
+    // The same lookup keyed by session id, for paths where the reference
+    // circuit itself is already gone (teardown after an eviction).
+    std::optional<std::string> session_endpoint_for_facet(const Uuid& session_id, int facet) const;
     bool remove(std::string_view endpoint);
     std::size_t size() const { return circuits_.size(); }
 

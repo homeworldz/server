@@ -897,41 +897,59 @@ bool circuit_registry() {
     return registry.size() == 0;
 }
 
-// ADR 0036 child circuits: the same identity on the same transport but another
-// facet's key coexists with the primary instead of evicting it; a new transport
-// (a genuine relogin) still takes every facet's circuit with it.
+// ADR 0036 child circuits: the same session and circuit code on another
+// facet's key coexists with the primary instead of evicting it, whatever
+// address it arrives from — a symmetric NAT gives each facet socket its own
+// source port. A genuine relogin (a new session) still takes every facet's
+// circuit with it, and a same-facet reconnect replaces only that facet.
 bool circuit_registry_facet_children() {
     const auto start = Circuit::Clock::time_point{};
     const auto session = parse_uuid("11111111-2222-4333-8444-555555555555");
+    const auto relogin_session = parse_uuid("99999999-2222-4333-8444-555555555555");
     const auto agent = parse_uuid("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
-    if (!session || !agent) return false;
+    if (!session || !relogin_session || !agent) return false;
     const UseCircuitCode identity{987654, *session, *agent};
+    const UseCircuitCode relogin_identity{987655, *relogin_session, *agent};
     CircuitRegistry registry([&](const UseCircuitCode& candidate) {
-        return candidate.circuit_code == identity.circuit_code;
+        return candidate.agent_id == *agent;
     });
     Packet opening;
     opening.flags = flag_reliable;
     opening.sequence = 42;
     opening.payload = encode_use_circuit_code(identity);
     const auto datagram = encode_packet(opening);
-    // Primary on facet 0, then a child on facet 1 of the same transport: both live.
+    // Primary on facet 0, then a child on facet 1 from a DIFFERENT source
+    // port: both live.
     if (!registry.receive("127.0.0.1:50000", datagram, start) || registry.size() != 1) return false;
-    if (!registry.receive("127.0.0.1:50000/f1", datagram, start + 1ms) || registry.size() != 2) return false;
-    if (!registry.identity("127.0.0.1:50000") || !registry.identity("127.0.0.1:50000/f1")) return false;
+    if (!registry.receive("127.0.0.1:50777/f1", datagram, start + 1ms) || registry.size() != 2) return false;
+    if (!registry.identity("127.0.0.1:50000") || !registry.identity("127.0.0.1:50777/f1")) return false;
     if (!registry.take_replaced().empty()) return false;
+    // The facet lookup correlates them by identity, not address.
+    if (registry.endpoint_for_facet("127.0.0.1:50000", 1).value_or("") != "127.0.0.1:50777/f1")
+        return false;
+    if (registry.endpoint_for_facet("127.0.0.1:50777/f1", 0).value_or("") != "127.0.0.1:50000")
+        return false;
+    if (registry.endpoint_for_facet("127.0.0.1:50000", 2)) return false;
     // Re-sending on the child's key lands on its existing circuit (a fresh
     // sequence — the first one is suppressed as a reliable duplicate).
     opening.sequence = 43;
     const auto second = encode_packet(opening);
-    if (!registry.receive("127.0.0.1:50000/f1", second, start + 2ms) || registry.size() != 2) return false;
-    // A new transport evicts everything: primary and children.
+    if (!registry.receive("127.0.0.1:50777/f1", second, start + 2ms) || registry.size() != 2) return false;
+    // A same-facet reconnect from a new address replaces that facet only.
     opening.sequence = 44;
+    const auto reconnect = encode_packet(opening);
+    if (!registry.receive("127.0.0.1:50001", reconnect, start + 3ms) || registry.size() != 2) return false;
+    auto replaced = registry.take_replaced();
+    if (replaced.size() != 1 || replaced.front().endpoint != "127.0.0.1:50000") return false;
+    // A genuine relogin — new session, new circuit code — evicts everything.
+    opening.sequence = 45;
+    opening.payload = encode_use_circuit_code(relogin_identity);
     const auto relogin = encode_packet(opening);
-    if (!registry.receive("127.0.0.1:50001", relogin, start + 3ms) || registry.size() != 1) return false;
-    const auto replaced = registry.take_replaced();
+    if (!registry.receive("127.0.0.1:50002", relogin, start + 4ms) || registry.size() != 1) return false;
+    replaced = registry.take_replaced();
     if (replaced.size() != 2) return false;
-    return !registry.identity("127.0.0.1:50000") && !registry.identity("127.0.0.1:50000/f1") &&
-           registry.identity("127.0.0.1:50001") != nullptr;
+    return !registry.identity("127.0.0.1:50001") && !registry.identity("127.0.0.1:50777/f1") &&
+           registry.identity("127.0.0.1:50002") != nullptr;
 }
 
 bool agent_update_codec() {

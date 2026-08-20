@@ -3544,13 +3544,18 @@ std::optional<Packet> CircuitRegistry::receive(std::string_view endpoint, std::s
             const auto& entry = iterator->second;
             const bool same_identity = entry.identity.circuit_code == requested->circuit_code ||
                 entry.identity.session_id == requested->session_id || entry.identity.agent_id == requested->agent_id;
-            // A matching identity on the same transport but a different facet is
-            // a child circuit (ADR 0036): one viewer holds a circuit per facet,
-            // and they coexist. Evict only a genuine relogin from a new address
-            // (different transport takes every facet with it) or a reconnect to
-            // the same facet.
-            const bool coexisting_facet = same_identity &&
-                endpoint_transport(iterator->first) == endpoint_transport(endpoint) &&
+            // The full identity — session and circuit code together — on a
+            // different facet is a child circuit (ADR 0036): one viewer holds
+            // a circuit per facet, and they coexist. The transport deliberately
+            // plays no part: a symmetric NAT gives each facet socket its own
+            // source port, so a viewer's own child circuit can arrive from an
+            // address its primary never used (seen live 2026-08-20 — a
+            // viewer's child evicted its primary and kicked it as a duplicate
+            // login). A genuine relogin carries a new session, and a reconnect
+            // lands on the same facet; both still evict.
+            const bool same_viewer = entry.identity.session_id == requested->session_id &&
+                entry.identity.circuit_code == requested->circuit_code;
+            const bool coexisting_facet = same_viewer &&
                 endpoint_facet(iterator->first) != endpoint_facet(endpoint);
             if (same_identity && !coexisting_facet) {
                 replaced_.push_back(ReplacedCircuit{iterator->first, entry.identity});
@@ -3595,6 +3600,23 @@ std::vector<ReplacedCircuit> CircuitRegistry::take_replaced() {
 const UseCircuitCode* CircuitRegistry::identity(std::string_view endpoint) const {
     const auto found = circuits_.find(std::string(endpoint));
     return found == circuits_.end() ? nullptr : &found->second.identity;
+}
+
+std::optional<std::string> CircuitRegistry::endpoint_for_facet(std::string_view reference_endpoint,
+                                                               int facet) const {
+    const auto* reference = identity(reference_endpoint);
+    if (!reference) return std::nullopt;
+    return session_endpoint_for_facet(reference->session_id, facet);
+}
+
+std::optional<std::string> CircuitRegistry::session_endpoint_for_facet(const Uuid& session_id,
+                                                                       int facet) const {
+    for (const auto& [endpoint, entry] : circuits_) {
+        if (entry.identity.session_id != session_id) continue;
+        if (endpoint_facet(endpoint) != facet) continue;
+        return endpoint;
+    }
+    return std::nullopt;
 }
 
 bool CircuitRegistry::remove(std::string_view endpoint) {
