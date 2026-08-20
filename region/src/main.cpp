@@ -5807,21 +5807,54 @@ int main(int argc, char* argv[]) {
                                 // facet 1 hands the viewer a different sim
                                 // than the one it is standing in.
                                 auto establish_port = region_viewer_port;
+                                std::optional<int> establish_facet;
                                 for (const auto& [live_endpoint, live] : avatars)
                                     if (live.session_id == session_id) {
+                                        establish_facet = endpoint_facet_of(live_endpoint);
                                         establish_port = region_facets[static_cast<std::size_t>(
-                                            endpoint_facet_of(live_endpoint))].viewer_port;
+                                            *establish_facet)].viewer_port;
                                         break;
                                     }
                                 const auto sim_ip_and_port =
                                     simulator_endpoint(region_public_endpoint, establish_port);
+                                // The seed named here is the one that facet's
+                                // region already holds — the same computed rule
+                                // as the crossing ceremony — never the polling
+                                // queue's own visit id: after a promotion this
+                                // event fires on whatever poll asks next, and
+                                // naming that poll's seed handed the new facet
+                                // a dueling second seed on every crossing. FS
+                                // then verified, refetched, and gave up in a
+                                // loop that lagged the whole viewer (seed
+                                // ping-pong, found live 2026-08-20 late).
+                                const auto arrival = session_arrival_facets.find(session_id);
+                                const bool primary_is_arrival = !establish_facet ||
+                                    (arrival != session_arrival_facets.end() &&
+                                     arrival->second == *establish_facet);
+                                std::string establish_seed;
+                                if (!primary_is_arrival) {
+                                    establish_seed = facet_child_seed(session_id, *establish_facet);
+                                } else if (capability_visit_id.empty() ||
+                                           (establish_facet &&
+                                            event_poll_facet(session_id, capability_visit_id) ==
+                                                *establish_facet)) {
+                                    // The arrival region's seed is the one it
+                                    // arrived with: bare for a login, the
+                                    // transit-suffixed one when this poll is
+                                    // that arrival's own queue.
+                                    establish_seed = region_public_endpoint + "/caps/seed/" +
+                                        session_id +
+                                        (capability_visit_id.empty() ? std::string{} :
+                                            "/" + capability_visit_id);
+                                } else {
+                                    establish_seed =
+                                        region_public_endpoint + "/caps/seed/" + session_id;
+                                }
                                 if (authorized_session && !sim_ip_and_port.empty()) {
                                     enqueue_viewer_event(session_id,
                                         homeworldz::viewer::establish_agent_communication_event_xml({
                                             authorized_session->agent_id, sim_ip_and_port,
-                                            region_public_endpoint + "/caps/seed/" + session_id +
-                                                (capability_visit_id.empty() ? std::string{} :
-                                                    "/" + capability_visit_id)}));
+                                            establish_seed}));
                                 } else if (authorized_session) {
                                     // Emitting the event with an unresolved
                                     // address is worse than omitting it: the
