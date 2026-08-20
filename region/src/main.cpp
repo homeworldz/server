@@ -3600,6 +3600,15 @@ int main(int argc, char* argv[]) {
         move_key(movement_animations);
         move_key(texture_packets);
         move_key(physics_edit_selections);
+        // Packet sequences are per circuit: the new facet's circuit numbers
+        // packets from its own counter, so the migrated high-water mark would
+        // call every AgentUpdate on it stale — the avatar walks through the
+        // crossing on the old circuit's updates and freezes the moment the
+        // viewer settles onto the promoted one (seen live 2026-08-20).
+        if (const auto migrated = avatars.find(to); migrated != avatars.end()) {
+            migrated->second.has_agent_update = false;
+            migrated->second.last_agent_update_sequence = 0;
+        }
         if (server_seeded_appearances.erase(from)) server_seeded_appearances.insert(to);
         handshake_replies.erase(from);
         handshake_replies.erase(to);
