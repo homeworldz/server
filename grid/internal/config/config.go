@@ -54,6 +54,10 @@ type Grid struct {
 	// durable bytes behind inventory-referenced assets. A relative value resolves
 	// against the process working directory, as the region's data_path does.
 	VaultPath string
+	// StatsPath is the daily-summary CSV the grid appends one row to each day
+	// and serves at /stats ([grid] stats_path). Relative values resolve against
+	// the working directory, like the vault.
+	StatsPath string
 
 	// Website API ([website] and [mail] sections). These configure the
 	// separate browser-facing homeworldz-api binary; the grid binary ignores them.
@@ -108,6 +112,8 @@ func LoadGrid(directory string) (Grid, error) {
 		Directory:    resolved,
 		VaultPath: strings.TrimSpace(parsed.Section("vault").Key("path").
 			MustString(filepath.Join("var", "vault"))),
+		StatsPath: strings.TrimSpace(parsed.Section("grid").Key("stats_path").
+			MustString(filepath.Join("var", "stats.csv"))),
 		WelcomeLocations: splitList(parsed.Section("grid").Key("welcome_locations").String()),
 		WelcomeMessage: parsed.Section("grid").Key("welcome_message").
 			MustString("Welcome to {grid}, {user}!"),

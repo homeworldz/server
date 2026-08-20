@@ -33,6 +33,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/regions"
 	"github.com/homeworldz/server/grid/internal/renditions"
 	"github.com/homeworldz/server/grid/internal/schema"
+	"github.com/homeworldz/server/grid/internal/stats"
 	"github.com/homeworldz/server/grid/internal/tasktransfer"
 	"github.com/homeworldz/server/grid/internal/transit"
 	"github.com/homeworldz/server/grid/internal/vault"
@@ -141,6 +142,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The daily stats recorder needs the concrete identity store (CountUsers
+	// is deliberately not on the Store interface) and a database to count in;
+	// without one there is nothing truthful to record, so no recorder runs
+	// and /stats stays unrouted.
+	var statsRecorder *stats.Recorder
+	if db != nil {
+		statsRecorder, err = stats.New(settings.StatsPath,
+			identity.NewPostgresStore(db), provisionedStore, logger)
+		if err != nil {
+			logger.Error("configure grid stats", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	// The region-ticket verifier answers regions' validate-ticket calls; the
 	// signing secret stays here. Absent a configured secret the route reports
 	// itself unavailable rather than the binary failing to start.
@@ -184,11 +199,17 @@ func main() {
 			Estates:           estate.NewPostgresStore(db),
 			Welcome:           welcome,
 			TicketVerifier:    ticketVerifier,
+			Stats:             statsHandler(statsRecorder),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	recording, stopRecording := context.WithCancel(context.Background())
+	defer stopRecording()
+	if statsRecorder != nil {
+		go statsRecorder.Run(recording)
+	}
 	go func() {
 		logger.Info("grid service listening", "address", settings.Address,
 			"version", version, "configDirectory", settings.Directory)
@@ -267,6 +288,16 @@ func identityStore(db *sql.DB) identity.Store {
 		return nil
 	}
 	return identity.NewPostgresStore(db)
+}
+
+// statsHandler keeps a missing recorder out of the mux: an http.Handler
+// interface holding a nil *stats.Recorder is not itself nil, and would route
+// /stats into a nil-pointer call instead of leaving it unrouted.
+func statsHandler(recorder *stats.Recorder) http.Handler {
+	if recorder == nil {
+		return nil
+	}
+	return recorder
 }
 
 func presenceStore(db *sql.DB) presence.Store {

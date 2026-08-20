@@ -142,6 +142,17 @@ func (s *PostgresStore) FindUser(ctx context.Context, id string) (User, error) {
 	return user, nil
 }
 
+// CountUsers is the account total the daily stats row records. Deliberately
+// not on the Store interface: only the stats recorder wants it, and it takes
+// the concrete Postgres store rather than widening every test double.
+func (s *PostgresStore) CountUsers(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return 0, fmt.Errorf("count users: %w", err)
+	}
+	return count, nil
+}
+
 // ConfigureSystemUser assigns interactive credentials to a stable, reserved
 // identity created by a migration. It is intentionally not part of Store and
 // is therefore unavailable through the public user API.
