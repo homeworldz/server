@@ -302,20 +302,31 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 		}
 	}
 	lookAt := "[r1,r0,r0]"
+	var spawnPosition *[3]float64
 	if state, ok := a.regionStartState(r.Context(), region.PublicEndpoint, session.UserID); ok {
-		lookAt = fmt.Sprintf("[r%.9g,r%.9g,r%.9g]", state.LookAt[0], state.LookAt[1], state.LookAt[2])
+		if state.LookAt != nil {
+			lookAt = fmt.Sprintf("[r%.9g,r%.9g,r%.9g]", state.LookAt[0], state.LookAt[1], state.LookAt[2])
+		}
+		spawnPosition = state.Position
 	}
 	// A viewer logs into one square facet of the region (ADR 0036): the facet
 	// containing the arrival position, or facet 0 when nothing places the
-	// avatar more precisely. A square region is exactly its single facet, so
-	// nothing changes for it here.
+	// avatar more precisely. The region's own persisted spawn decides when it
+	// is known — CompleteAgentMovement spawns the avatar there regardless of
+	// what the grid's locations store remembers, and a login handed the wrong
+	// facet arrives standing across an internal line, which fires the crossing
+	// ceremony into a viewer still logging in (seen live 2026-08-20: Firestorm
+	// reports mangled network data and the session dies). A square region is
+	// exactly its single facet, so nothing changes for it here.
 	regionSizeX, regionSizeY := 256, 256
 	simPort := region.ViewerPort
 	regionX, regionY := region.GridX*256, region.GridY*256
 	if a.provisioned != nil {
 		if provisioned, provisionErr := a.provisioned.Get(r.Context(), region.ID); provisionErr == nil {
 			facet := 0
-			if storedPosition != nil && preferredRegionID == region.ID {
+			if spawnPosition != nil {
+				facet = provisioned.FacetAtPosition(spawnPosition[0], spawnPosition[1])
+			} else if storedPosition != nil && preferredRegionID == region.ID {
 				facet = provisioned.FacetAtPosition(float64(storedPosition[0]), float64(storedPosition[1]))
 			}
 			edge := provisioned.FacetEdge() * 256
@@ -409,7 +420,8 @@ func simulatorIPv4(ctx context.Context, host string) (string, error) {
 }
 
 type regionStartState struct {
-	LookAt [3]float64 `json:"lookAt"`
+	Position *[3]float64 `json:"position"`
+	LookAt   *[3]float64 `json:"lookAt"`
 }
 
 func (a *API) regionStartState(ctx context.Context, endpoint, userID string) (regionStartState, bool) {
@@ -435,8 +447,19 @@ func (a *API) regionStartState(ctx context.Context, endpoint, userID string) (re
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&state); err != nil {
 		return regionStartState{}, false
 	}
-	length := math.Hypot(state.LookAt[0], state.LookAt[1])
-	if !isFinite(state.LookAt[0]) || !isFinite(state.LookAt[1]) || !isFinite(state.LookAt[2]) || length < 0.001 {
+	// Field validity is independent: a degenerate lookAt must not discard a
+	// good position (the facet pick depends on it), and vice versa.
+	if state.LookAt != nil {
+		length := math.Hypot(state.LookAt[0], state.LookAt[1])
+		if !isFinite(state.LookAt[0]) || !isFinite(state.LookAt[1]) || !isFinite(state.LookAt[2]) || length < 0.001 {
+			state.LookAt = nil
+		}
+	}
+	if state.Position != nil &&
+		(!isFinite(state.Position[0]) || !isFinite(state.Position[1]) || !isFinite(state.Position[2])) {
+		state.Position = nil
+	}
+	if state.LookAt == nil && state.Position == nil {
 		return regionStartState{}, false
 	}
 	return state, true

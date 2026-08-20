@@ -224,6 +224,59 @@ func TestViewerLoginResolvesNamedRegion(t *testing.T) {
 	}
 }
 
+// The login facet follows the region's own persisted spawn (ADR 0036): an
+// avatar the region remembers standing on facet 1 must be handed facet 1's
+// port and origin, whatever the grid's locations store says. A login handed
+// the wrong facet arrives standing across an internal line and fires the
+// crossing ceremony into a viewer still logging in (seen live 2026-08-20).
+func TestViewerLoginPicksFacetFromRegionSpawn(t *testing.T) {
+	var testUserID string
+	startState := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/agents/"+testUserID+"/start-state" ||
+			r.Header.Get("Authorization") != "Bearer region-secret" {
+			http.Error(w, "unexpected start-state request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Macro coordinates on the northern facet of a 1x2 rectangle.
+		_, _ = w.Write([]byte(`{"position":[100,400,30],"lookAt":[1,0,0],"flying":false}`))
+	}))
+	defer startState.Close()
+	identities := newMemoryIdentityStore()
+	user, err := identities.CreateUser(context.Background(), "facet.user", "development-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testUserID = user.ID
+	regionStore := newMemoryRegionStore()
+	target, _ := regionStore.Register(context.Background(), regions.Registration{Name: "Sandbox", GridX: 1001, GridY: 1000,
+		PublicEndpoint: startState.URL, ViewerPort: 43002, LeaseDuration: time.Minute})
+	provisionedPath := filepath.Join(t.TempDir(), "regions.json")
+	provisionedJSON := fmt.Sprintf(`[{"id":%q,"name":"Sandbox","mapX":1001,"mapY":1000,"sizeX":1,"sizeY":2,"facetNames":["Sandbox 2"],"accessKey":"sandbox-key"}]`, target.ID)
+	if err := os.WriteFile(provisionedPath, []byte(provisionedJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+	provisioned, err := provisioning.Load(provisionedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventories := &memoryInventoryStore{folders: make(map[string][]inventory.Folder)}
+	handler := New(checker{}, "test", Options{ServiceToken: "region-secret", Identity: identities,
+		Regions: regionStore, Provisioned: provisioned, Inventory: inventories})
+	fields := viewerResponse(t, handler, viewerRequest("Facet", "User", "development-password", "uri:Sandbox&128&128&25"))
+	if fields["login"].text() != "true" {
+		t.Fatalf("login = %q, reason = %q, message = %q", fields["login"].text(), fields["reason"].text(), fields["message"].text())
+	}
+	// Facet 1 of a 1x2 at (1001,1000): one square north, on the next port.
+	if fields["sim_port"].text() != "43003" ||
+		fields["region_x"].text() != "256256" || fields["region_y"].text() != "256256" ||
+		fields["region_size_x"].text() != "256" || fields["region_size_y"].text() != "256" {
+		t.Fatalf("unexpected facet destination: port=%q x=%q y=%q sizeX=%q sizeY=%q",
+			fields["sim_port"].text(), fields["region_x"].text(), fields["region_y"].text(),
+			fields["region_size_x"].text(), fields["region_size_y"].text())
+	}
+}
+
 func TestViewerLoginUsesDurableLastRegion(t *testing.T) {
 	identities := newMemoryIdentityStore()
 	user, err := identities.CreateUser(context.Background(), "last.user", "development-password")

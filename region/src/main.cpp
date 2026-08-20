@@ -2756,6 +2756,11 @@ int main(int argc, char* argv[]) {
         return true;
     });
     std::unordered_set<std::string> handshake_replies;
+    // Child circuits already backfilled (ADR 0036), by composite endpoint key.
+    // Firestorm sends UseCircuitCode several times until it hears a handshake,
+    // and each is a full decode — without this, every repeat re-sent the whole
+    // facet backfill. Erased when the circuit is replaced or torn down.
+    std::unordered_set<std::string> child_backfilled;
     std::unordered_set<std::string> established_events;
     std::unordered_set<std::string> parcel_overlay_sent;
     std::unordered_map<std::string, LiveAvatar> avatars;
@@ -3561,6 +3566,7 @@ int main(int argc, char* argv[]) {
             const std::string transport(endpoint_transport(endpoint));
             for (int facet = 0; facet < facet_count; ++facet) {
                 const auto key = facet_endpoint_key(transport, facet);
+                child_backfilled.erase(key);
                 if (key == endpoint || !circuits.identity(key)) continue;
                 homeworldz::viewer::Packet disable_packet;
                 disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
@@ -6669,6 +6675,10 @@ int main(int argc, char* argv[]) {
                 const auto packet = circuits.receive(
                      endpoint, std::span<const std::byte>(datagram.data(), static_cast<std::size_t>(received)), now);
                 for (const auto& replaced : circuits.take_replaced()) {
+                    // Whatever becomes of the replaced circuit, its backfill
+                    // record dies with it: a successor circuit on the same
+                    // key starts empty and needs the world again.
+                    child_backfilled.erase(replaced.endpoint);
                     // The same session on the same transport, arriving on a
                     // different facet socket, is an internal line crossing
                     // (ADR 0036): re-key the avatar's state to the new facet
@@ -6726,8 +6736,11 @@ int main(int argc, char* argv[]) {
                         // A child circuit coming up (ADR 0036): this facet key
                         // holds no avatar, but the same session stands on
                         // another facet of the same transport. Before the
-                        // relaxed eviction this state was unreachable.
-                        if (facet_count > 1 && !avatars.contains(endpoint)) {
+                        // relaxed eviction this state was unreachable. Once
+                        // per circuit — Firestorm repeats UseCircuitCode until
+                        // the handshake lands.
+                        if (facet_count > 1 && !avatars.contains(endpoint) &&
+                            !child_backfilled.contains(endpoint)) {
                             const auto session_id =
                                 homeworldz::viewer::format_uuid(identity->session_id);
                             const auto transport = endpoint_transport(endpoint);
@@ -6739,8 +6752,10 @@ int main(int argc, char* argv[]) {
                                 primary_user = live.user_id;
                                 break;
                             }
-                            if (!primary_user.empty())
+                            if (!primary_user.empty()) {
+                                child_backfilled.insert(endpoint);
                                 backfill_child_circuit(endpoint, *identity, primary_user, now);
+                            }
                         }
                     } else if (identity) {
                         if (const auto ping_id = homeworldz::viewer::decode_start_ping_check(packet->payload)) {
@@ -9794,6 +9809,16 @@ int main(int argc, char* argv[]) {
                                 avatar_iterator->second.last_pong = now;
                                 avatar_iterator->second.transport = AvatarTransport::lludp;
                                 avatar_iterator->second.circuit_code = identity->circuit_code;
+                                // Let the viewer finish logging in before any
+                                // internal crossing ceremony: a CrossedRegion
+                                // delivered into a viewer still starting up
+                                // wedges its message system (Firestorm reports
+                                // mangled network data and the session dies —
+                                // seen live 2026-08-20 when a mismatched login
+                                // facet fired the ceremony one tick after
+                                // arrival).
+                                avatar_iterator->second.next_crossing_attempt =
+                                    now + std::chrono::seconds(5);
                                 avatar_iterator->second.session_id =
                                     homeworldz::viewer::format_uuid(identity->session_id);
                                 push_agent_parcel(avatar_iterator->second);
