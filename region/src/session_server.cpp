@@ -132,6 +132,7 @@ int Server::State::callback(lws* wsi, lws_callback_reasons reason, void* user, v
     case LWS_CALLBACK_ESTABLISHED: {
         *slot = new Connection(SessionCore(state->options.region_name, state->options.validator,
                                     state->options.terrain_width,
+                                    state->options.terrain_height,
                                     state->options.walkable_slope_degrees,
                                     state->options.water_height,
                                     state->options.terrain_layers,

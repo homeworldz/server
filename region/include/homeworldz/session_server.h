@@ -23,8 +23,10 @@ public:
         // validator runs on the service thread; it is expected to block
         // briefly (one grid round trip) during auth only.
         TicketValidator validator;
-        // Vertices per heightmap side, published in the hello terrain block.
+        // Heightmap vertices along x and y, published in the hello terrain
+        // block. Equal on a square region; a rectangle's map is macro-sized.
         std::size_t terrain_width{};
+        std::size_t terrain_height{};
         // This region's configured walkable slope, published in the hello
         // avatar block.
         double walkable_slope_degrees{};

@@ -123,7 +123,8 @@ std::string terrain_layers_json(const terrain::Settings& layers);
 class SessionCore {
 public:
     SessionCore(std::string region_name, TicketValidator validator,
-                std::size_t terrain_width, double walkable_slope_degrees,
+                std::size_t terrain_width, std::size_t terrain_height,
+                double walkable_slope_degrees,
                 double water_height,
                 std::function<terrain::Settings()> terrain_layers,
                 std::function<std::uint64_t()> terrain_revision);
@@ -153,6 +154,7 @@ private:
     std::string region_name_;
     TicketValidator validator_;
     std::size_t terrain_width_;
+    std::size_t terrain_height_;
     double walkable_slope_degrees_;
     double water_height_;
     // Read per greeting, not captured: an operator's Terrain tab change reaches

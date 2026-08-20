@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="87" aria-label="Phase 2 progress: 87%">87%</progress> | 87% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="88" aria-label="Phase 2 progress: 88%">88%</progress> | 88% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -112,7 +112,7 @@ client.
 - [x] Serve every facet through standing child circuits: one circuit per facet per viewer, established at arrival and backfilled at handshake, updates partitioned by the facet containing each object or avatar, an atomic kill-then-update when an entity crosses an internal line, and a crossing reduced to promoting a circuit that already exists.
 - [x] Complete live Firestorm acceptance of standing child circuits: seamless internal crossings with fast hand-off, the correct facet reported as the current region, movement live immediately after promotion, and attachments intact — after fixing five same-day live defects, including circuit correlation by session identity rather than address (symmetric NATs give each facet socket its own source port).
 - [ ] Finish the child-circuit acceptance tail: a sibling facet's objects and avatars deliberately observed before crossing, a second avatar's crossing watched from the other side, clean teardown at relog and logout, and a login through a symmetric NAT.
-- [ ] Finish the rectangle-only seams: inbound position rebasing (rez rays, multi-object edits, land edits, parcel-request rectangles), per-facet chat positions, within-macro teleports across a facet line, and the session transport's rectangular terrain descriptor.
+- [x] Finish the rectangle-only seams: inbound position rebasing (rez rays, multi-object edits, land edits, parcel-request rectangles, Set-Home fallback), per-facet chat positions, within-macro teleports across a facet line answered as a promotion of the standing sibling circuit, and the session transport's width-by-height terrain descriptor.
 - [ ] Complete live Firestorm acceptance of a provisioned rectangle, walked end to end across its internal facet line.
 
 ### Parcels and local authority

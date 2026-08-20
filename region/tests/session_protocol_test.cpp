@@ -115,19 +115,21 @@ int main() {
     };
 
     // The first message must be auth; anything else closes.
-    SessionCore impatient("Sandbox", validator, 256, 65.0, 20.0, test_layers, [] { return 7u; });
+    SessionCore impatient("Sandbox", validator, 256, 256, 65.0, 20.0, test_layers, [] { return 7u; });
     if (const auto result = impatient.handle_text(R"({"type":"ping","version":1})"); !result.close)
         return 8;
 
     // A refused ticket closes with the refusal named.
-    SessionCore refused("Sandbox", validator, 256, 65.0, 20.0, test_layers, [] { return 7u; });
+    SessionCore refused("Sandbox", validator, 256, 256, 65.0, 20.0, test_layers, [] { return 7u; });
     if (const auto result = refused.handle_text(
             R"({"type":"auth","version":1,"payload":{"token":"bad"}})");
         !result.close || result.close_reason.find("ticket") == std::string::npos)
         return 9;
 
-    // The happy path: auth resolves, hello names the region and identity.
-    SessionCore session("Sandbox", validator, 256, 65.0, 20.0, test_layers, [] { return 7u; });
+    // The happy path: auth resolves, hello names the region and identity. The
+    // core is deliberately rectangular (ADR 0036): the session transport is
+    // macro-native, so the hello must describe width and height independently.
+    SessionCore session("Sandbox", validator, 512, 256, 65.0, 20.0, test_layers, [] { return 7u; });
     const auto hello = session.handle_text(
         R"({"type":"auth","version":1,"payload":{"token":"good-ticket"}})");
     if (hello.close || hello.send.size() != 1 || !session.established() ||
@@ -160,7 +162,8 @@ int main() {
                     ",\"restingBoundedBySlope\":true}") == std::string::npos)
         return 33;
     if (greeting->payload.find("\"terrain\":{\"path\":\"/session/terrain\","
-                               "\"format\":\"heightmap-f32le\",\"width\":256,"
+                               "\"format\":\"heightmap-f32le\",\"width\":512,"
+                               "\"height\":256,"
                                "\"spacing\":1,\"interpolation\":"
                                "\"cell-triangles-diagonal-x,y+1-x+1,y\","
                                "\"changedEvent\":\"terrainChanged\","
@@ -312,7 +315,7 @@ int main() {
     if (!leave.command || leave.command->kind != Kind::leave) return 25;
 
     // Commands from an unauthenticated connection never reach the host.
-    SessionCore stranger("Sandbox", validator, 256, 65.0, 20.0, test_layers, [] { return 7u; });
+    SessionCore stranger("Sandbox", validator, 256, 256, 65.0, 20.0, test_layers, [] { return 7u; });
     if (const auto result = stranger.handle_text(R"({"type":"spawn","version":1})");
         !result.close)
         return 26;

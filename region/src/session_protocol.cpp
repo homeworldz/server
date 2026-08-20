@@ -383,12 +383,14 @@ std::string terrain_layers_json(const terrain::Settings& layers) {
 
 
 SessionCore::SessionCore(std::string region_name, TicketValidator validator,
-                         std::size_t terrain_width, double walkable_slope_degrees,
+                         std::size_t terrain_width, std::size_t terrain_height,
+                         double walkable_slope_degrees,
                          double water_height,
                          std::function<terrain::Settings()> terrain_layers,
                          std::function<std::uint64_t()> terrain_revision)
     : region_name_(std::move(region_name)), validator_(std::move(validator)),
-      terrain_width_(terrain_width), walkable_slope_degrees_(walkable_slope_degrees),
+      terrain_width_(terrain_width), terrain_height_(terrain_height),
+      walkable_slope_degrees_(walkable_slope_degrees),
       water_height_(water_height),
       terrain_layers_(std::move(terrain_layers)),
       terrain_revision_(std::move(terrain_revision)) {}
@@ -492,6 +494,13 @@ SessionCore::Result SessionCore::handle_text(std::string_view text) {
             ",\"terrain\":{\"path\":\"/session/terrain\"" +
             ",\"format\":\"heightmap-f32le\"" +
             ",\"width\":" + std::to_string(terrain_width_) +
+            // Rows in the map, vertices along y (ADR 0036): the session
+            // transport speaks macro coordinates, so a rectangular region's
+            // ground is one width-by-height map with no facets. Square
+            // regions publish height equal to width; a client that predates
+            // this field read the map as width-square, which stays correct
+            // for every region that existed before rectangles.
+            ",\"height\":" + std::to_string(terrain_height_) +
             ",\"spacing\":1" +
             ",\"interpolation\":\"cell-triangles-diagonal-x,y+1-x+1,y\"" +
             // A fetch is a snapshot; this event names the dirty patches when

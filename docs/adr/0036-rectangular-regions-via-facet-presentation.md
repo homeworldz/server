@@ -5,16 +5,19 @@ Status: Accepted
 This ADR records **current expectation and intent**, not a commitment, and is
 expected to be revised as evidence arrives.
 
-**Implementation state (2026-08-19).** The grid half is built: rectangular
+**Implementation state (2026-08-20).** The grid half is built: rectangular
 provisioning under the shape rule, per-facet names and consecutive ports,
 and per-facet squares on every discovery surface (migration 33). The region
-half's core is built: per-facet sockets, facet-keyed circuits, rebased
-object/avatar/terrain/parcel encoding, per-facet physics fields, and the
-internal-line ceremony with circuit re-tag. Still open, all reachable only
-on a rectangle: inbound position rebasing (rez rays, multi-object edits,
-land edits, parcel request rectangles), per-facet chat positions,
-within-macro teleports across a facet line, the session transport's
-rectangular terrain descriptor — and live viewer acceptance.
+half is built in both directions: per-facet sockets, facet-keyed circuits,
+rebased object/avatar/terrain/parcel encoding, per-facet physics fields,
+the internal-line ceremony with circuit re-tag — and the inbound half of
+the rebasing seam (rez rays, multi-object edits, land edits, parcel
+rectangles and landing points, the Set-Home fallback), per-facet chat
+positions, and within-macro teleports across a facet line, answered with
+the teleport ceremony and a promotion of the standing sibling circuit. The
+session transport's hello describes terrain as width by height; the
+transport itself is macro-native and needs no facets. Still open: live
+viewer acceptance of a provisioned rectangle.
 
 ## The problem
 
