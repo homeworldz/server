@@ -2,7 +2,7 @@
 // accounts exist, how many regions are provisioned and enabled, and how much
 // land they cover in 256 m x 256 m standard-region equivalents — appended to
 // a plain CSV so the numbers can be charted over time, and serves that file
-// at /stats.
+// at /stats.csv (/stats is reserved for the human-facing page to come).
 //
 // One row per day, taken at 06:00 US Eastern time. The recorder checks every
 // minute and writes the row the first time it finds one due, so a grid that
@@ -193,8 +193,8 @@ func (r *Recorder) append(line string) error {
 	return nil
 }
 
-// ServeHTTP answers GET /stats with the CSV as browsable plain text — the
-// header line alone when no row has been recorded yet.
+// ServeHTTP answers GET /stats.csv with the CSV as browsable plain text —
+// the header line alone when no row has been recorded yet.
 func (r *Recorder) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)

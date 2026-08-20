@@ -55,8 +55,8 @@ type Grid struct {
 	// against the process working directory, as the region's data_path does.
 	VaultPath string
 	// StatsPath is the daily-summary CSV the grid appends one row to each day
-	// and serves at /stats ([grid] stats_path). Relative values resolve against
-	// the working directory, like the vault.
+	// and serves at /stats.csv ([grid] stats_path). Relative values resolve
+	// against the working directory, like the vault.
 	StatsPath string
 
 	// Website API ([website] and [mail] sections). These configure the

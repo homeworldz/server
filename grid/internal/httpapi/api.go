@@ -133,8 +133,8 @@ type Options struct {
 	// signing secret never leaves the grid). It must carry the region-ticket
 	// audience. Nil disables /region-runtime/{id}/validate-ticket.
 	TicketVerifier *webtoken.Signer
-	// Stats serves the public daily-summary CSV at /stats. Nil leaves the
-	// path unrouted.
+	// Stats serves the public daily-summary CSV at /stats.csv. Nil leaves
+	// the path unrouted.
 	Stats http.Handler
 }
 
@@ -186,8 +186,10 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 	mux.HandleFunc("/ping", getOnly(a.ping))
 	mux.HandleFunc("/ready", getOnly(a.readiness))
 	mux.HandleFunc("/version", getOnly(a.buildVersion))
+	// The raw CSV lives at /stats.csv; /stats itself is reserved for the
+	// human-facing stats page to come.
 	if options.Stats != nil {
-		mux.Handle("/stats", options.Stats)
+		mux.Handle("/stats.csv", options.Stats)
 	}
 	mux.HandleFunc("/login", a.viewerLogin)
 	mux.HandleFunc("/caps/inventory/descendents/", a.inventoryDescendentsCapability)
