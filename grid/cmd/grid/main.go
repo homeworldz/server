@@ -200,6 +200,7 @@ func main() {
 			Welcome:           welcome,
 			TicketVerifier:    ticketVerifier,
 			Stats:             statsHandler(statsRecorder),
+			WebsiteAPIURL:     settings.WebsitePublicURL,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

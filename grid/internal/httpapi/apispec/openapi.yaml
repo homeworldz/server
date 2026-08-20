@@ -1,0 +1,876 @@
+openapi: 3.0.3
+info:
+  title: Homeworldz Internal API
+  version: 0.1.0
+  description: |
+    The internal grid API, used by regions and tools rather than by browsers.
+    The browser-facing API is described separately in `openapi-public.yaml`.
+servers:
+  - url: http://127.0.0.1:42000
+    description: |
+      A local deployment on the grid's default port. Nothing is served from
+      localhost in a real deployment: the address is configured
+      (`[server] address`) and reached through a reverse proxy, so treat this
+      as the default port rather than as where the API lives.
+paths:
+  /ping:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    get:
+      operationId: ping
+      summary: Report process liveness
+      responses:
+        "200":
+          description: Process is alive
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "405":
+          description: The endpoint only supports GET
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /ready:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    get:
+      operationId: ready
+      summary: Report whether the service can accept traffic
+      responses:
+        "200":
+          description: Service is ready
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "503":
+          description: A required dependency is unavailable
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405":
+          description: The endpoint only supports GET
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /version:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    get:
+      operationId: version
+      summary: Report build and API versions
+      responses:
+        "200":
+          description: Version information
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Version" }
+        "405":
+          description: The endpoint only supports GET
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/regions:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    get:
+      operationId: discoverRegions
+      summary: Discover regions with active leases
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Active regions
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegionList" }
+        "401":
+          description: A valid service token is required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: registerRegion
+      summary: Register a region and acquire a lease
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRegionRequest" }
+      responses:
+        "201":
+          description: Region registered
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestId" }
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Region" }
+        "400":
+          description: Invalid registration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: A valid service token is required
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Coordinates are already leased
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/regions/{regionId}:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/RegionId"
+    get:
+      operationId: getRegion
+      summary: Discover one region with an active lease
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Active region
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Region" }
+        "404":
+          description: Region is absent or expired
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deregisterRegion
+      summary: Deregister a region
+      security:
+        - ServiceToken: []
+      responses:
+        "204":
+          description: Region deregistered
+        "404":
+          description: Region was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/regions/{regionId}/lease:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/RegionId"
+    put:
+      operationId: renewRegionLease
+      summary: Renew an active region lease
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenewRegionLeaseRequest" }
+      responses:
+        "200":
+          description: Renewed region lease
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Region" }
+        "400":
+          description: Invalid lease duration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Region is absent or expired
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/users:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    post:
+      operationId: createDevelopmentUser
+      summary: Create a development user
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: Invalid development user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Username is already registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/sessions:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    post:
+      operationId: createSession
+      summary: Validate development credentials and create a session
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSessionRequest" }
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400":
+          description: Invalid login request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Service authentication or credentials failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/sessions/{sessionId}:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: validateSession
+      summary: Validate an unexpired session
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Valid session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "404":
+          description: Session is absent, expired, or revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: revokeSession
+      summary: Revoke a session
+      security:
+        - ServiceToken: []
+      responses:
+        "204":
+          description: Session revoked
+        "404":
+          description: Session was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/presence:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    get:
+      operationId: listPresence
+      summary: List non-stale online presence
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Online presence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PresenceList" }
+  /api/v1/presence/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: getPresence
+      summary: Get non-stale presence for one user
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Online presence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Presence" }
+        "404":
+          description: Online presence was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      operationId: updatePresence
+      summary: Create or refresh online presence
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePresenceRequest" }
+      responses:
+        "200":
+          description: Updated online presence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Presence" }
+        "404":
+          description: User or active region was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: clearPresence
+      summary: Clear online presence
+      security:
+        - ServiceToken: []
+      responses:
+        "204":
+          description: Presence cleared
+        "404":
+          description: Online presence was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/inventory/{userId}/folders:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: listInventoryFolders
+      summary: List inventory folders for one user
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Inventory folders
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryFolderList" }
+    post:
+      operationId: createInventoryFolder
+      summary: Create a user inventory folder
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInventoryFolderRequest" }
+      responses:
+        "201":
+          description: Inventory folder created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryFolder" }
+        "400":
+          description: Invalid inventory folder
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Parent inventory folder was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Inventory folder already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/inventory/{userId}/items:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/UserId"
+    post:
+      operationId: createInventoryItem
+      summary: Create texture inventory metadata after a region asset upload
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInventoryItemRequest" }
+      responses:
+        "201":
+          description: Inventory item created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryItem" }
+        "400":
+          description: Invalid inventory item
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Inventory folder was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Inventory item already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/inventory/{userId}/items/{itemId}:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/UserId"
+      - $ref: "#/components/parameters/ItemId"
+    get:
+      operationId: getInventoryItem
+      summary: Load one authoritative inventory item
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Inventory item
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryItem" }
+        "404":
+          description: Inventory item was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/inventory/{userId}/system-folders/{folderType}:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/UserId"
+      - $ref: "#/components/parameters/FolderType"
+    get:
+      operationId: getInventorySystemFolder
+      summary: Resolve one standard inventory folder by type
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Inventory system folder
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryFolder" }
+        "404":
+          description: Inventory system folder was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/assets:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    post:
+      operationId: registerAssetMetadata
+      summary: Register an immutable asset origin or verified replica
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterAssetRequest" }
+      responses:
+        "201":
+          description: Asset metadata registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AssetMetadata" }
+        "400":
+          description: Invalid asset registration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Asset UUID conflicts with immutable metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/assets/{assetId}:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/AssetId"
+    get:
+      operationId: getAssetMetadata
+      summary: Look up immutable asset metadata and verified locations
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Asset metadata and locations
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AssetMetadata" }
+        "404":
+          description: Asset metadata was not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/vault/blobs/{sha256}:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+      - $ref: "#/components/parameters/BlobDigest"
+    description: >
+      The asset vault (ADR 0026): durable, replica-only storage for the bytes
+      behind inventory-referenced assets. Regions reach it over the internal
+      service-token boundary; it is never in the viewer asset fetch path, and
+      viewers continue to fetch bytes from the region they are connected to.
+    put:
+      operationId: ingestVaultBlob
+      summary: Write a blob through to the vault, verified against its digest
+      description: >
+        Idempotent. The declared length comes from Content-Length and the digest
+        from the path; bytes that match neither are rejected and never stored.
+        Responds 200 whether or not this request is what first stored the blob.
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Vault holds the blob
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VaultBlob" }
+        "400":
+          description: Digest or length is invalid, or the bytes do not match them
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: Blob exceeds the maximum vault blob size
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    head:
+      operationId: statVaultBlob
+      summary: Report whether the vault durably holds a blob
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Vault holds the blob; Content-Length is its stored length
+        "404":
+          description: Vault does not hold the blob
+    get:
+      operationId: getVaultBlob
+      summary: Fetch blob bytes from the vault
+      description: >
+        The always-available fetch location for an inventory-referenced asset,
+        used by a region that cannot reach a peer holding the blob.
+      security:
+        - ServiceToken: []
+      responses:
+        "200":
+          description: Blob bytes
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404":
+          description: Vault does not hold the blob
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+components:
+  parameters:
+    RequestId:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Caller-provided request identifier; unsafe values are replaced.
+      schema:
+        type: string
+        maxLength: 128
+        pattern: "^[A-Za-z0-9._-]+$"
+    RegionId:
+      name: regionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    FolderType:
+      name: folderType
+      in: path
+      required: true
+      schema:
+        type: integer
+    AssetId:
+      name: assetId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    BlobDigest:
+      name: sha256
+      in: path
+      required: true
+      description: Lowercase hexadecimal SHA-256 of the blob bytes.
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{64}$"
+  headers:
+    RequestId:
+      required: true
+      description: Valid caller-provided request identifier or a generated identifier.
+      schema:
+        type: string
+  securitySchemes:
+    ServiceToken:
+      type: http
+      scheme: bearer
+      description: Required by service-to-service operations under /api/.
+  schemas:
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+    Version:
+      type: object
+      required: [service, version, apiVersion]
+      properties:
+        service: { type: string }
+        version: { type: string }
+        apiVersion: { type: string }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+    RegisterRegionRequest:
+      type: object
+      required: [name, gridX, gridY, publicEndpoint]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        gridX: { type: integer, minimum: 0 }
+        gridY: { type: integer, minimum: 0 }
+        publicEndpoint: { type: string, format: uri }
+        viewerPort: { type: integer, minimum: 1, maximum: 65535, default: 42002 }
+        leaseSeconds: { type: integer, minimum: 10, maximum: 300, default: 60 }
+    RenewRegionLeaseRequest:
+      type: object
+      required: [leaseSeconds]
+      properties:
+        leaseSeconds: { type: integer, minimum: 10, maximum: 300 }
+    Region:
+      type: object
+      required: [id, name, gridX, gridY, publicEndpoint, viewerPort, leaseExpiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        gridX: { type: integer }
+        gridY: { type: integer }
+        publicEndpoint: { type: string, format: uri }
+        viewerPort: { type: integer, minimum: 1, maximum: 65535 }
+        leaseExpiresAt: { type: string, format: date-time }
+    RegionList:
+      type: object
+      required: [regions]
+      properties:
+        regions:
+          type: array
+          items: { $ref: "#/components/schemas/Region" }
+    CreateUserRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 32, pattern: "^[A-Za-z0-9._-]+$" }
+        password: { type: string, minLength: 8, maxLength: 128, format: password }
+    User:
+      type: object
+      required: [id, username, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        createdAt: { type: string, format: date-time }
+    CreateSessionRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+        sessionSeconds: { type: integer, minimum: 300, maximum: 86400, default: 43200 }
+    Session:
+      type: object
+      required: [id, userId, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        viewerCircuitCode: { type: integer, minimum: 1, maximum: 4294967295 }
+        destinationRegionId: { type: string, format: uuid }
+    UpdatePresenceRequest:
+      type: object
+      required: [regionId]
+      properties:
+        regionId: { type: string, format: uuid }
+    Presence:
+      type: object
+      required: [userId, regionId, lastSeenAt]
+      properties:
+        userId: { type: string, format: uuid }
+        regionId: { type: string, format: uuid }
+        lastSeenAt: { type: string, format: date-time }
+    PresenceList:
+      type: object
+      required: [presence]
+      properties:
+        presence:
+          type: array
+          items: { $ref: "#/components/schemas/Presence" }
+    RegisterAssetRequest:
+      type: object
+      additionalProperties: false
+      required: [id, creatorUserId, sha256, size, endpoint, origin]
+      properties:
+        id: { type: string, format: uuid }
+        creatorUserId: { type: string, format: uuid }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        size: { type: integer, format: int64, minimum: 1 }
+        endpoint: { type: string, format: uri }
+        origin: { type: boolean }
+    AssetLocation:
+      type: object
+      required: [endpoint, origin, verifiedAt]
+      properties:
+        endpoint: { type: string, format: uri }
+        origin: { type: boolean }
+        verifiedAt: { type: string, format: date-time }
+    AssetMetadata:
+      type: object
+      required: [id, creatorUserId, sha256, size, locations]
+      properties:
+        id: { type: string, format: uuid }
+        creatorUserId: { type: string, format: uuid }
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        size: { type: integer, format: int64, minimum: 1 }
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/AssetLocation" }
+    VaultBlob:
+      type: object
+      required: [sha256, size, ingestedAt]
+      properties:
+        sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        size: { type: integer, format: int64, minimum: 1 }
+        ingestedAt: { type: string, format: date-time }
+    InventoryFolder:
+      type: object
+      required: [id, ownerUserId, parentId, name, typeDefault, version]
+      properties:
+        id: { type: string, format: uuid }
+        ownerUserId: { type: string, format: uuid }
+        parentId: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        typeDefault: { type: integer, minimum: -1, maximum: 127 }
+        version: { type: integer, format: int64, minimum: 1 }
+    CreateInventoryFolderRequest:
+      type: object
+      additionalProperties: false
+      required: [id, parentId, name, typeDefault]
+      properties:
+        id: { type: string, format: uuid }
+        parentId: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        typeDefault: { type: integer, minimum: -1, maximum: -1 }
+    CreateInventoryItemRequest:
+      type: object
+      additionalProperties: false
+      required: [id, creatorUserId, folderId, assetId, assetType, inventoryType,
+        name, description, everyonePermissions, nextPermissions]
+      properties:
+        id: { type: string, format: uuid }
+        creatorUserId: { type: string, format: uuid }
+        folderId: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        assetType: { type: integer, minimum: 0, maximum: 0 }
+        inventoryType: { type: integer, minimum: 0, maximum: 0 }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: string, maxLength: 1024 }
+        everyonePermissions: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+        nextPermissions: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+    InventoryItem:
+      type: object
+      required: [id, ownerUserId, creatorUserId, folderId, assetId, assetType,
+        inventoryType, name, description, flags, basePermissions,
+        currentPermissions, everyonePermissions, nextPermissions, saleType,
+        salePrice, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerUserId: { type: string, format: uuid }
+        creatorUserId: { type: string, format: uuid }
+        folderId: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        assetType: { type: integer, minimum: 0, maximum: 127 }
+        inventoryType: { type: integer, minimum: 0, maximum: 127 }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: string, maxLength: 1024 }
+        flags: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+        basePermissions: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+        currentPermissions: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+        everyonePermissions: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+        nextPermissions: { type: integer, format: int64, minimum: 0, maximum: 4294967295 }
+        saleType: { type: integer, minimum: 0, maximum: 3 }
+        salePrice: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+    InventoryFolderList:
+      type: object
+      required: [folders]
+      properties:
+        folders:
+          type: array
+          items: { $ref: "#/components/schemas/InventoryFolder" }

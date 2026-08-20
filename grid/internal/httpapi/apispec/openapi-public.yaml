@@ -1,0 +1,111 @@
+openapi: 3.0.3
+info:
+  title: Homeworldz Public API
+  version: 0.1.0
+  description: |
+    The browser-facing API, consumed by the management site at
+    `https://my.homeworldz.com` (see `web/src/config.js`). Served by the grid's
+    `[website]` service, which listens on port 8003 by default.
+
+    **This document is incomplete and its absences mean nothing.** The service
+    also serves `/v1/account`, `/v1/account/password`, `/v1/account/profile`,
+    `/v1/registrations`, `/v1/verifications`, `/v1/tokens`, `/v1/client/*` and
+    `/v1/admin/*`, none of which are described here yet. A route missing from
+    this file is undocumented, not unimplemented — do not read this as the
+    service's surface. Documenting the rest is tracked in the roadmap.
+
+    Distinct from `openapi.yaml`, which describes the internal grid API used by
+    regions and tools rather than by browsers.
+servers:
+  - url: https://api.homeworldz.com/v1
+    description: Production.
+  - url: http://127.0.0.1:8003/v1
+    description: A local deployment on the service's default port.
+paths:
+  /password-resets:
+    post:
+      operationId: requestPasswordReset
+      summary: Request a password reset link
+      description: |
+        Sends a single-use reset link to the address on file for the named
+        account. The link is only ever sent to that address, never to one
+        supplied in the request.
+
+        **The response is identical whether or not the account exists**, so this
+        endpoint cannot be used to discover which accounts are registered. A
+        caller learns only that the request was accepted.
+
+        Rate limited. See [ADR 0034](../docs/adr/0034-password-recovery.md).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier:
+                  type: string
+                  minLength: 1
+                  maxLength: 254
+                  description: |
+                    The login ID, in `first.last` form. This is the only accepted
+                    identifier, and it is the same one login takes.
+
+                    An email address is not accepted: nothing constrains it to a
+                    single account, so it cannot name which password to change.
+                    A display name is not accepted either — it can be changed,
+                    while the login ID cannot. Case and spacing are normalized,
+                    so `First Last` resolves to `first.last`.
+      responses:
+        "202":
+          description: |
+            Accepted. Returned whether or not an account matched, and whether or
+            not mail was sent.
+        "400":
+          description: The request body was missing or malformed.
+        "429":
+          description: Too many requests. The caller should retry later.
+  /password-resets/{token}:
+    post:
+      operationId: consumePasswordReset
+      summary: Set a new password using a reset token
+      description: |
+        Consumes a reset token and writes the new password. The token is
+        single-use and expires.
+
+        This performs exactly the same operation as an authenticated password
+        change: it writes the password digests and nothing else. **Existing
+        sessions are not ended** — a reset here means a forgotten password
+        rather than a compromised account, and the reasoning is recorded in
+        [ADR 0034](../docs/adr/0034-password-recovery.md).
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The token from the emailed link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                  format: password
+      responses:
+        "204":
+          description: The password was changed. The caller may now sign in with it.
+        "400":
+          description: |
+            The token is unknown, already used, or expired, or the new password
+            fails the length rules. **These are deliberately one response**:
+            distinguishing them would say whether a token had ever existed.
+        "429":
+          description: Too many attempts. The caller should retry later.

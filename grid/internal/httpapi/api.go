@@ -45,6 +45,7 @@ type API struct {
 	supportURL     string
 	registerURL    string
 	passwordURL    string
+	websiteAPIURL  string
 	welcomeText    string
 	logger         *slog.Logger
 	regions        regions.Store
@@ -136,6 +137,10 @@ type Options struct {
 	// Stats serves the public daily-summary CSV at /stats.csv. Nil leaves
 	// the path unrouted.
 	Stats http.Handler
+	// WebsiteAPIURL is the public base of the browser-facing API ([website]
+	// public_url), named in the API catalog (RFC 9727). Empty omits that
+	// catalog entry rather than advertising a dead anchor.
+	WebsiteAPIURL string
 }
 
 func New(ready ReadinessChecker, version string, options Options) http.Handler {
@@ -145,6 +150,7 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 		supportURL:  strings.TrimSpace(options.SupportURL),
 		registerURL: strings.TrimSpace(options.RegisterURL),
 		passwordURL: strings.TrimSpace(options.PasswordURL),
+		websiteAPIURL: strings.TrimRight(strings.TrimSpace(options.WebsiteAPIURL), "/"),
 		logger:      options.Logger,
 		regions: options.Regions, identity: options.Identity, presence: options.Presence,
 		inventory: options.Inventory, assets: options.Assets, vault: options.Vault,
@@ -186,6 +192,9 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 	mux.HandleFunc("/ping", getOnly(a.ping))
 	mux.HandleFunc("/ready", getOnly(a.readiness))
 	mux.HandleFunc("/version", getOnly(a.buildVersion))
+	mux.HandleFunc("/.well-known/api-catalog", getOnly(a.apiCatalog))
+	mux.HandleFunc("/openapi.yaml", getOnly(a.apiSpecification("openapi.yaml")))
+	mux.HandleFunc("/openapi-public.yaml", getOnly(a.apiSpecification("openapi-public.yaml")))
 	// The raw CSV lives at /stats.csv; /stats itself is reserved for the
 	// human-facing stats page to come.
 	if options.Stats != nil {
