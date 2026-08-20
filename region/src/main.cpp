@@ -3735,17 +3735,28 @@ int main(int argc, char* argv[]) {
     const auto flush_pending_viewer_events = [&](const std::string& session_id) {
         const auto queued = queued_viewer_events.find(session_id);
         if (queued == queued_viewer_events.end() || queued->second.empty()) return;
-        // Only the primary facet's poll may carry events: a viewer expects
-        // everything on its current region's queue, and an event drained by a
-        // sibling facet's poll is attributed to that sibling — About Land then
-        // asks about the wrong region's ground (found live, 2026-08-20).
+        // Prefer the primary facet's poll: a viewer expects everything on its
+        // current region's queue, and an event drained by a sibling facet's
+        // poll is attributed to that sibling — About Land then asks about the
+        // wrong region's ground (found live, 2026-08-20). A preference, not a
+        // gate: a viewer with no live poll for the primary facet still gets
+        // its events on whatever poll it has. Withholding them deadlocked a
+        // crossing — the viewer's only queue was the arrival facet's, the
+        // CrossedRegion telling it to move on never left the server, and the
+        // ceremony re-signaled forever (found live the same evening).
         const auto primary = session_primary_facet(session_id);
-        const auto pending = std::find_if(pending_event_responses.begin(), pending_event_responses.end(),
-            [&](const PendingEventResponse& candidate) {
-                return candidate.session_id == session_id &&
-                       (!primary ||
-                        event_poll_facet(candidate.session_id, candidate.visit_id) == *primary);
-            });
+        auto pending = primary ?
+            std::find_if(pending_event_responses.begin(), pending_event_responses.end(),
+                [&](const PendingEventResponse& candidate) {
+                    return candidate.session_id == session_id &&
+                           event_poll_facet(candidate.session_id, candidate.visit_id) == *primary;
+                }) :
+            pending_event_responses.end();
+        if (pending == pending_event_responses.end())
+            pending = std::find_if(pending_event_responses.begin(), pending_event_responses.end(),
+                [&](const PendingEventResponse& candidate) {
+                    return candidate.session_id == session_id;
+                });
         if (pending == pending_event_responses.end()) return;
         const auto events = take_viewer_events(session_id);
         const auto response = homeworldz::http::response_for_content(
@@ -5805,12 +5816,11 @@ int main(int argc, char* argv[]) {
                                               << "}" << std::endl;
                                 }
                             }
-                            const auto poll_facet =
-                                event_poll_facet(session_id, capability_visit_id);
-                            const auto primary = session_primary_facet(session_id);
-                            const bool may_drain = !primary || *primary == poll_facet;
-                            const auto events = may_drain ? take_viewer_events(session_id)
-                                                          : std::vector<std::string>{};
+                            // An arriving poll drains unconditionally: the
+                            // flush above already offered every event to a
+                            // parked primary poll first, so a queue that is
+                            // still non-empty here has no better carrier.
+                            const auto events = take_viewer_events(session_id);
                             if (!events.empty()) {
                                 response = homeworldz::http::response_for_content(
                                     request, 200, "application/llsd+xml",
