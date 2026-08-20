@@ -9685,6 +9685,18 @@ int main(int argc, char* argv[]) {
                         const auto provisional_arrival = inbound_transits.authorize(
                             homeworldz::viewer::format_uuid(identity->agent_id),
                             homeworldz::viewer::format_uuid(identity->session_id), now);
+                        // A refused CompleteAgentMovement must say why: the
+                        // viewer retries it silently forever, and a silent
+                        // gate on this side made that loop undiagnosable
+                        // (2026-08-20 — a facet promotion that never landed).
+                        if (complete && !(handshake_replies.contains(endpoint) || provisional_arrival))
+                            std::cout << "{\"level\":\"warn\",\"message\":\"agent movement refused before handshake reply\""
+                                         ",\"endpoint\":" << homeworldz::api::json_string(endpoint)
+                                      << ",\"identityMatches\":"
+                                      << ((complete->agent_id == identity->agent_id &&
+                                           complete->session_id == identity->session_id &&
+                                           complete->circuit_code == identity->circuit_code) ? "true" : "false")
+                                      << "}" << std::endl;
                         if (complete && (handshake_replies.contains(endpoint) || provisional_arrival) &&
                             complete->agent_id == identity->agent_id &&
                             complete->session_id == identity->session_id &&
