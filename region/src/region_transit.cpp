@@ -384,6 +384,61 @@ void InboundTransitRegistry::purge(std::chrono::steady_clock::time_point now) {
     std::erase_if(entries_, [&](const auto& entry) { return entry.second.expires_at <= now; });
 }
 
+const ChildAgent& ChildAgentRegistry::establish(
+    ChildAgent agent, std::chrono::steady_clock::time_point now,
+    std::chrono::seconds lifetime) {
+    purge(now);
+    const auto session_id = agent.session_id;
+    const auto existing = entries_.find(session_id);
+    if (existing != entries_.end()) {
+        // Everything the source told us may have moved on; the seed may not.
+        const auto minted = existing->second.agent.seed;
+        existing->second.agent = std::move(agent);
+        existing->second.agent.seed = minted;
+        existing->second.expires_at = now + lifetime;
+        return existing->second.agent;
+    }
+    auto& entry = entries_[session_id];
+    entry.agent = std::move(agent);
+    entry.expires_at = now + lifetime;
+    return entry.agent;
+}
+
+const ChildAgent* ChildAgentRegistry::find(
+    std::string_view session_id, std::chrono::steady_clock::time_point now) {
+    if (session_id.empty()) return nullptr;
+    purge(now);
+    const auto found = entries_.find(std::string(session_id));
+    return found == entries_.end() ? nullptr : &found->second.agent;
+}
+
+std::optional<ChildAgent> ChildAgentRegistry::promote(
+    std::string_view session_id, std::chrono::steady_clock::time_point now) {
+    if (session_id.empty()) return std::nullopt;
+    purge(now);
+    const auto found = entries_.find(std::string(session_id));
+    if (found == entries_.end()) return std::nullopt;
+    auto promoted = found->second.agent;
+    entries_.erase(found);
+    return promoted;
+}
+
+void ChildAgentRegistry::remove(std::string_view session_id) {
+    if (session_id.empty()) return;
+    entries_.erase(std::string(session_id));
+}
+
+std::size_t ChildAgentRegistry::size(std::chrono::steady_clock::time_point now) {
+    purge(now);
+    return entries_.size();
+}
+
+void ChildAgentRegistry::purge(std::chrono::steady_clock::time_point now) {
+    std::erase_if(entries_, [&](const auto& entry) {
+        return entry.second.expires_at <= now;
+    });
+}
+
 bool CapabilityArrivalGate::mark_seed_served(
     std::string_view session_id, std::string_view visit_id) {
     if (session_id.empty() || visit_id.empty()) return false;

@@ -158,5 +158,50 @@ int main() {
     stale.id = "99999999-9999-4999-8999-999999999999";
     if (!objects.stage(stale, destination, now + 3s, 30s)) return 1;
     if (objects.size(now + 34s) != 0 || objects.activate(stale.id, now + 34s)) return 1;
+
+    // Child agents (ADR 0038).
+    homeworldz::region::ChildAgentRegistry children;
+    homeworldz::region::ChildAgent visitor;
+    visitor.agent_id = "33333333-3333-4333-8333-333333333333";
+    visitor.session_id = "44444444-4444-4444-8444-444444444444";
+    visitor.circuit_code = 7;
+    visitor.home_region_id = std::string(destination);
+    visitor.seed = "seed-one";
+    visitor.position = {10.0F, 20.0F, 30.0F};
+    if (children.establish(visitor, now).seed != "seed-one") return 1;
+    if (children.size(now) != 1) return 1;
+    // A retry carries a fresh seed and must not take effect: the viewer already
+    // opened a circuit against the first one, and replacing it strands that
+    // circuit. Everything else the retry says is newer and does apply.
+    auto retried = visitor;
+    retried.seed = "seed-two";
+    retried.position = {11.0F, 21.0F, 31.0F};
+    const auto& refreshed = children.establish(retried, now + 1s);
+    if (refreshed.seed != "seed-one") return 1;
+    if (refreshed.position != std::array<float, 3>{11.0F, 21.0F, 31.0F}) return 1;
+    if (children.size(now + 1s) != 1) return 1;
+    // Establishing refreshed the lease, so the original deadline has no effect.
+    if (children.find(visitor.session_id, now + 299s) == nullptr) return 1;
+    // A promotion answers once: an avatar cannot arrive twice, and a retry that
+    // appeared to work would leave a child and a root for one session.
+    const auto promoted = children.promote(visitor.session_id, now + 2s);
+    if (!promoted || promoted->seed != "seed-one" || promoted->circuit_code != 7) return 1;
+    if (children.promote(visitor.session_id, now + 2s)) return 1;
+    if (children.size(now + 2s) != 0) return 1;
+    // A child nobody refreshed expires, and a promotion then finds nothing —
+    // which is the case the cold arrival path still has to answer.
+    auto forgotten = visitor;
+    forgotten.session_id = "55555555-5555-4555-8555-555555555555";
+    children.establish(forgotten, now, 300s);
+    if (children.find(forgotten.session_id, now + 301s) != nullptr) return 1;
+    if (children.promote(forgotten.session_id, now + 301s) ||
+        children.size(now + 301s) != 0) return 1;
+    // A neighbour that restarted holds nothing, so it mints afresh rather than
+    // answering with a seed it no longer has.
+    auto reestablished = forgotten;
+    reestablished.seed = "seed-three";
+    if (children.establish(reestablished, now + 302s).seed != "seed-three") return 1;
+    children.remove(forgotten.session_id);
+    if (children.size(now + 302s) != 0) return 1;
     return 0;
 }

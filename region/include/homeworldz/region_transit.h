@@ -126,6 +126,62 @@ private:
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> arrived_;
 };
 
+// A child agent (ADR 0038): a session this region knows whose avatar lives in a
+// neighbour. It exists so that a crossing can *promote* it rather than build an
+// avatar from nothing in the tick the viewer is told it has arrived — which is
+// what a cold arrival does, and what no viewer was written to survive.
+//
+// `seed` is the capability seed this region minted for the child's own circuit.
+// It is the field that makes establishment idempotent rather than repeatable:
+// see establish().
+struct ChildAgent {
+    std::string agent_id;
+    std::string session_id;
+    std::uint32_t circuit_code{};
+    // The region the avatar is actually in, so a child can tell a promotion it
+    // expected from one it did not.
+    std::string home_region_id;
+    std::string seed;
+    // Last known, in this region's coordinates. A child is told where the
+    // avatar is so it can decide what of its world is worth sending.
+    std::array<float, 3> position{};
+};
+
+class ChildAgentRegistry {
+public:
+    // Establish, or refresh what is already there, and return the child as this
+    // region now holds it.
+    //
+    // Idempotent by session, and deliberately keeps the seed it first minted: a
+    // source that retries — which it may, the call is a region-to-region POST —
+    // must not be handed a second seed, because the viewer already opened a
+    // circuit against the first and a replacement strands it. A neighbour that
+    // restarted has no entry, mints a new seed, and answers with that; the
+    // source cannot tell the difference and does not need to.
+    const ChildAgent& establish(ChildAgent agent,
+                                std::chrono::steady_clock::time_point now,
+                                std::chrono::seconds lifetime = std::chrono::seconds(300));
+    const ChildAgent* find(std::string_view session_id,
+                           std::chrono::steady_clock::time_point now);
+    // The crossing arrived: this session is not a child here any more. Returns
+    // what was held, once. A second promotion of one session finds nothing,
+    // because an avatar cannot arrive twice and a retry that seemed to work
+    // would leave a child and a root for the same session.
+    std::optional<ChildAgent> promote(std::string_view session_id,
+                                      std::chrono::steady_clock::time_point now);
+    void remove(std::string_view session_id);
+    std::size_t size(std::chrono::steady_clock::time_point now);
+
+private:
+    struct Entry {
+        ChildAgent agent;
+        std::chrono::steady_clock::time_point expires_at;
+    };
+
+    void purge(std::chrono::steady_clock::time_point now);
+    std::unordered_map<std::string, Entry> entries_;
+};
+
 class CapabilityArrivalGate {
 public:
     bool mark_seed_served(std::string_view session_id, std::string_view visit_id);
