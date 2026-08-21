@@ -4216,6 +4216,18 @@ int main(int argc, char* argv[]) {
     // pass against a neighbour that is answering 409 would be a busy loop
     // against another region's HTTP server.
     std::unordered_set<std::string> offered_child_agents;
+    // The seed each neighbour minted, by session and neighbour region id.
+    //
+    // A crossing must repeat it verbatim. The viewer already established that
+    // region from the child announcement, and handing it a second seed for a
+    // region it already holds makes Firestorm tear down and rebuild that
+    // region's capabilities and event poll in place — which crashed it on the
+    // way back on 2026-08-21, exactly as it had on 2026-08-20 before facet
+    // seeds were made deterministic for the same reason.
+    //
+    // session_facet_seeds does this for facets of this region, and says the
+    // same thing: the seed already on file is the viewer's truth.
+    std::unordered_map<std::string, std::string> announced_child_seeds;
     auto next_child_agent_offer = std::chrono::steady_clock::time_point{};
     auto next_child_agent_sweep = std::chrono::steady_clock::time_point{};
     const auto offer_one_child_agent = [&]() {
@@ -4321,6 +4333,7 @@ int main(int argc, char* argv[]) {
                         child.agent_id,
                         simulator_endpoint(neighbor.public_endpoint, neighbor.viewer_port),
                         seed}));
+                announced_child_seeds[live.session_id + '|' + neighbor.id] = seed;
                 std::cout << "{\"level\":\"info\",\"message\":\"neighbor announced to viewer\""
                              ",\"neighbor\":" << homeworldz::api::json_string(neighbor.name)
                           << ",\"direction\":" << homeworldz::api::json_string(neighbor.direction)
@@ -14005,16 +14018,27 @@ int main(int argc, char* argv[]) {
                         const auto target_handle =
                             (static_cast<std::uint64_t>(crossing->destination.grid_x * 256) << 32) |
                             static_cast<std::uint32_t>(crossing->destination.grid_y * 256);
-                        enqueue_viewer_event(session_id,
-                            homeworldz::viewer::enable_simulator_event_xml(
-                                target_handle, *simulator,
-                                static_cast<std::uint32_t>(crossing->destination.size_x),
-                                static_cast<std::uint32_t>(crossing->destination.size_y)));
+                        // If this session already holds a child circuit there
+                        // (ADR 0038), the viewer has that region: it must not be
+                        // enabled twice, and its seed must be the one it already
+                        // has. A second EnableSimulator and a fresh seed for a
+                        // region already established is what crashed the viewer
+                        // on the way back (2026-08-21).
+                        const auto announced = announced_child_seeds.find(
+                            session_id + '|' + crossing->destination.id);
+                        const bool promoting = announced != announced_child_seeds.end();
+                        if (!promoting)
+                            enqueue_viewer_event(session_id,
+                                homeworldz::viewer::enable_simulator_event_xml(
+                                    target_handle, *simulator,
+                                    static_cast<std::uint32_t>(crossing->destination.size_x),
+                                    static_cast<std::uint32_t>(crossing->destination.size_y)));
                         enqueue_viewer_event(session_id,
                             homeworldz::viewer::crossed_region_event_xml({
                                 agent_id, session_id, target_handle, *simulator,
-                                crossing->destination.public_endpoint + "/caps/seed/" + session_id +
-                                    "/" + transit_id,
+                                promoting ? announced->second
+                                          : crossing->destination.public_endpoint +
+                                                "/caps/seed/" + session_id + "/" + transit_id,
                                 crossing->position, look_direction,
                                 static_cast<std::uint32_t>(crossing->destination.size_x),
                                 static_cast<std::uint32_t>(crossing->destination.size_y)}));
@@ -14022,6 +14046,7 @@ int main(int argc, char* argv[]) {
                         avatar.outbound_transit_expires = now + std::chrono::seconds(30);
                         avatar.handing_off = true;
                         std::cout << "{\"level\":\"info\",\"message\":\"avatar border crossing signaled\","
+                                     "\"promotingChild\":" << (promoting ? "true" : "false") << ","
                                      "\"transitId\":"
                                   << homeworldz::api::json_string(transit_id)
                                   << ",\"destinationRegionId\":"
@@ -14683,7 +14708,7 @@ int main(int argc, char* argv[]) {
         // the life of the process and a returning session is never re-offered.
         if (now >= next_child_agent_sweep) {
             next_child_agent_sweep = now + std::chrono::seconds(30);
-            std::erase_if(offered_child_agents, [&](const std::string& pair_key) {
+            const auto session_is_gone = [&](const std::string& pair_key) {
                 const auto separator = pair_key.find('|');
                 if (separator == std::string::npos) return true;
                 const auto session = pair_key.substr(0, separator);
@@ -14692,6 +14717,10 @@ int main(int argc, char* argv[]) {
                     if (live.session_id == session) return false;
                 }
                 return true;
+            };
+            std::erase_if(offered_child_agents, session_is_gone);
+            std::erase_if(announced_child_seeds, [&](const auto& entry) {
+                return session_is_gone(entry.first);
             });
         }
     }
