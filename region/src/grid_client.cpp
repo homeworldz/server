@@ -857,9 +857,17 @@ std::optional<std::vector<RegionNeighbor>> Client::find_region_neighbors(
         RegionNeighbor neighbor;
         neighbor.direction = response.body.substr(
             direction_start, direction_end - direction_start);
+        // Eight, not four: the grid answers with the corners too, and a corner
+        // is as much a neighbour as an edge to a viewer that has to draw it.
+        // This list is the second of two that had to learn that — the region's
+        // adjacency check being the first — and an unknown direction failing
+        // the whole response is why a stale one of these takes every neighbour
+        // down rather than the one it does not recognise.
         const auto valid_direction = neighbor.direction == "north" ||
             neighbor.direction == "east" || neighbor.direction == "south" ||
-            neighbor.direction == "west";
+            neighbor.direction == "west" || neighbor.direction == "northeast" ||
+            neighbor.direction == "southeast" || neighbor.direction == "southwest" ||
+            neighbor.direction == "northwest";
         if (!valid_direction || !parse_region_placement(object, neighbor))
             return std::nullopt;
         neighbors.push_back(std::move(neighbor));
