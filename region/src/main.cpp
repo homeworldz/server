@@ -398,11 +398,19 @@ std::string configured_value(std::string_view name, std::string fallback = {}) {
     return fallback;
 }
 
+// A packaged heightmap, read at the region's own dimensions.
+//
+// Height is a parameter rather than an assumption because a macro region of
+// ADR 0036 can be rectangular, and a loader that only understood squares meant
+// a rectangle silently started flat: the file was there, the size never
+// matched, and the fallback said nothing anyone would question.
 std::unique_ptr<homeworldz::terrain::Heightmap> load_raw_heightmap(
-    const std::filesystem::path& path, std::size_t width) {
+    const std::filesystem::path& path, std::size_t width, std::size_t height) {
+    if (height == 0) height = width;
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) return {};
     const auto byte_count = static_cast<std::size_t>(input.tellg());
+    const auto samples_wanted = width * height;
 
     // A four-byte-per-sample file is the exact heightfield /map/terrain.raw
     // emits, and the same layout OpenSimulator calls RAW32 and reads from a
@@ -411,10 +419,10 @@ std::unique_ptr<homeworldz::terrain::Heightmap> load_raw_heightmap(
     // cannot express a graded slope: the 65-degree test face on Gamma rises
     // 2.145 m per metre, and rounding that to integers turns one constant angle
     // into an alternating staircase of two wrong ones.
-    if (byte_count == width * width * sizeof(float)) {
+    if (byte_count == samples_wanted * sizeof(float)) {
         input.seekg(0);
-        auto result = std::make_unique<homeworldz::terrain::Heightmap>(width);
-        std::vector<float> samples(width * width);
+        auto result = std::make_unique<homeworldz::terrain::Heightmap>(width, height);
+        std::vector<float> samples(samples_wanted);
         input.read(reinterpret_cast<char*>(samples.data()),
                    static_cast<std::streamsize>(byte_count));
         if (!input) return {};
@@ -424,19 +432,25 @@ std::unique_ptr<homeworldz::terrain::Heightmap> load_raw_heightmap(
         return result;
     }
 
-    const auto source_width = byte_count == width * width ? width :
-        (byte_count == 256 * 256 ? std::size_t{256} : std::size_t{});
+    // One byte per sample, either at this region's exact dimensions or as a
+    // 256x256 source stretched to fit. The stretch is for the packaged squares
+    // that predate variable size; it is nearest-neighbour, so it carries a
+    // shape rather than a gradient.
+    const auto exact = byte_count == samples_wanted;
+    const auto source_width = exact ? width : (byte_count == 256 * 256 ? std::size_t{256} : std::size_t{});
+    const auto source_height = exact ? height : source_width;
     if (source_width == 0) return {};
     input.seekg(0);
     std::vector<unsigned char> source(byte_count);
     input.read(reinterpret_cast<char*>(source.data()), source.size());
     if (!input) return {};
-    auto result = std::make_unique<homeworldz::terrain::Heightmap>(width);
-    for (std::size_t y = 0; y < width; ++y) {
-        const auto source_y = y * (source_width - 1) / (width - 1);
+    auto result = std::make_unique<homeworldz::terrain::Heightmap>(width, height);
+    for (std::size_t y = 0; y < height; ++y) {
+        const auto source_y = height == 1 ? 0 : y * (source_height - 1) / (height - 1);
         for (std::size_t x = 0; x < width; ++x) {
-            const auto source_x = x * (source_width - 1) / (width - 1);
-            (*result)[y * width + x] = static_cast<float>(source[source_y * source_width + source_x]);
+            const auto source_x = width == 1 ? 0 : x * (source_width - 1) / (width - 1);
+            (*result)[y * width + x] =
+                static_cast<float>(source[source_y * source_width + source_x]);
         }
     }
     return result;
@@ -1543,12 +1557,12 @@ int main(int argc, char* argv[]) {
 
     const auto terrain_width = static_cast<std::size_t>(region_size_x);
     const auto terrain_height = static_cast<std::size_t>(region_size_y);
-    // The packaged default terrain is square; a rectangle starts from the flat
-    // fallback unless its operator supplies a matching raw.
-    const auto default_heightmap = terrain_width == terrain_height ?
-        load_raw_heightmap(configured_value(
-            "region.terrain_path", "assets/region/terrain/plateau-square.raw"), terrain_width) :
-        nullptr;
+    // The configured heightmap is read at this region's own dimensions, square
+    // or not. A file whose size matches neither is refused rather than
+    // stretched into a shape nobody asked for, and the region starts flat.
+    const auto default_heightmap = load_raw_heightmap(
+        configured_value("region.terrain_path", "assets/region/terrain/plateau-square.raw"),
+        terrain_width, terrain_height);
     auto revert_heightmap = homeworldz::terrain::load_state(
         revert_state_path, terrain_width, terrain_height);
     const bool loaded_baked_baseline = static_cast<bool>(revert_heightmap);
