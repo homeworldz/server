@@ -4558,11 +4558,22 @@ int main(int argc, char* argv[]) {
         std::size_t backfilled_objects = 0;
         std::size_t backfilled_attachments = 0;
         std::size_t skipped_other_facet = 0;
+        std::size_t skipped_not_an_object = 0;
         std::size_t skipped_unencodable = 0;
         for (const auto& [entity_id, entity] : scene.entities()) {
             static_cast<void>(entity_id);
             if (entity_facet(entity) != facet) {
                 ++skipped_other_facet;
+                continue;
+            }
+            // An entity with no object id is not a rezzed object at all — an
+            // avatar's own scene entity is the ordinary case, and it persists
+            // after its owner leaves. Counted apart from a genuine encoding
+            // failure: lumped together, every arrival reported one
+            // "unencodable" and an object that really could not be encoded had
+            // somewhere to hide.
+            if (entity.object_id.empty()) {
+                ++skipped_not_an_object;
                 continue;
             }
             const auto restored_object =
@@ -4587,8 +4598,16 @@ int main(int argc, char* argv[]) {
                   << facet << ",\"objects\":" << backfilled_objects
                   << ",\"attachments\":" << backfilled_attachments
                   << ",\"skippedOtherFacet\":" << skipped_other_facet
+                  << ",\"skippedNotAnObject\":" << skipped_not_an_object
                   << ",\"skippedUnencodable\":" << skipped_unencodable
                   << ",\"sceneSize\":" << scene.size() << "}" << std::endl;
+        // Its own line, at warning, because this one is a fault: a rezzed
+        // object the arriving viewer was never told about. Buried in the count
+        // above it was indistinguishable from an avatar.
+        if (skipped_unencodable != 0)
+            std::cerr << "{\"level\":\"warning\",\"message\":\"arrival backfill could not encode "
+                         "an object\",\"facet\":" << facet
+                      << ",\"count\":" << skipped_unencodable << "}" << std::endl;
     };
     // A child circuit's backfill (ADR 0036): a UseCircuitCode arriving on a
     // facet key that has no avatar, while the same session's avatar lives
