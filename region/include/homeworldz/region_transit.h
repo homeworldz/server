@@ -145,6 +145,13 @@ struct ChildAgent {
     // Last known, in this region's coordinates. A child is told where the
     // avatar is so it can decide what of its world is worth sending.
     std::array<float, 3> position{};
+    // What the avatar is wearing, carried by the source rather than read here.
+    // The source already holds it; a destination that fetched it would do one
+    // grid read per neighbour per session, and those reads would land on the
+    // sim tick, which already starves the viewer circuit under synchronous grid
+    // I/O. Empty is a real answer — wearing nothing — which is why the parser
+    // refuses a malformed set rather than returning a short one.
+    std::vector<grid::WornAttachment> worn;
 };
 
 // The establishment call, region to region (ADR 0038). The source describes the

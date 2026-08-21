@@ -169,6 +169,40 @@ std::vector<std::string> json_string_array(std::string_view document, std::strin
     return values;
 }
 
+// The worn set, as an array of objects rather than the string arrays above.
+//
+// Returns nullopt for a malformed element, and never a partial set. Half a worn
+// set is worse than none: it dresses the avatar in some of its clothes and looks
+// like a successful establishment. An empty array is a different answer and a
+// legitimate one — it means wearing nothing.
+std::optional<std::vector<grid::WornAttachment>> json_worn_array(
+    std::string_view document, std::string_view name) {
+    std::vector<grid::WornAttachment> worn;
+    const std::string marker = "\"" + std::string(name) + "\":[";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return std::nullopt;
+    auto rest = document.substr(start + marker.size());
+    while (!rest.empty() && rest.front() != ']') {
+        if (rest.front() != '{') {
+            rest.remove_prefix(1);
+            continue;
+        }
+        const auto close = rest.find('}');
+        if (close == std::string_view::npos) return std::nullopt;
+        const auto element = rest.substr(0, close);
+        const auto item = json_string_field(element, "itemId");
+        const auto point = json_number_field(element, "attachmentPoint");
+        // Zero means "wherever the item says", which the region resolves long
+        // before worn state is stored; an unresolved point arriving here is a
+        // question mistaken for an answer.
+        if (item.empty() || !point || *point < 1.0 || *point > 127.0)
+            return std::nullopt;
+        worn.push_back({std::string(item), static_cast<std::uint8_t>(*point)});
+        rest.remove_prefix(close + 1);
+    }
+    return worn;
+}
+
 // The nested linkset asset, lifted out whole. It is itself JSON, so it travels
 // raw rather than escaped into a string: the crossing hands the destination
 // the same bytes a take would have written, and the destination reads them
@@ -390,11 +424,20 @@ std::string encode_child_agent_request(const ChildAgent& agent) {
         static_cast<double>(agent.position[0]),
         static_cast<double>(agent.position[1]),
         static_cast<double>(agent.position[2])};
+    std::string worn{'['};
+    for (std::size_t index = 0; index < agent.worn.size(); ++index) {
+        if (index != 0) worn.push_back(',');
+        worn += "{\"itemId\":" + quoted_string(agent.worn[index].item_id) +
+            ",\"attachmentPoint\":" +
+            std::to_string(static_cast<unsigned>(agent.worn[index].attachment_point)) + "}";
+    }
+    worn.push_back(']');
     return std::string{"{\"agentId\":"} + quoted_string(agent.agent_id) +
         ",\"sessionId\":" + quoted_string(agent.session_id) +
         ",\"circuitCode\":" + std::to_string(agent.circuit_code) +
         ",\"homeRegionId\":" + quoted_string(agent.home_region_id) +
-        ",\"position\":" + number_array(position) + "}";
+        ",\"position\":" + number_array(position) +
+        ",\"worn\":" + worn + "}";
 }
 
 std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
@@ -404,9 +447,11 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
     agent.home_region_id = json_string_field(document, "homeRegionId");
     const auto circuit_code = json_number_field(document, "circuitCode");
     const auto position = json_number_array<3>(document, "position");
+    auto worn = json_worn_array(document, "worn");
     if (agent.agent_id.empty() || agent.session_id.empty() ||
-        agent.home_region_id.empty() || !circuit_code || !position)
+        agent.home_region_id.empty() || !circuit_code || !position || !worn)
         return std::nullopt;
+    agent.worn = std::move(*worn);
     // A circuit code of zero is not a circuit, and it is what an absent field
     // and a malformed one both look like once they are numbers.
     if (*circuit_code <= 0.0 ||

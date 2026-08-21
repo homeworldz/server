@@ -168,6 +168,8 @@ int main() {
     visitor.home_region_id = std::string(destination);
     visitor.seed = "seed-one";
     visitor.position = {10.0F, 20.0F, 30.0F};
+    visitor.worn = {{"66666666-6666-4666-8666-666666666666", 33},
+                    {"77777777-7777-4777-8777-777777777777", 5}};
     if (children.establish(visitor, now).seed != "seed-one") return 1;
     if (children.size(now) != 1) return 1;
     // A retry carries a fresh seed and must not take effect: the viewer already
@@ -212,6 +214,12 @@ int main() {
         decoded->circuit_code != visitor.circuit_code ||
         decoded->home_region_id != visitor.home_region_id ||
         decoded->position != visitor.position) return 1;
+    // The worn set rides with the establishment, in order, with its points.
+    if (decoded->worn.size() != 2 ||
+        decoded->worn[0].item_id != visitor.worn[0].item_id ||
+        decoded->worn[0].attachment_point != 33 ||
+        decoded->worn[1].item_id != visitor.worn[1].item_id ||
+        decoded->worn[1].attachment_point != 5) return 1;
     // The seed is the destination's to mint. A request that names one is
     // accepted with the name dropped, not honoured: a source that could choose
     // it could choose a capability path on a region it does not run.
@@ -220,7 +228,8 @@ int main() {
         "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
         ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
         ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
-        "\",\"position\":[1.0,2.0,3.0],\"seed\":\"/caps/seed/somebody-elses\"}";
+        "\",\"position\":[1.0,2.0,3.0],\"worn\":[]"
+        ",\"seed\":\"/caps/seed/somebody-elses\"}";
     const auto sanitized = homeworldz::region::parse_child_agent_request(forged);
     if (!sanitized || !sanitized->seed.empty()) return 1;
     // A circuit code of zero is not a circuit, and it is what both an absent
@@ -232,6 +241,42 @@ int main() {
         "\",\"position\":[1.0,2.0,3.0]}";
     if (homeworldz::region::parse_child_agent_request(no_circuit)) return 1;
     if (homeworldz::region::parse_child_agent_request("{}")) return 1;
+    // Wearing nothing is an answer; a worn set that cannot be read is not, and
+    // must not arrive as a short one. Half a worn set dresses the avatar in some
+    // of its clothes and looks like a success.
+    const auto bare = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0],\"worn\":[]}";
+    const auto naked = homeworldz::region::parse_child_agent_request(bare);
+    if (!naked || !naked->worn.empty()) return 1;
+    // A point of zero is "wherever the item says", resolved long before worn
+    // state is stored, so it is a question arriving where an answer belongs.
+    const auto unresolved = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0]"
+        ",\"worn\":[{\"itemId\":\"66666666-6666-4666-8666-666666666666\""
+        ",\"attachmentPoint\":0}]}";
+    if (homeworldz::region::parse_child_agent_request(unresolved)) return 1;
+    // One unreadable element refuses the whole request rather than dropping it.
+    const auto partial = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0]"
+        ",\"worn\":[{\"itemId\":\"66666666-6666-4666-8666-666666666666\""
+        ",\"attachmentPoint\":33},{\"attachmentPoint\":5}]}";
+    if (homeworldz::region::parse_child_agent_request(partial)) return 1;
+    // An absent worn field is not an empty one: the source did not say.
+    const auto silent = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0]}";
+    if (homeworldz::region::parse_child_agent_request(silent)) return 1;
     // The answer, and the refusal a source must not announce a neighbour on.
     if (homeworldz::region::parse_child_agent_acceptance(
             homeworldz::region::encode_child_agent_acceptance("/caps/seed/abc")) !=
