@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/homeworldz/server/grid/internal/assetmeta"
@@ -83,6 +84,21 @@ func (a *API) inventoryAISCapability(w http.ResponseWriter, r *http.Request) {
 	// the dispatch and let the store say whether it changed. A path added later
 	// is covered without anyone remembering to add it here, which is the whole
 	// reason the check sits at the fork rather than in the handlers.
+	// One at a time per user, for the whole of a mutation and the version read
+	// that follows it. A folder's version is read after the change commits, so
+	// two overlapping mutations each answer with the folder as it looked once
+	// both had landed: neither response describes its own change, and the
+	// versions reach the viewer out of order.
+	//
+	// Firestorm notices. Dressing an avatar in fifteen attachments produced
+	// twenty-four "Possible version mismatch for category Current Outfit" with
+	// AIS versions going backwards — 2371, 2365, 2364, 2366, 2363 — and each
+	// one makes the viewer re-read and re-reconcile the outfit it is already
+	// wearing (observed 2026-08-21). Serializing costs nothing here: these are
+	// short database operations, and one user's inventory changes are ordered
+	// from that user's point of view anyway.
+	unlock := a.lockInventoryMutations(session.UserID)
+	defer unlock()
 	outfitBefore := a.currentOutfitVersion(r.Context(), session.UserID)
 	defer func() {
 		if a.currentOutfitVersion(r.Context(), session.UserID) != outfitBefore {
@@ -1239,4 +1255,13 @@ func writeAISItemError(w http.ResponseWriter, err error) bool {
 		writeLLSDError(w, http.StatusServiceUnavailable, "AIS inventory item operation failed")
 	}
 	return true
+}
+
+// lockInventoryMutations serializes one user's inventory mutations, returning
+// the release. Keyed per user so unrelated residents never wait on each other.
+func (a *API) lockInventoryMutations(userID string) func() {
+	value, _ := a.inventoryMutations.LoadOrStore(userID, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+	return mutex.Unlock
 }

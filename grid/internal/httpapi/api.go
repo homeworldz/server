@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/homeworldz/server/grid/internal/arrival"
@@ -52,14 +53,19 @@ type API struct {
 	identity      identity.Store
 	presence      presence.Store
 	inventory     inventory.Store
-	assets        assetmeta.Store
-	renditions    renditions.Store
-	workerToken   string
-	durability    *durability.Keeper
-	vault         vault.Store
-	serviceToken  string
-	provisioned   provisioning.Store
-	terrainHTTP   *http.Client
+	// One AIS mutation per user at a time. A folder's version is read
+	// after the change commits, so two overlapping mutations each answer
+	// with whatever the folder looked like once both had landed — the
+	// versions arrive describing neither change, and out of order.
+	inventoryMutations sync.Map
+	assets             assetmeta.Store
+	renditions         renditions.Store
+	workerToken        string
+	durability         *durability.Keeper
+	vault              vault.Store
+	serviceToken       string
+	provisioned        provisioning.Store
+	terrainHTTP        *http.Client
 	// Outbound to regions, for telling one that a wearer changed clothes.
 	outfitHTTP     *http.Client
 	terrainCache   terrainTileCache
