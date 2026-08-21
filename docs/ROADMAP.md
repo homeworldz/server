@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="89" aria-label="Phase 2 progress: 89%">89%</progress> | 89% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="86" aria-label="Phase 2 progress: 86%">86%</progress> | 86% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -169,6 +169,30 @@ two finished.
 - [ ] Cross attachments as part of their avatar bundle.
 - [ ] Transfer an object and every avatar sitting on it as one coordinated bundle — sit target, seat assignment, and seated transform included — with no passenger briefly becoming authoritative in both regions or neither.
 - [ ] Establish event and collision cutoffs so crossing does not duplicate or silently lose observable actions.
+
+### Seeing across a region border
+
+A viewer is told about a neighbouring region exactly once: as it crosses into
+it. Standing in one region, nothing announces the region next door, so the
+viewer never opens a circuit to it, never receives its object or avatar
+updates, and draws empty water up to the line. Walk across and the world
+appears — which is also why a crossing costs a full establishment rather than
+a hand-off to a connection that was already there.
+
+The pattern already exists one level down. [ADR 0036](adr/0036-rectangular-regions-via-facet-presentation.md)
+gives every facet of a macro region a standing child circuit, partitions
+updates by the facet each entity occupies, and reduces an internal crossing to
+promoting a circuit the viewer already holds. This is that idea between
+processes rather than within one, and the same three problems have to be
+solved again across a boundary where the neighbour is another server that can
+be slow, restarting, or gone.
+
+- [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it.
+- [ ] Serve objects to a viewer whose avatar stands in a neighbouring region, interest-filtered by that viewer's camera and draw distance rather than by which region it belongs to.
+- [ ] Serve avatars the same way, so a resident is visible to people standing across the line and their movement is continuous rather than appearing only on arrival.
+- [ ] Say out loud when something leaves a neighbouring viewer's interest, since a viewer keeps what it was told about and a silent departure strands an object at a stale position forever.
+- [ ] Reduce a border crossing to promoting a circuit the viewer already holds, as an internal facet line already is, and confirm in Firestorm that the world across the line is drawn before the crossing rather than after it.
+- [ ] Define what a viewer is shown when a neighbour is unreachable, restarting, or newly online, so the border degrades to empty rather than to a stall.
 
 ### World navigation
 
