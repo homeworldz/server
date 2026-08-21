@@ -324,9 +324,30 @@ int main() {
         ",\"cofVersion\":1,\"appearanceVersion\":7}";
     if (homeworldz::region::parse_child_agent_request(impossible)) return 1;
     // The answer, and the refusal a source must not announce a neighbour on.
+    // The answer names the facet to announce, because a rectangular neighbour
+    // presents as squares and the bordering one need not be the first — the
+    // source guessing from a region corner pointed a viewer at the wrong half.
+    const homeworldz::region::ChildAgentAcceptance answer{
+        "/caps/seed/abc", 900, 899, 256, 42113};
+    const auto answer_back = homeworldz::region::parse_child_agent_acceptance(
+        homeworldz::region::encode_child_agent_acceptance(answer));
+    if (!answer_back || answer_back->seed != "/caps/seed/abc" ||
+        answer_back->grid_x != 900 || answer_back->grid_y != 899 ||
+        answer_back->edge != 256 || answer_back->viewer_port != 42113) return 1;
+    // Each of these would become an EnableSimulator the viewer ignores or
+    // chases, so they are refusals rather than values to pass on.
+    if (homeworldz::region::parse_child_agent_acceptance("{}")) return 1;
     if (homeworldz::region::parse_child_agent_acceptance(
-            homeworldz::region::encode_child_agent_acceptance("/caps/seed/abc")) !=
-        "/caps/seed/abc") return 1;
-    if (!homeworldz::region::parse_child_agent_acceptance("{}").empty()) return 1;
+            "{\"facetGridX\":900,\"facetGridY\":899,\"facetEdge\":256"
+            ",\"facetViewerPort\":42113}")) return 1;
+    if (homeworldz::region::parse_child_agent_acceptance(
+            "{\"seed\":\"s\",\"facetGridX\":900,\"facetGridY\":899"
+            ",\"facetEdge\":0,\"facetViewerPort\":42113}")) return 1;
+    if (homeworldz::region::parse_child_agent_acceptance(
+            "{\"seed\":\"s\",\"facetGridX\":900,\"facetGridY\":899"
+            ",\"facetEdge\":256,\"facetViewerPort\":0}")) return 1;
+    if (homeworldz::region::parse_child_agent_acceptance(
+            "{\"seed\":\"s\",\"facetGridX\":-1,\"facetGridY\":899"
+            ",\"facetEdge\":256,\"facetViewerPort\":42113}")) return 1;
     return 0;
 }

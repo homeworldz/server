@@ -1245,7 +1245,7 @@ std::string establish_child_agent(Transport& destination, std::string_view docum
     const auto response = destination.send(
         "POST", "/api/v1/child-agents", std::string(document));
     if (response.status_code != 200) return {};
-    return json_field(response.body, "seed");
+    return response.body;
 }
 
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,

@@ -186,11 +186,28 @@ struct ChildAgent {
 // could name it could name a capability path on a region it does not run.
 std::string encode_child_agent_request(const ChildAgent& agent);
 std::optional<ChildAgent> parse_child_agent_request(std::string_view document);
-std::string encode_child_agent_acceptance(std::string_view seed);
-// The seed, or empty when the answer did not carry one — which a source must
-// treat as a refusal, because announcing a neighbour whose seed does not answer
-// stalls the viewer.
-std::string parse_child_agent_acceptance(std::string_view document);
+
+// What a destination answers an establishment with.
+//
+// The facet is the point. A rectangular region presents to viewers as square
+// facets (ADR 0036), and the facet adjacent to the source is not necessarily the
+// first one — Nova B is a 2x1 whose *second* facet borders Nova. Only the
+// destination knows its own layout, so it names the facet to announce rather
+// than letting the source guess from a region corner and an extent, which is
+// what pointed a viewer at the wrong half of a neighbour (found live,
+// 2026-08-21).
+struct ChildAgentAcceptance {
+    std::string seed;
+    int grid_x{};
+    int grid_y{};
+    int edge{256};
+    int viewer_port{};
+};
+
+std::string encode_child_agent_acceptance(const ChildAgentAcceptance& acceptance);
+// Nullopt when the answer was unusable, which a source must treat as a refusal:
+// announcing a neighbour whose seed does not answer stalls the viewer.
+std::optional<ChildAgentAcceptance> parse_child_agent_acceptance(std::string_view document);
 
 class ChildAgentRegistry {
 public:
