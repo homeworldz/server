@@ -18,6 +18,16 @@
 *.tga  binary
 *.ogg  binary
 *.raw  binary
+# Wearables and settings are text-shaped and are content-addressed all the
+# same: a vault asset's identity is the SHA-256 of its bytes, so normalising a
+# CRLF out of one renames it. On 2026-08-20 exactly that had happened to the
+# default skin — the repository's copy was the grid's copy with 63 carriage
+# returns removed, a different asset by every measure that matters, and a
+# region carrying it could not register against a grid that already held the
+# original.
+*.bodypart binary
+*.clothing binary
+*.settings binary
 *.r32  binary
 *.png  binary
 *.jpg  binary
