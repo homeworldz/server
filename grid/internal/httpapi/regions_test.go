@@ -146,7 +146,7 @@ func TestRegionDiscoveryIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestRegionNeighborDiscoveryReturnsCardinalLiveRegions(t *testing.T) {
+func TestRegionNeighborDiscoveryReturnsSurroundingLiveRegions(t *testing.T) {
 	store := newMemoryRegionStore()
 	handler := New(checker{}, "test", Options{ServiceToken: "secret", Regions: store})
 	centerID := "11111111-1111-4111-8111-111111111111"
@@ -178,10 +178,17 @@ func TestRegionNeighborDiscoveryReturnsCardinalLiveRegions(t *testing.T) {
 		GridX: 1000, GridY: 1001, LeaseExpiresAt: store.now.Add(-time.Second),
 	}
 
+	// Eight surrounding regions, not four. A viewer holds every region it can
+	// see, and a corner left out stays dark on the minimap even while both
+	// parties can see the region between them.
+	//
+	// The corner here is offered because its flanking edges are occupied: North
+	// and East both exist, so Diagonal is genuinely the third region meeting at
+	// that point rather than one across a void.
 	response := requestRegion[RegionNeighborList](t, handler, http.MethodGet,
 		"/api/v1/regions/"+centerID+"/neighbors", "", http.StatusOK)
-	wantDirections := []string{"north", "east", "south", "west"}
-	wantNames := []string{"North", "East", "South", "West"}
+	wantDirections := []string{"north", "east", "south", "west", "northeast"}
+	wantNames := []string{"North", "East", "South", "West", "Diagonal"}
 	if len(response.Neighbors) != len(wantDirections) {
 		t.Fatalf("neighbors = %#v", response.Neighbors)
 	}
@@ -191,6 +198,33 @@ func TestRegionNeighborDiscoveryReturnsCardinalLiveRegions(t *testing.T) {
 			neighbor.Region.Maturity != 0 {
 			t.Fatalf("neighbor %d = %#v", index, neighbor)
 		}
+	}
+
+	// A corner with both flanking edges empty is across a gap, not around a
+	// corner, and announcing it would put a region on the minimap that nothing
+	// connects to. Sole is diagonal from Island and has no edge neighbour.
+	islandID := "a1111111-1111-4111-8111-111111111111"
+	for _, isolated := range []struct {
+		id   string
+		name string
+		x    int
+		y    int
+	}{
+		{islandID, "Island", 2000, 2000},
+		{"a2222222-2222-4222-8222-222222222222", "Sole", 2001, 2001},
+	} {
+		if _, err := store.RegisterProvisioned(context.Background(), isolated.id, regions.Registration{
+			Name: isolated.name, GridX: isolated.x, GridY: isolated.y,
+			PublicEndpoint: "http://" + isolated.name + ".example:42001", ViewerPort: 42002,
+			LeaseDuration: 60 * time.Second,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	isolatedNeighbors := requestRegion[RegionNeighborList](t, handler, http.MethodGet,
+		"/api/v1/regions/"+islandID+"/neighbors", "", http.StatusOK)
+	if len(isolatedNeighbors.Neighbors) != 0 {
+		t.Fatalf("neighbors across a gap = %#v", isolatedNeighbors.Neighbors)
 	}
 
 	methodError := requestRegion[Error](t, handler, http.MethodPost,

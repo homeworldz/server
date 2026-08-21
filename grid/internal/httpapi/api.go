@@ -772,6 +772,7 @@ func (a *API) regionNeighbors(w http.ResponseWriter, r *http.Request, id string)
 	overlaps := func(firstStart, firstSize, secondStart, secondSize int) bool {
 		return firstStart < secondStart+secondSize && secondStart < firstStart+firstSize
 	}
+	edges := map[string]bool{}
 	for _, direction := range directions {
 		for _, candidate := range topology {
 			// Topology entries are facets, which are square; still, read each
@@ -795,6 +796,57 @@ func (a *API) regionNeighbors(w http.ResponseWriter, r *http.Request, id string)
 			}
 			if adjacent {
 				neighbors = append(neighbors, RegionNeighbor{Direction: direction.name, Region: candidate})
+				edges[direction.name] = true
+			}
+		}
+	}
+
+	// The corners. A viewer holds up to eight surrounding regions, not four, and
+	// without these the region diagonally across a corner stays dark even while
+	// both of you can see the one between you.
+	//
+	// A corner is only offered when at least one of the two edges flanking it
+	// has a neighbour. That is what makes it a corner rather than a region
+	// reached around a gap: with the edge present, the diagonal is genuinely the
+	// third region meeting at one point, and the viewer can walk to it. With
+	// both edges empty it is across a void, and announcing it would put a live
+	// region on the minimap that nothing connects to.
+	corners := []struct {
+		name  string
+		flank [2]string
+	}{
+		{name: "northeast", flank: [2]string{"north", "east"}},
+		{name: "southeast", flank: [2]string{"south", "east"}},
+		{name: "southwest", flank: [2]string{"south", "west"}},
+		{name: "northwest", flank: [2]string{"north", "west"}},
+	}
+	for _, corner := range corners {
+		if !edges[corner.flank[0]] && !edges[corner.flank[1]] {
+			continue
+		}
+		for _, candidate := range topology {
+			candidateSizeX := candidate.SizeX / 256
+			candidateSizeY := candidate.SizeY / 256
+			// Touching at one point: abutting on both axes at once, which is
+			// exactly what an edge neighbour never does — an edge neighbour
+			// overlaps on the axis it runs along.
+			eastOf := candidate.GridX == source.GridX+sourceSizeX
+			westOf := candidate.GridX+candidateSizeX == source.GridX
+			northOf := candidate.GridY == source.GridY+sourceSizeY
+			southOf := candidate.GridY+candidateSizeY == source.GridY
+			touching := false
+			switch corner.name {
+			case "northeast":
+				touching = northOf && eastOf
+			case "southeast":
+				touching = southOf && eastOf
+			case "southwest":
+				touching = southOf && westOf
+			case "northwest":
+				touching = northOf && westOf
+			}
+			if touching {
+				neighbors = append(neighbors, RegionNeighbor{Direction: corner.name, Region: candidate})
 			}
 		}
 	}
