@@ -92,6 +92,8 @@ type Registry struct {
 }
 
 type Store interface {
+	// Authenticate answers "which region is this", not "may it run": a
+	// disabled region still authenticates, so that it can release its lease.
 	Authenticate(context.Context, string, string) (Region, bool)
 	List(context.Context) ([]Region, error)
 	Get(context.Context, string) (Region, error)
@@ -170,7 +172,9 @@ func (r *Registry) Authenticate(_ context.Context, id, accessKey string) (Region
 			}
 		}
 	}
-	if !found || !region.Enabled || subtle.ConstantTimeCompare([]byte(region.AccessKey), []byte(accessKey)) != 1 {
+	// Identity only; `enabled` is the caller's question. See the note on
+	// PostgresStore.Authenticate.
+	if !found || subtle.ConstantTimeCompare([]byte(region.AccessKey), []byte(accessKey)) != 1 {
 		return Region{}, false
 	}
 	return region, true

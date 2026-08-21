@@ -443,8 +443,11 @@ func TestProvisionedRegionManagementLifecycle(t *testing.T) {
 	if len(rotated.AccessKey) != 64 || rotated.AccessKey == created.AccessKey {
 		t.Fatalf("rotated access key was not returned exactly once: %#v", rotated)
 	}
-	if _, ok := registry.Authenticate(context.Background(), id, rotated.AccessKey); ok {
-		t.Fatal("disabled region authenticated with its rotated key")
+	// The rotated key identifies the region even while it is disabled, and the
+	// runtime endpoint is what enforces the difference: it may deregister and
+	// nothing else.
+	if _, ok := registry.Authenticate(context.Background(), id, rotated.AccessKey); !ok {
+		t.Fatal("disabled region should still authenticate with its rotated key")
 	}
 
 	requestRegion[struct{}](t, handler, http.MethodDelete,
@@ -580,5 +583,71 @@ func TestRegionTopologyListsThePlacedGrid(t *testing.T) {
 		"/api/v1/regions/topology", `{}`, http.StatusMethodNotAllowed)
 	if methodError.Code != "method_not_allowed" {
 		t.Fatalf("mutation response = %#v", methodError)
+	}
+}
+
+// A disabled region is switched off, not disowned. It must still be able to
+// hand back the lease it holds, because a provisioned region's lease row
+// reserves its map coordinates and is not purged when it expires: a disabled
+// region that cannot deregister leaves that reservation standing, and the next
+// region provisioned on those coordinates cannot register at all.
+func TestDisabledRegionMayOnlyReleaseItsLease(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "regions.json")
+	if err := os.WriteFile(path, []byte(`[
+  {"id":"33333333-3333-4333-8333-333333333333","name":"Retired","mapX":900,"mapY":900,"enabled":false,"viewerPort":42102,"accessKey":"retired-key"}
+]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := provisioning.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryRegionStore()
+	if _, err := store.RegisterProvisioned(context.Background(), "33333333-3333-4333-8333-333333333333",
+		regions.Registration{Name: "Retired", GridX: 900, GridY: 900,
+			PublicEndpoint: "http://retired.example:42101", ViewerPort: 42102,
+			LeaseDuration: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(checker{}, "test", Options{ServiceToken: "secret", GridName: "Test",
+		GridPublicURL: "https://grid.example", Regions: store, Provisioned: registry})
+
+	call := func(method, key, body string) *httptest.ResponseRecorder {
+		var reader *bytes.Buffer
+		if body == "" {
+			reader = bytes.NewBufferString("")
+		} else {
+			reader = bytes.NewBufferString(body)
+		}
+		request := httptest.NewRequest(method,
+			"/api/v1/region-runtime/33333333-3333-4333-8333-333333333333", reader)
+		request.Header.Set("Authorization", "Bearer "+key)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	// Running is refused, and refused as "disabled" rather than as a bad
+	// credential: the two send an operator to entirely different places.
+	start := call(http.MethodPost, "retired-key", `{"publicEndpoint":"http://retired.example:42101","viewerPort":42102,"leaseSeconds":60}`)
+	if start.Code != http.StatusForbidden {
+		t.Fatalf("disabled region start = %d, want 403: %s", start.Code, start.Body.String())
+	}
+	var refusal Error
+	if err := json.Unmarshal(start.Body.Bytes(), &refusal); err != nil || refusal.Code != "region_disabled" {
+		t.Fatalf("refusal = %#v (%v)", refusal, err)
+	}
+	// A wrong key is still a wrong key.
+	if bad := call(http.MethodPost, "not-the-key", "{}"); bad.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong key = %d, want 401", bad.Code)
+	}
+	// Releasing the lease is the one thing it may do.
+	if release := call(http.MethodDelete, "retired-key", ""); release.Code != http.StatusNoContent {
+		t.Fatalf("disabled region deregister = %d, want 204", release.Code)
+	}
+	live, err := store.Get(context.Background(), "33333333-3333-4333-8333-333333333333")
+	if err == nil && live.LeaseExpiresAt.After(time.Now()) {
+		t.Fatalf("lease still held after deregistration: %#v", live)
 	}
 }

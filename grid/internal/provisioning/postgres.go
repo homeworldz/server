@@ -42,10 +42,17 @@ func (s *PostgresStore) Import(ctx context.Context, items []Region) error {
 	return nil
 }
 
+// Authenticate proves which region is calling, and nothing more. It
+// deliberately does not filter on `enabled`: that is an authorization
+// question, and the caller asks it, because there is one thing a disabled
+// region must still be able to do — release the lease it is holding. Folding
+// the two together meant a disabled region could not deregister, so its
+// coordinates stayed occupied by a region that was not allowed to run
+// (2026-08-21).
 func (s *PostgresStore) Authenticate(ctx context.Context, id, accessKey string) (Region, bool) {
 	hash := sha256.Sum256([]byte(accessKey))
 	region, err := s.get(ctx, `(id::text = $1 OR lower(name) = lower($1))
-		AND enabled AND access_key_hash = $2`, id, hash[:])
+		AND access_key_hash = $2`, id, hash[:])
 	return region, err == nil
 }
 

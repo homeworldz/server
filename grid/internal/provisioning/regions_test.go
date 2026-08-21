@@ -54,8 +54,15 @@ func TestManagementMutationsPersistAtomically(t *testing.T) {
 	if err != nil || updated.Name != name || updated.MapX != x || updated.Enabled {
 		t.Fatalf("update = %#v, %v", updated, err)
 	}
-	if _, ok := registry.Authenticate(context.Background(), id, "initial-key"); ok {
-		t.Fatal("disabled region authenticated")
+	// A disabled region still proves who it is: identity and permission are
+	// separate questions, and the one thing it must still be allowed to do —
+	// release its lease — needs the first without the second.
+	disabled, ok := registry.Authenticate(context.Background(), id, "initial-key")
+	if !ok || disabled.Enabled {
+		t.Fatalf("disabled region should authenticate as disabled: %#v, %v", disabled, ok)
+	}
+	if _, ok := registry.Authenticate(context.Background(), id, "wrong-key"); ok {
+		t.Fatal("a wrong key authenticated")
 	}
 	if _, err := registry.RotateAccessKey(context.Background(), id, "rotated-key"); err != nil {
 		t.Fatal(err)

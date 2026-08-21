@@ -37,29 +37,29 @@ type ReadinessChecker interface {
 }
 
 type API struct {
-	ready          ReadinessChecker
-	version        string
-	publicURL      string
-	gridName       string
-	aboutURL       string
-	supportURL     string
-	registerURL    string
-	passwordURL    string
-	websiteAPIURL  string
-	welcomeText    string
-	logger         *slog.Logger
-	regions        regions.Store
-	identity       identity.Store
-	presence       presence.Store
-	inventory      inventory.Store
-	assets         assetmeta.Store
-	renditions     renditions.Store
-	workerToken    string
-	durability     *durability.Keeper
-	vault          vault.Store
-	serviceToken   string
-	provisioned    provisioning.Store
-	terrainHTTP    *http.Client
+	ready         ReadinessChecker
+	version       string
+	publicURL     string
+	gridName      string
+	aboutURL      string
+	supportURL    string
+	registerURL   string
+	passwordURL   string
+	websiteAPIURL string
+	welcomeText   string
+	logger        *slog.Logger
+	regions       regions.Store
+	identity      identity.Store
+	presence      presence.Store
+	inventory     inventory.Store
+	assets        assetmeta.Store
+	renditions    renditions.Store
+	workerToken   string
+	durability    *durability.Keeper
+	vault         vault.Store
+	serviceToken  string
+	provisioned   provisioning.Store
+	terrainHTTP   *http.Client
 	// Outbound to regions, for telling one that a wearer changed clothes.
 	outfitHTTP     *http.Client
 	terrainCache   terrainTileCache
@@ -118,13 +118,13 @@ type Options struct {
 	TerrainHTTPClient *http.Client
 	// Outbound to regions for outfit-change notifications. Defaulted when nil;
 	// a test supplies its own to see what would have been sent.
-	OutfitHTTPClient  *http.Client
-	Transits          transit.Store
-	TaskTransfers     tasktransfer.Store
-	Locations         locations.Store
-	Gestures          gestures.Store
-	Attachments       attachments.Store
-	Estates           estate.Store
+	OutfitHTTPClient *http.Client
+	Transits         transit.Store
+	TaskTransfers    tasktransfer.Store
+	Locations        locations.Store
+	Gestures         gestures.Store
+	Attachments      attachments.Store
+	Estates          estate.Store
 	// Welcome is the ordered new-arrival list ([grid] welcome_locations),
 	// shared with the client's world entry: where a viewer login lands when
 	// no stored location decides it, and where it is diverted when the stored
@@ -145,14 +145,14 @@ type Options struct {
 
 func New(ready ReadinessChecker, version string, options Options) http.Handler {
 	a := &API{ready: ready, version: version, publicURL: strings.TrimRight(options.GridPublicURL, "/"),
-		gridName:    strings.TrimSpace(options.GridName),
-		aboutURL:    strings.TrimSpace(options.AboutURL),
-		supportURL:  strings.TrimSpace(options.SupportURL),
-		registerURL: strings.TrimSpace(options.RegisterURL),
-		passwordURL: strings.TrimSpace(options.PasswordURL),
+		gridName:      strings.TrimSpace(options.GridName),
+		aboutURL:      strings.TrimSpace(options.AboutURL),
+		supportURL:    strings.TrimSpace(options.SupportURL),
+		registerURL:   strings.TrimSpace(options.RegisterURL),
+		passwordURL:   strings.TrimSpace(options.PasswordURL),
 		websiteAPIURL: strings.TrimRight(strings.TrimSpace(options.WebsiteAPIURL), "/"),
-		logger:      options.Logger,
-		regions: options.Regions, identity: options.Identity, presence: options.Presence,
+		logger:        options.Logger,
+		regions:       options.Regions, identity: options.Identity, presence: options.Presence,
 		inventory: options.Inventory, assets: options.Assets, vault: options.Vault,
 		renditions: options.Renditions, workerToken: options.WorkerToken,
 		serviceToken: options.ServiceToken,
@@ -298,6 +298,21 @@ func (a *API) provisionedRegionRuntime(w http.ResponseWriter, r *http.Request) {
 	if !found || !strings.EqualFold(scheme, "Bearer") || !authenticated {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthorized_region", Message: "the region UUID or access key is invalid"})
+		return
+	}
+	// A disabled region may do exactly one thing: give up its lease. Anything
+	// else is refused, and refused distinctly from a bad credential, because
+	// "you are switched off" and "your key is wrong" send an operator to
+	// entirely different places.
+	//
+	// The one permitted call matters more than it looks. A provisioned
+	// region's lease row reserves its coordinates and is not purged when it
+	// expires, so a disabled region that cannot deregister leaves that
+	// reservation standing — and the next region provisioned there cannot
+	// register at all (found the hard way, 2026-08-21).
+	if !provisioned.Enabled && r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusForbidden, Error{Code: "region_disabled",
+			Message: "the region is disabled; it may deregister but not run"})
 		return
 	}
 	id := provisioned.ID
@@ -658,7 +673,7 @@ func (a *API) gridTopology(ctx context.Context) ([]RegionTopology, error) {
 				GridX: originX, GridY: originY,
 				SizeX: edge, SizeY: edge, Maturity: item.Maturity,
 				PublicEndpoint: endpoint, ViewerPort: viewerPort + facet,
-				Online:         online, SessionEndpoint: sessionEndpoint})
+				Online: online, SessionEndpoint: sessionEndpoint})
 		}
 	}
 	return topology, nil
