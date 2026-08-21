@@ -2803,6 +2803,9 @@ int main(int argc, char* argv[]) {
     const auto viewer_server = viewer_facet_sockets.front();
     homeworldz::region::InboundTransitRegistry inbound_transits;
     homeworldz::region::InboundObjectRegistry inbound_objects;
+    // Sessions whose avatar lives in a neighbour and which hold a child circuit
+    // here (ADR 0038). Empty until something establishes one.
+    homeworldz::region::ChildAgentRegistry child_agents;
     homeworldz::region::CapabilityArrivalGate capability_arrival_gate;
     homeworldz::viewer::CircuitRegistry circuits([&](const homeworldz::viewer::UseCircuitCode& request) {
         const auto reject = [&](std::string_view reason) {
@@ -5989,6 +5992,80 @@ int main(int argc, char* argv[]) {
                             }
                         }
                     }
+                    // A neighbour establishing a child agent here (ADR 0038):
+                    // a session whose avatar is over there and which wants a
+                    // circuit here, so that when it crosses, the crossing is a
+                    // promotion rather than building an avatar from nothing.
+                    //
+                    // One call, not two. There is nothing to stage: a child
+                    // creates no object, moves no avatar and takes nothing away
+                    // from the source, so a source that dies after calling has
+                    // left only a child that will expire. The transits beside
+                    // this need two phases precisely because they do take
+                    // something away.
+                    if (response.path == "/api/v1/child-agents") {
+                        const auto authorization =
+                            homeworldz::http::request_header_value(request, "Authorization");
+                        if (response.method != "POST") {
+                            response = homeworldz::http::response_for_content(
+                                request, 405, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "method_not_allowed", "child agent establishment requires POST"}));
+                        } else if (service_token.empty() ||
+                                   authorization != "Bearer " + service_token) {
+                            response = homeworldz::http::response_for_content(
+                                request, 401, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "unauthorized", "a valid grid service token is required"}));
+                        } else if (!registration) {
+                            response = homeworldz::http::response_for_content(
+                                request, 503, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "region_unregistered",
+                                    "the region is not registered with a grid"}));
+                        } else if (const auto requested = homeworldz::region::parse_child_agent_request(
+                                       http_request_body(request)); !requested) {
+                            response = homeworldz::http::response_for_content(
+                                request, 400, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "child_agent_malformed",
+                                    "the child agent could not be read"}));
+                        } else if (requested->home_region_id == registration->region_id()) {
+                            // Its avatar is said to be here, so it is not a
+                            // visitor from anywhere — accepting this would put
+                            // one session in the registry as both a child and a
+                            // root of the same region.
+                            response = homeworldz::http::response_for_content(
+                                request, 409, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "child_agent_is_local",
+                                    "that avatar's home region is this one"}));
+                        } else {
+                            auto child = *requested;
+                            // The seed is this region's to name, and it is
+                            // deterministic for the same reason a facet's is:
+                            // a seed the viewer has not seen before makes
+                            // Firestorm tear down and rebuild this region's
+                            // capabilities in place, and doing that repeatedly
+                            // crashed it (2026-08-20). One child per session
+                            // per region, so the session is the whole key and
+                            // the visit id is a constant — distinct from the
+                            // facet family, which is 0000000f-ace0-...
+                            child.seed = region_public_endpoint + "/caps/seed/" +
+                                child.session_id + "/0000000c-a9e7-4000-8000-000000000000";
+                            const auto now = std::chrono::steady_clock::now();
+                            const auto& established = child_agents.establish(child, now);
+                            std::cout << "{\"level\":\"info\",\"message\":\"child agent established\""
+                                         ",\"agent\":" << homeworldz::api::json_string(established.agent_id)
+                                      << ",\"homeRegionId\":"
+                                      << homeworldz::api::json_string(established.home_region_id)
+                                      << ",\"children\":" << child_agents.size(now)
+                                      << "}" << std::endl;
+                            response = homeworldz::http::response_for_content(
+                                request, 200, "application/json",
+                                homeworldz::region::encode_child_agent_acceptance(established.seed));
+                        }
+                    }
                     // An object arriving from a neighbor. Staging and activation
                     // are separate calls because the source removes its copy
                     // between them: staging alone creates nothing, so a source
@@ -6299,6 +6376,21 @@ int main(int argc, char* argv[]) {
                                         break;
                                     }
                                 }
+                            }
+                            if (!authorized && authorized_session) {
+                                // A child agent (ADR 0038) is authorized by
+                                // none of the three above and must be: its grid
+                                // session names the region its avatar is
+                                // actually in, it has no transit because it is
+                                // not arriving, and no avatar of it stands here
+                                // — that is what makes it a child. Without this
+                                // rung every child seed is a 401 and the whole
+                                // ceremony fails in a way that looks like a
+                                // capability bug.
+                                const auto* child = child_agents.find(
+                                    session_id, std::chrono::steady_clock::now());
+                                authorized = child != nullptr &&
+                                    child->agent_id == authorized_session->agent_id;
                             }
                             if (authorized) authorized_agent_id = authorized_session->agent_id;
                         }
