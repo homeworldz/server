@@ -1393,19 +1393,26 @@ int main(int argc, char* argv[]) {
 				const auto overlaps = [](int first, int first_size, int second, int second_size) {
 					return first < second + second_size && second < first + first_size;
 				};
+				// The four edges overlap along the axis they run; the four
+				// corners abut on both axes at once and overlap on neither,
+				// which is what makes the two kinds mutually exclusive.
+				const bool north_of = neighbor.grid_y == region_grid_y + source_size_y;
+				const bool south_of = neighbor.grid_y + neighbor_size_y == region_grid_y;
+				const bool east_of = neighbor.grid_x == region_grid_x + source_size_x;
+				const bool west_of = neighbor.grid_x + neighbor_size_x == region_grid_x;
+				const bool spans_x =
+					overlaps(region_grid_x, source_size_x, neighbor.grid_x, neighbor_size_x);
+				const bool spans_y =
+					overlaps(region_grid_y, source_size_y, neighbor.grid_y, neighbor_size_y);
 				bool adjacent{};
-				if (neighbor.direction == "north")
-					adjacent = neighbor.grid_y == region_grid_y + source_size_y &&
-						overlaps(region_grid_x, source_size_x, neighbor.grid_x, neighbor_size_x);
-				else if (neighbor.direction == "east")
-					adjacent = neighbor.grid_x == region_grid_x + source_size_x &&
-						overlaps(region_grid_y, source_size_y, neighbor.grid_y, neighbor_size_y);
-				else if (neighbor.direction == "south")
-					adjacent = neighbor.grid_y + neighbor_size_y == region_grid_y &&
-						overlaps(region_grid_x, source_size_x, neighbor.grid_x, neighbor_size_x);
-				else if (neighbor.direction == "west")
-					adjacent = neighbor.grid_x + neighbor_size_x == region_grid_x &&
-						overlaps(region_grid_y, source_size_y, neighbor.grid_y, neighbor_size_y);
+				if (neighbor.direction == "north") adjacent = north_of && spans_x;
+				else if (neighbor.direction == "east") adjacent = east_of && spans_y;
+				else if (neighbor.direction == "south") adjacent = south_of && spans_x;
+				else if (neighbor.direction == "west") adjacent = west_of && spans_y;
+				else if (neighbor.direction == "northeast") adjacent = north_of && east_of;
+				else if (neighbor.direction == "southeast") adjacent = south_of && east_of;
+				else if (neighbor.direction == "southwest") adjacent = south_of && west_of;
+				else if (neighbor.direction == "northwest") adjacent = north_of && west_of;
 				if (!adjacent) {
                     std::cerr << "{\"level\":\"" << (required ? "error" : "warning")
                               << "\",\"message\":\"invalid region neighbor topology\"}" << std::endl;
