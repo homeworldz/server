@@ -4237,7 +4237,22 @@ int main(int argc, char* argv[]) {
     std::unordered_map<std::string, std::string> announced_child_seeds;
     auto next_child_agent_offer = std::chrono::steady_clock::time_point{};
     auto next_child_agent_sweep = std::chrono::steady_clock::time_point{};
+    // OFF by default, and it must stay off until the departure half exists.
+    //
+    // Announcing neighbours works: the circuit comes up, the world backfills,
+    // and a crossing promotes the child (all proven live 2026-08-21). What does
+    // not exist is the reverse. Crossing *out* of a region runs
+    // `circuits.remove(endpoint)` and destroys the viewer's circuit to it — so
+    // the region behind you stops answering pings, the viewer drops it after
+    // ~100 seconds, and there is no way back. In SL a crossing demotes you to a
+    // child agent at the origin, which is precisely the mirror of the promotion
+    // this feature added and the only piece still missing.
+    //
+    // Left in the tree rather than reverted because everything except that
+    // mirror is proven; set `child_agents = on` in a region's ini to work on it.
+    const bool child_agents_enabled = configured_value("child_agents", "off") == "on";
     const auto offer_one_child_agent = [&]() {
+        if (!child_agents_enabled) return false;
         if (service_token.empty() || !registration || region_neighbors.empty()) return false;
         for (const auto& [viewer_endpoint, live] : avatars) {
             if (live.session_id.empty()) continue;
