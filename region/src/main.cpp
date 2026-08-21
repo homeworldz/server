@@ -3163,8 +3163,42 @@ int main(int argc, char* argv[]) {
     // that displaces it, an explicit detach, and the wearer leaving. That last
     // one is not housekeeping — an attachment that outlives its wearer is a prim
     // parented to an entity that no longer exists.
+    // `spare` is a viewer that must not be told: the wearer who is leaving.
+    // Its own avatar's kill already skips it — the departure below is careful
+    // about that — but its attachments' kills were broadcast to everyone, so
+    // the one viewer that must not see a detach saw fifteen. Firestorm logged
+    // each as "ATT unexpected detach", desynchronised its attachment manager,
+    // and rendered a partial outfit (found live, 2026-08-21).
+    // A worn object's identity, derived rather than minted.
+    //
+    // An attachment is destroyed when its wearer leaves a region and rezzed
+    // again at the destination, so a fresh random id made the same garment a
+    // different object on every crossing. Firestorm matches arriving
+    // attachments against what it believes is worn; fifteen strangers turning
+    // up at once are all "unexpected", its attachment manager desynchronises,
+    // and the avatar renders half-dressed.
+    //
+    // Deriving the id from the wearer, the inventory item and the attachment
+    // point makes the same garment the same object wherever it is worn, so a
+    // crossing looks to the viewer like the object it already knows. Two
+    // regions briefly holding the same id is exactly right: it is one object,
+    // mid-hand-off, and only one of them has the wearer.
+    const auto worn_object_id = [](std::string_view user_id, std::string_view item_id,
+                                   std::uint8_t point) {
+        const auto seed = std::string(user_id) + " homeworldz-worn-object " +
+                          std::string(item_id) + " " + std::to_string(point);
+        const auto bytes = std::as_bytes(std::span{seed.data(), seed.size()});
+        auto digest = homeworldz::crypto::sha256_hex(bytes);
+        digest.resize(32);
+        // Version 4, variant 1, so nothing downstream rejects it as malformed.
+        digest[12] = '4';
+        digest[16] = '8';
+        return digest.substr(0, 8) + "-" + digest.substr(8, 4) + "-" + digest.substr(12, 4) +
+               "-" + digest.substr(16, 4) + "-" + digest.substr(20, 12);
+    };
     const auto remove_attachment_linkset = [&](homeworldz::scene::EntityId root_id,
-                                               std::chrono::steady_clock::time_point when) {
+                                               std::chrono::steady_clock::time_point when,
+                                               std::string_view spare = {}) {
         std::vector<homeworldz::scene::EntityId> part_ids;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.parent_id == root_id) part_ids.push_back(candidate_id);
@@ -3176,6 +3210,7 @@ int main(int argc, char* argv[]) {
         const auto kill = homeworldz::viewer::encode_kill_object(killed);
         for (const auto& [recipient_endpoint, recipient] : avatars) {
             static_cast<void>(recipient);
+            if (!spare.empty() && recipient_endpoint == spare) continue;
             for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
                 if (const auto outgoing = circuits.send(route, kill, true, when))
                     static_cast<void>(send_udp(viewer_server, route, *outgoing));
@@ -3185,14 +3220,15 @@ int main(int argc, char* argv[]) {
         return killed;
     };
     const auto remove_avatar_attachments = [&](homeworldz::scene::EntityId wearer_id,
-                                               std::chrono::steady_clock::time_point when) {
+                                               std::chrono::steady_clock::time_point when,
+                                               std::string_view spare = {}) {
         std::vector<homeworldz::scene::EntityId> roots;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.attachment_point != 0 && candidate.parent_id == wearer_id)
                 roots.push_back(candidate_id);
         std::size_t removed = 0;
         for (const auto root_id : roots)
-            if (!remove_attachment_linkset(root_id, when).empty()) ++removed;
+            if (!remove_attachment_linkset(root_id, when, spare).empty()) ++removed;
         return removed;
     };
     // retire_session_avatar removes an embodied session's avatar: kill to
@@ -3653,7 +3689,7 @@ int main(int argc, char* argv[]) {
                     entity_ids.push_back(root_id);
                     auto* entity = scene.find(root_id);
                     if (!entity) throw std::runtime_error("create attachment root");
-                    entity->object_id = homeworldz::viewer::random_uuid();
+                    entity->object_id = worn_object_id(user_id, item_id, outcome.point);
                     entity->owner_id = user_id;
                     entity->creator_id = item->creator_id;
                     apply_object_asset(*entity, asset);
@@ -3823,8 +3859,12 @@ int main(int argc, char* argv[]) {
                 static_cast<std::uint32_t>(departing->second.entity_id)};
             const auto kill = homeworldz::viewer::encode_kill_object(kill_ids);
             const auto kill_now = std::chrono::steady_clock::now();
-            // What this avatar was wearing goes with it.
-            static_cast<void>(remove_avatar_attachments(departing->second.entity_id, kill_now));
+            // What this avatar was wearing goes with it — and its own viewer
+            // is not told, exactly as it is not told about its own body below.
+            // It is moving to the destination, where the same worn objects are
+            // rezzed again; a kill here reads to it as taking everything off.
+            static_cast<void>(remove_avatar_attachments(
+                departing->second.entity_id, kill_now, endpoint));
             std::size_t kill_recipients = 0;
             for (const auto& [recipient_endpoint, recipient] : avatars) {
                 static_cast<void>(recipient);
