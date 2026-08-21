@@ -2834,10 +2834,22 @@ int main(int argc, char* argv[]) {
         if (!agent) return reject("invalid_session_agent");
         if (*agent != request.agent_id) return reject("agent_id_mismatch");
         if (session->destination_region_id != registration->region_id()) {
+            const auto authorized_at = std::chrono::steady_clock::now();
             const auto transit = inbound_transits.authorize(
-                session->agent_id, session->session_id, std::chrono::steady_clock::now());
-            if (!transit || transit->destination_region_id != registration->region_id())
-                return reject("destination_region_mismatch");
+                session->agent_id, session->session_id, authorized_at);
+            const bool arriving = transit &&
+                transit->destination_region_id == registration->region_id();
+            // Or a child agent (ADR 0038), which is the same omission the
+            // capability ladder had: its grid session names the region its
+            // avatar is actually in, and it is not arriving, because it is not
+            // coming here at all yet. That is what being a child is, and
+            // without this the viewer's circuit to a neighbour is refused, the
+            // neighbour goes red on the minimap, and it reads as the neighbour
+            // being down (found live, 2026-08-21).
+            bool visiting = false;
+            if (const auto* child = child_agents.find(session->session_id, authorized_at))
+                visiting = homeworldz::viewer::parse_uuid(child->agent_id) == request.agent_id;
+            if (!arriving && !visiting) return reject("destination_region_mismatch");
         }
         std::cout << "{\"level\":\"info\",\"message\":\"viewer circuit authorized\",\"circuitCode\":"
                   << request.circuit_code << ",\"sessionId\":"
@@ -4212,6 +4224,16 @@ int main(int argc, char* argv[]) {
             if (live.session_id.empty()) continue;
             const auto agent = homeworldz::viewer::parse_uuid(live.user_id);
             if (!agent) continue;
+            // Not until this region knows what the avatar looks like. The offer
+            // is made once, so an offer sent in the second after arrival — and
+            // this ran every 250ms, so it was — carries no appearance and never
+            // gets another chance. First seen as "appearance":false in the
+            // announcement log while the avatar was rendering perfectly well.
+            const auto dressed = avatar_appearances.find(viewer_endpoint);
+            if (dressed == avatar_appearances.end() ||
+                dressed->second.texture_entry.empty() ||
+                dressed->second.visual_params.empty())
+                continue;
             for (const auto& neighbor : region_neighbors) {
                 if (!neighbor.online || neighbor.public_endpoint.empty() ||
                     neighbor.id.empty() || neighbor.id == registration->region_id())
@@ -4247,15 +4269,10 @@ int main(int argc, char* argv[]) {
                         continue;
                     child.worn.push_back({entity.attachment_item_id, entity.attachment_point});
                 }
-                if (const auto dressed = avatar_appearances.find(viewer_endpoint);
-                    dressed != avatar_appearances.end() &&
-                    !dressed->second.texture_entry.empty() &&
-                    !dressed->second.visual_params.empty()) {
-                    child.texture_entry = dressed->second.texture_entry;
-                    child.visual_params = dressed->second.visual_params;
-                    child.cof_version = dressed->second.serial;
-                    child.appearance_version = dressed->second.appearance_version;
-                }
+                child.texture_entry = dressed->second.texture_entry;
+                child.visual_params = dressed->second.visual_params;
+                child.cof_version = dressed->second.serial;
+                child.appearance_version = dressed->second.appearance_version;
                 std::string seed;
                 try {
                     auto transport = homeworldz::grid::socket_transport(
