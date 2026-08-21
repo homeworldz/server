@@ -505,6 +505,15 @@ private:
         const auto sculpt_type = unsigned_integer();
         if (sculpt_type > 255) fail("sculpt type is outside the supported range");
         result.sculpt_type = static_cast<std::uint8_t>(sculpt_type);
+        if (consume("}")) return result;
+        expect(",");
+        expect_string("sitTarget");
+        expect(":");
+        result.sit_target_position = vector();
+        expect(",");
+        expect_string("sitTargetRotation");
+        expect(":");
+        result.sit_target_rotation = vector();
         expect("}");
         return result;
     }
@@ -620,9 +629,20 @@ std::string snapshot_json(const scene::Scene& scene) {
                 ",\"creationDate\":" + std::to_string(item.creation_date) + '}';
         }
         json += "]";
-        if (!entity->sculpt_id.empty())
-            json += ",\"sculptId\":" + api::json_string(entity->sculpt_id) +
-                ",\"sculptType\":" + std::to_string(entity->sculpt_type);
+        // Written even when empty. The fields after it are optional, and an
+        // optional field can only be skipped if what precedes it is always
+        // there — otherwise a prim with a seat and no sculpt puts the seat
+        // where the reader is looking for a sculpt id.
+        json += ",\"sculptId\":" + api::json_string(entity->sculpt_id) +
+            ",\"sculptType\":" + std::to_string(entity->sculpt_type);
+        if (scene::has_sit_target(*entity))
+            json += ",\"sitTarget\":[" + std::to_string(entity->sit_target_position.x) + ',' +
+                std::to_string(entity->sit_target_position.y) + ',' +
+                std::to_string(entity->sit_target_position.z) + ']' +
+                ",\"sitTargetRotation\":[" +
+                std::to_string(entity->sit_target_rotation.x) + ',' +
+                std::to_string(entity->sit_target_rotation.y) + ',' +
+                std::to_string(entity->sit_target_rotation.z) + ']';
         json += "}";
     }
     return json + "]}";

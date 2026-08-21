@@ -62,6 +62,11 @@ struct ObjectAsset {
     // immediately afterwards — a field the asset cannot hold is a field that
     // never survives to be sent.
     std::vector<std::pair<std::uint8_t, std::string>> face_materials;
+    // The seat a script put on the prim. Carried by the asset so that a take,
+    // a rez, and a border crossing all preserve it — a seat that survived
+    // being taken but not being crossed would be a strange thing to explain.
+    scene::Vector3 sit_target_position;
+    scene::Vector3 sit_target_rotation;
 };
 
 struct LinksetAsset {

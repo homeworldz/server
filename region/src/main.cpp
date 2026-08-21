@@ -1069,6 +1069,8 @@ void apply_object_asset(
     entity.sculpt_id = asset.sculpt_id;
     entity.sculpt_type = asset.sculpt_type;
     entity.face_materials = asset.face_materials;
+    entity.sit_target_position = asset.sit_target_position;
+    entity.sit_target_rotation = asset.sit_target_rotation;
     regenerate_task_inventory_item_ids(entity);
 }
 

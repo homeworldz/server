@@ -307,6 +307,13 @@ std::string object_json(const scene::Entity& entity, bool child) {
         }
         result += ']';
     }
+    if (scene::has_sit_target(entity))
+        result += ",\"sitTarget\":[" + std::to_string(entity.sit_target_position.x) + ',' +
+            std::to_string(entity.sit_target_position.y) + ',' +
+            std::to_string(entity.sit_target_position.z) + ']' +
+            ",\"sitTargetRotation\":[" + std::to_string(entity.sit_target_rotation.x) + ',' +
+            std::to_string(entity.sit_target_rotation.y) + ',' +
+            std::to_string(entity.sit_target_rotation.z) + ']';
     if (child)
         result += ",\"localPosition\":[" + std::to_string(entity.local_position.x) + ',' +
             std::to_string(entity.local_position.y) + ',' +
@@ -375,6 +382,10 @@ std::optional<ObjectAsset> parse_object_asset(std::span<const std::byte> content
     const auto name = string_after(text, R"("name":")");
     const auto creator_id = string_after(text, R"("creatorId":")");
     const auto local_position = vector_after(text, R"("localPosition":[)");
+    // Absent on every asset written before seats existed, and on every prim
+    // without one, so its absence is ordinary rather than a parse failure.
+    const auto sit_target = vector_after(text, R"("sitTarget":[)");
+    const auto sit_target_rotation = vector_after(text, R"("sitTargetRotation":[)");
     std::size_t position = 0;
     const auto material = number_after(text, R"("material":)", position);
     position = 0;
@@ -512,6 +523,8 @@ std::optional<ObjectAsset> parse_object_asset(std::span<const std::byte> content
     result.task_inventory_serial = task_inventory_serial;
     result.task_inventory = *task_inventory;
     result.local_position = local_position.value_or(scene::Vector3{});
+    result.sit_target_position = sit_target.value_or(scene::Vector3{});
+    result.sit_target_rotation = sit_target_rotation.value_or(scene::Vector3{});
     result.local_rotation = result.rotation;
     if (const auto sculpt_id = string_after(text, R"("sculptId":")")) {
         const auto sculpt_type = integer_after<unsigned>(text, R"("sculptType":)");

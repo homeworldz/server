@@ -134,7 +134,21 @@ struct Entity {
     // back to the viewer, and it is how a second Wear of the same item is
     // recognised as a re-wear rather than a second copy.
     std::string attachment_item_id;
+    // The seat `llSitTarget` put on this prim: an offset from the prim's centre
+    // and a rotation, both in the prim's own space.
+    //
+    // A zero offset means no sit target, which is not a shortcut — it is LSL's
+    // own rule, where `llSitTarget(ZERO_VECTOR, ZERO_ROTATION)` is how a script
+    // takes a seat away. Keeping that rule means there is one answer to "does
+    // this prim seat anyone", rather than a flag that can disagree with the
+    // offset beside it.
+    Vector3 sit_target_position;
+    Vector3 sit_target_rotation;
 };
+
+// Whether a script has put a seat on this prim. The offset carries the answer;
+// see the note on Entity::sit_target_position.
+bool has_sit_target(const Entity& entity);
 
 struct RayIntersection {
     Vector3 position;

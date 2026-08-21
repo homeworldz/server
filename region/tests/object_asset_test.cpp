@@ -63,6 +63,10 @@ int main() {
     child.task_inventory_serial = 2;
     child.task_inventory.push_back(root.task_inventory.front());
     child.task_inventory.front().name = "Child Texture";
+    // A seat on the child, none on the root: a take must carry the seat with
+    // the prim that has it and must not invent one on the prim that does not.
+    child.sit_target_position = {0.0, 0.4, 0.6};
+    child.sit_target_rotation = {0.0, 0.0, -0.5};
     const std::array<const homeworldz::scene::Entity*, 1> children{&child};
     const auto linkset_text = homeworldz::asset::serialize_linkset_asset(root, children);
     const auto linkset = homeworldz::asset::parse_linkset_asset(std::span(
@@ -85,7 +89,16 @@ int main() {
         linkset->root.task_inventory[0].sale_price != 25 ||
         linkset->children[0].task_inventory_serial != 2 ||
         linkset->children[0].task_inventory.size() != 1 ||
-        linkset->children[0].task_inventory[0].name != "Child Texture")
+        linkset->children[0].task_inventory[0].name != "Child Texture" ||
+        linkset->children[0].sit_target_position.y != 0.4 ||
+        linkset->children[0].sit_target_position.z != 0.6 ||
+        linkset->children[0].sit_target_rotation.z != -0.5 ||
+        linkset->root.sit_target_position.x != 0.0 ||
+        linkset->root.sit_target_position.y != 0.0 ||
+        linkset->root.sit_target_position.z != 0.0)
+        return 1;
+    // The offset is the whole answer to "is there a seat here".
+    if (!homeworldz::scene::has_sit_target(child) || homeworldz::scene::has_sit_target(root))
         return 1;
     const auto single = homeworldz::asset::parse_linkset_asset(bytes);
     if (!single || !single->children.empty() || single->root.description != "Round \"prim\"")

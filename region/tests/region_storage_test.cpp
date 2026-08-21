@@ -97,6 +97,10 @@ int main() {
             if (entity == nullptr) return 1;
             entity->velocity.x = 1.0;
             entity->avatar_flying = true;
+            // A seat has to outlive a restart, or every scripted chair in the
+            // region comes back standing-room only.
+            entity->sit_target_position = {0.0, 0.25, 0.5};
+            entity->sit_target_rotation = {0.0, 0.0, 0.7071};
             scene.step(1.0);
             storage.save_snapshot(scene);
             metadata = storage.snapshot_metadata();
@@ -108,6 +112,10 @@ int main() {
             const auto* restored_second = restored.find(second);
             if (restored_first == nullptr || restored_first->position.x != 2.0 ||
                 restored_first->velocity.x != 1.0 || !restored_first->avatar_flying ||
+                !homeworldz::scene::has_sit_target(*restored_first) ||
+                restored_first->sit_target_position.y != 0.25 ||
+                restored_first->sit_target_position.z != 0.5 ||
+                restored_first->sit_target_rotation.z != 0.7071 ||
                 restored_first->task_inventory_serial != 9 ||
                 !restored_first->task_inventory.empty() ||
                 restored_second == nullptr ||
@@ -117,6 +125,8 @@ int main() {
                 restored_second->creator_id != primitive->creator_id ||
                 restored_second->base_permissions != 0x0009e000 ||
                 restored_second->next_owner_permissions != 0x0008e000 ||
+                // The prim beside it has no seat, and must not acquire one.
+                homeworldz::scene::has_sit_target(*restored_second) ||
                 restored_second->scale.y != 0.75 || restored_second->rotation.x != 0.25 ||
                 restored_second->rotation.y != 0.5 ||
                 restored_second->description != "storage test primitive" || restored_second->material != 4 ||

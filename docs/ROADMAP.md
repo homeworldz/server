@@ -140,27 +140,34 @@ client.
 - [ ] Transfer the complete attachment set with the avatar and prevent duplicate activation at source and destination.
 - [ ] Handle disconnects, destination failure, retries, stale transit records, and reconciliation after process restart.
 
-### Object crossings
+### Objects, Sitting and Crossings
 
 Vehicle crossings are **not** here. A vehicle is a scripted object driven by
 the Second Life vehicle parameter model, neither of which exists yet, so
 crossing one waits on Phase 6 and is listed at the end of it. What this phase
 owns is every crossing a vehicle would later be built on: a physical object
 carrying its motion across the line, an object with avatars attached to it, and
-an object with avatars seated on it.
+an object with avatars sitting on it.
 
-The seated bundle has a dependency outside this phase: **there is no seating
-yet**. Sit targets, seating, unsit, and seated transforms are Phase 3 work, and
-until they exist there is nothing to seat and nothing to carry. The crossing is
-shaped to take a bundle when there is one.
+Sitting comes before the crossing that carries it, and the sit target comes
+before sitting. The order runs the other way from the way it reads: `llSitTarget`
+lands first, at the top of the scripting phase, because it is what *puts* a sit
+target on a prim and there is no point implementing seating against a target
+nothing can set. Sitting on that target is next, here. Carrying a sitter across
+a border is last, because it is the only one of the three that needs the other
+two finished.
 
+- [ ] Sit on a prim: sit targets honored where a script has set one and a
+  default seat derived from the prim where none is, with the avatar's world
+  transform following the root object, plus unsit, camera placement, and seated
+  animation state.
 - [x] Define an off-region disposition for every moving entity ([ADR 0037](adr/0037-object-border-crossings.md)): avatars, child prims, attachments, temporary-on-rez objects, non-physical objects, and the no-neighbor case each have a stated answer rather than whichever one the containment clamp produced.
 - [x] At a border with no eligible online neighbor, constrain avatar and physical-object origins to the configured Region extent and cancel outward velocity at the crossed edge.
 - [x] Resolve border neighbors from persistent grid region records plus their current online leases before choosing crossing versus containment.
 - [ ] Cross individual objects and complete linksets without changing creator, owner, permissions, inventory, or physical state. *Built and unit-tested; awaiting proof between two live regions.*
 - [ ] Carry a physical object's linear and angular motion across the border so its path is continuous through the crossing. *Built and unit-tested; awaiting proof between two live regions.*
 - [ ] Cross attachments as part of their avatar bundle.
-- [ ] Transfer an object and every avatar seated on it as one coordinated bundle, with no passenger briefly becoming authoritative in both regions or neither.
+- [ ] Transfer an object and every avatar sitting on it as one coordinated bundle — sit target, seat assignment, and seated transform included — with no passenger briefly becoming authoritative in both regions or neither.
 - [ ] Establish event and collision cutoffs so crossing does not duplicate or silently lose observable actions.
 
 ### World navigation
@@ -204,12 +211,12 @@ because re-keying an empty vault is free
 - [ ] Complete live Firestorm acceptance for compound collision, falling and rotation, editing, delinking, and restart persistence.
 - [x] Verify deterministic-enough restart and handoff behavior through shared physics acceptance scenarios.
 
-### Attachments and sitting
+### Attachments
 
-- [ ] Attach inventory objects to named avatar attachment points with stable local transforms, permissions, ownership, and persistence.
-- [ ] Represent worn attachments as part of the authoritative avatar bundle and restore them on login.
-- [ ] Implement sit targets, avatar seating, unsit, camera placement, and seated animation state.
-- [ ] Support avatars as seated attachments to object linksets so their world transforms follow the root object correctly.
+Sitting moved to Phase 2, where the crossing that has to carry it lives.
+
+- [ ] Attach inventory objects to named avatar attachment points with stable local transforms, permissions, ownership, and persistence. *Wearing, permissions, ownership and persistence are live (2026-08-08); the local transform is not — an object is worn at the joint itself because the offset it was last taken off at is stored nowhere.*
+- [x] Represent worn attachments as part of the authoritative avatar bundle and restore them on login, and on arrival in any region.
 - [ ] Define lifecycle ordering for attachment, seated-avatar, physics, viewer, and later script events.
 
 ## Phase 4: Mesh and Creator Platform
@@ -305,6 +312,7 @@ run.
 - [x] Recompile task scripts after Firestorm edits, preserve the previous running instance after a failed compile, honor the viewer's running flag, and remove the live VM when its task inventory item is deleted.
 - [x] Route the initial `llSay` and `llOwnerSay` host calls to Firestorm object chat with owner-only and distance behavior, confirmed in the live cloud Grid.
 - [x] Advertise the `SCRIPTED` and `HANDLE_TOUCH` object-update flags so Firestorm enables Touch, then dispatch `touch_start` from `ObjectGrab`.
+- [ ] Implement `llSitTarget`, which puts a seat offset and rotation on a prim and is what makes a sit target exist at all. It comes first among the host functions because the Phase 2 sitting work is meaningless against a target nothing can set, and it is the smaller half: storage on the prim, persistence, and the call, with no avatar behavior of its own.
 - [ ] Implement the remaining object lifecycle, sustained/ended touch, timer, listen, sensor, control, permission, inventory, changed, link-message, collision, land-collision, attachment, and moving events.
 - [ ] Implement bounded LSL host functions for scene, physics, inventory, communication, parcel, avatar, HTTP, and data operations.
 - [ ] Preserve Second Life event ordering and delay semantics where observable and document intentional Homeworldz differences.

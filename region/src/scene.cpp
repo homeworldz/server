@@ -121,6 +121,11 @@ bool apply_task_inventory_update(
     return true;
 }
 
+bool has_sit_target(const Entity& entity) {
+    return entity.sit_target_position.x != 0.0 || entity.sit_target_position.y != 0.0 ||
+           entity.sit_target_position.z != 0.0;
+}
+
 EffectivePermissions effective_permissions(const Entity& entity) {
     EffectivePermissions result{entity.owner_permissions, entity.next_owner_permissions};
     constexpr auto restricted = permission_modify | permission_copy | permission_transfer;
