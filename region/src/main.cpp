@@ -207,6 +207,11 @@ struct LiveAvatar {
     std::string outbound_transit_id;
     std::chrono::steady_clock::time_point outbound_transit_expires{};
     std::chrono::steady_clock::time_point next_crossing_attempt{};
+    // This avatar has been told to continue somewhere else — a border crossing
+    // or a teleport — and the destination is already dressing it from the
+    // grid's worn list. Until it is retired here, what its viewer says about
+    // what it is wearing is about the copy over there, not this one.
+    bool handing_off{};
 };
 
 bool sequence_is_newer(std::uint32_t candidate, std::uint32_t current) {
@@ -8517,6 +8522,13 @@ int main(int argc, char* argv[]) {
                                                 "/" + transit_id, 13, teleport_flags,
                                             static_cast<std::uint32_t>(target->size_x),
                                             static_cast<std::uint32_t>(target->size_y)}));
+                                    // Same rule as a border crossing: from here
+                                    // the destination owns what this avatar
+                                    // wears, so nothing said on this circuit may
+                                    // rewrite it.
+                                    if (const auto departing = avatars.find(endpoint);
+                                        departing != avatars.end())
+                                        departing->second.handing_off = true;
                                     std::cout << "{\"level\":\"info\",\"message\":\"avatar teleport signaled\",\"transitId\":"
                                               << homeworldz::api::json_string(transit_id)
                                               << ",\"destinationRegionId\":"
@@ -12545,7 +12557,28 @@ int main(int argc, char* argv[]) {
                                       << "}" << std::endl;
                         }
                         const auto detach = homeworldz::viewer::decode_object_detach(packet->payload);
-                        if (detach && detach->agent_id == identity->agent_id &&
+                        // A detach that arrives while this avatar is handing off is
+                        // not the wearer taking something off. It is the viewer
+                        // reacting to the copy this region just killed, and obeying
+                        // it destroys the outfit: the destination has already rezzed
+                        // the attachments from the grid's worn list, so forgetting
+                        // them here unwears them everywhere.
+                        //
+                        // Observed live 2026-08-21: crossing Nova to Nova B, the
+                        // destination restored all fifteen attachments and, in the
+                        // same second, the source processed fourteen detaches and
+                        // told the grid to forget each one. Crossing back restored
+                        // one. The fifteenth survived only because the avatar was
+                        // retired before its request landed, which is to say the
+                        // wearer kept whichever item the race happened to spare.
+                        const auto detaching_avatar = avatars.find(endpoint);
+                        const bool owns_worn_state = detaching_avatar != avatars.end() &&
+                            !detaching_avatar->second.handing_off;
+                        if (detach && !owns_worn_state) {
+                            std::cout << "{\"level\":\"info\",\"message\":\"attachment detach ignored\""
+                                         ",\"reason\":\"avatar is handing off to another region\""
+                                         ",\"requested\":" << detach->local_ids.size() << "}" << std::endl;
+                        } else if (detach && detach->agent_id == identity->agent_id &&
                             detach->session_id == identity->session_id) {
                             const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
                             std::size_t detached = 0;
@@ -13287,6 +13320,7 @@ int main(int argc, char* argv[]) {
                              "\"transitId\":"
                           << homeworldz::api::json_string(avatar.outbound_transit_id) << "}" << std::endl;
                 avatar.outbound_transit_id.clear();
+                avatar.handing_off = false;
             }
             if (physics_world && avatar.physics_character != 0)
                 if (const auto state = physics_world->character_state(avatar.physics_character))
@@ -13541,6 +13575,7 @@ int main(int argc, char* argv[]) {
                                 static_cast<std::uint32_t>(crossing->destination.size_y)}));
                         avatar.outbound_transit_id = transit_id;
                         avatar.outbound_transit_expires = now + std::chrono::seconds(30);
+                        avatar.handing_off = true;
                         std::cout << "{\"level\":\"info\",\"message\":\"avatar border crossing signaled\","
                                      "\"transitId\":"
                                   << homeworldz::api::json_string(transit_id)

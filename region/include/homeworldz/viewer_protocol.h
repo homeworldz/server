@@ -290,8 +290,16 @@ struct RezSingleAttachmentFromInv : AgentMessage {
 };
 
 // ObjectDetach (Low 113): stop wearing, by the local ids of the attachments
-// themselves. Firestorm does not send this either — see
-// DetachAttachmentIntoInv, which is what taking something off actually emits.
+// themselves. Taking something off deliberately emits DetachAttachmentIntoInv
+// instead, and this was long believed to be unused.
+//
+// It is not. Firestorm sends it on a region crossing, once per attachment, to
+// the region being left (observed 2026-08-21, fourteen of them in one second,
+// carrying the correct agent and session ids — so these are real ObjectDetach
+// messages and not something else misread as one). Nothing was taken off; the
+// viewer is reacting to the source killing worn objects that reappear at the
+// destination under new object ids. Whatever the viewer's reasoning, a region
+// must not treat it as the wearer undressing.
 struct ObjectDetach : AgentMessage {
     std::vector<std::uint32_t> local_ids;
 };
