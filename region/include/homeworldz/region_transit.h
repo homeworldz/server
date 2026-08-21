@@ -152,6 +152,30 @@ struct ChildAgent {
     // I/O. Empty is a real answer — wearing nothing — which is why the parser
     // refuses a malformed set rather than returning a short one.
     std::vector<grid::WornAttachment> worn;
+    // The appearance metadata, carried for the same reason the worn set is, and
+    // stopping where Halcyon's JSON representation stops: it packs
+    // `texture_entry`, `visual_params` and wearables into the interregion
+    // message and leaves serialized attachment blobs to its protobuf path. The
+    // texture entry is a list of asset ids and the visual params are a couple of
+    // hundred bytes, so this carries what an appearance *is* and never the
+    // assets it names — those the destination fetches like any other.
+    //
+    // Optional, but all-or-nothing: an avatar the source has not established an
+    // appearance for yet sends none, and half an appearance is the same class of
+    // fault as half a worn set.
+    std::vector<std::byte> texture_entry;
+    std::vector<std::uint8_t> visual_params;
+    // The wire's CofVersion, named for what it is. A viewer discards an
+    // appearance for its own avatar whose version does not exceed the highest it
+    // has seen, so a promotion has to continue this number rather than restart
+    // it — the mistake that made a crossing drop the seeded appearance.
+    std::uint32_t cof_version{};
+    // 0 = legacy (the viewer composites locally), 1 = server-side bake.
+    std::uint8_t appearance_version{};
+
+    bool has_appearance() const {
+        return !texture_entry.empty() && !visual_params.empty();
+    }
 };
 
 // The establishment call, region to region (ADR 0038). The source describes the

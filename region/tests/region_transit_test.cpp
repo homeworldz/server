@@ -277,6 +277,52 @@ int main() {
         ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
         "\",\"position\":[1.0,2.0,3.0]}";
     if (homeworldz::region::parse_child_agent_request(silent)) return 1;
+    // Appearance metadata rides with the establishment; the assets it names do
+    // not. Round trips through base64 with its version intact.
+    auto dressed = visitor;
+    dressed.texture_entry = {std::byte{0x01}, std::byte{0xff}, std::byte{0x00}, std::byte{0x7f}};
+    dressed.visual_params = {0, 1, 128, 255};
+    dressed.cof_version = 4321;
+    dressed.appearance_version = 1;
+    const auto dressed_wire = homeworldz::region::encode_child_agent_request(dressed);
+    const auto dressed_back = homeworldz::region::parse_child_agent_request(dressed_wire);
+    if (!dressed_back || !dressed_back->has_appearance() ||
+        dressed_back->texture_entry != dressed.texture_entry ||
+        dressed_back->visual_params != dressed.visual_params ||
+        dressed_back->cof_version != 4321 ||
+        dressed_back->appearance_version != 1) return 1;
+    // No appearance at all is legitimate: the source has not established one.
+    if (decoded->has_appearance()) return 1;
+    // Half an appearance is not a smaller one. Either half alone is refused.
+    const auto half = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0],\"worn\":[]"
+        ",\"textureEntry\":\"AQIDBA==\"}";
+    if (homeworldz::region::parse_child_agent_request(half)) return 1;
+    // And the other way round, which is the direction that matters: without the
+    // pairing rule this one does not fail, it silently becomes an establishment
+    // with no appearance at all. Found by removing the rule and watching the
+    // test above still pass.
+    const auto half_reversed = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0],\"worn\":[]"
+        ",\"visualParams\":\"AQIDBA==\",\"cofVersion\":1,\"appearanceVersion\":1}";
+    if (homeworldz::region::parse_child_agent_request(half_reversed)) return 1;
+    // An appearance version the encoder cannot express is refused here, where
+    // the refusal can be traced, rather than there, where it becomes an empty
+    // message nobody can attribute.
+    const auto impossible = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0],\"worn\":[]"
+        ",\"textureEntry\":\"AQIDBA==\",\"visualParams\":\"AQIDBA==\""
+        ",\"cofVersion\":1,\"appearanceVersion\":7}";
+    if (homeworldz::region::parse_child_agent_request(impossible)) return 1;
     // The answer, and the refusal a source must not announce a neighbour on.
     if (homeworldz::region::parse_child_agent_acceptance(
             homeworldz::region::encode_child_agent_acceptance("/caps/seed/abc")) !=

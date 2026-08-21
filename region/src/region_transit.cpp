@@ -5,6 +5,9 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+
+#include "homeworldz/llsd_xml.h"
+#include "homeworldz/session_protocol.h"
 #include <string>
 #include <string_view>
 #include <utility>
@@ -432,12 +435,25 @@ std::string encode_child_agent_request(const ChildAgent& agent) {
             std::to_string(static_cast<unsigned>(agent.worn[index].attachment_point)) + "}";
     }
     worn.push_back(']');
+    // All-or-nothing: see has_appearance in the header.
+    std::string appearance;
+    if (agent.has_appearance()) {
+        std::vector<std::byte> params;
+        params.reserve(agent.visual_params.size());
+        for (const auto value : agent.visual_params)
+            params.push_back(static_cast<std::byte>(value));
+        appearance = ",\"textureEntry\":" + quoted_string(session::base64(agent.texture_entry)) +
+            ",\"visualParams\":" + quoted_string(session::base64(params)) +
+            ",\"cofVersion\":" + std::to_string(agent.cof_version) +
+            ",\"appearanceVersion\":" +
+            std::to_string(static_cast<unsigned>(agent.appearance_version));
+    }
     return std::string{"{\"agentId\":"} + quoted_string(agent.agent_id) +
         ",\"sessionId\":" + quoted_string(agent.session_id) +
         ",\"circuitCode\":" + std::to_string(agent.circuit_code) +
         ",\"homeRegionId\":" + quoted_string(agent.home_region_id) +
         ",\"position\":" + number_array(position) +
-        ",\"worn\":" + worn + "}";
+        ",\"worn\":" + worn + appearance + "}";
 }
 
 std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
@@ -452,6 +468,35 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
         agent.home_region_id.empty() || !circuit_code || !position || !worn)
         return std::nullopt;
     agent.worn = std::move(*worn);
+    // The appearance is optional as a whole and indivisible within itself. One
+    // half of it is not a smaller appearance, it is a broken one, and it would
+    // reach a viewer as an avatar wearing part of itself.
+    const auto texture_entry = json_string_field(document, "textureEntry");
+    const auto visual_params = json_string_field(document, "visualParams");
+    if (texture_entry.empty() != visual_params.empty()) return std::nullopt;
+    if (!texture_entry.empty()) {
+        const auto entry = llsd::decode_base64(texture_entry);
+        const auto params = llsd::decode_base64(visual_params);
+        const auto cof_version = json_number_field(document, "cofVersion");
+        const auto appearance_version = json_number_field(document, "appearanceVersion");
+        if (!entry || !params || entry->empty() || params->empty() ||
+            !cof_version || !appearance_version)
+            return std::nullopt;
+        // The bounds encode_avatar_appearance itself enforces. Refused here
+        // rather than there, where the only outcome available is an empty
+        // message that nobody can trace back to this.
+        if (entry->size() > 65535 || params->size() > 255) return std::nullopt;
+        if (*cof_version < 0.0 ||
+            *cof_version > static_cast<double>((std::numeric_limits<std::uint32_t>::max)()))
+            return std::nullopt;
+        if (*appearance_version < 0.0 || *appearance_version > 1.0) return std::nullopt;
+        agent.texture_entry = *entry;
+        agent.visual_params.reserve(params->size());
+        for (const auto value : *params)
+            agent.visual_params.push_back(static_cast<std::uint8_t>(value));
+        agent.cof_version = static_cast<std::uint32_t>(*cof_version);
+        agent.appearance_version = static_cast<std::uint8_t>(*appearance_version);
+    }
     // A circuit code of zero is not a circuit, and it is what an absent field
     // and a malformed one both look like once they are numbers.
     if (*circuit_code <= 0.0 ||

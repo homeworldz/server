@@ -97,35 +97,6 @@ struct Reader {
     }
 };
 
-std::optional<std::vector<std::byte>> decode_base64(std::string_view text) {
-    static constexpr auto table = [] {
-        std::array<std::int8_t, 256> values{};
-        values.fill(-1);
-        const std::string_view alphabet =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for (std::size_t index = 0; index < alphabet.size(); ++index)
-            values[static_cast<unsigned char>(alphabet[index])] =
-                static_cast<std::int8_t>(index);
-        return values;
-    }();
-    std::vector<std::byte> out;
-    out.reserve(text.size() / 4 * 3);
-    std::uint32_t buffer = 0;
-    int bits = 0;
-    for (const char character : text) {
-        if (std::isspace(static_cast<unsigned char>(character)) != 0) continue;
-        if (character == '=') break;
-        const auto value = table[static_cast<unsigned char>(character)];
-        if (value < 0) return std::nullopt;
-        buffer = (buffer << 6) | static_cast<std::uint32_t>(value);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<std::byte>((buffer >> bits) & 0xffu));
-        }
-    }
-    return out;
-}
 
 std::optional<Value> parse_value(Reader& reader, std::size_t depth);
 
@@ -239,6 +210,36 @@ std::optional<Value> parse_value(Reader& reader, std::size_t depth) {
 }
 
 } // namespace
+
+std::optional<std::vector<std::byte>> decode_base64(std::string_view text) {
+    static constexpr auto table = [] {
+        std::array<std::int8_t, 256> values{};
+        values.fill(-1);
+        const std::string_view alphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (std::size_t index = 0; index < alphabet.size(); ++index)
+            values[static_cast<unsigned char>(alphabet[index])] =
+                static_cast<std::int8_t>(index);
+        return values;
+    }();
+    std::vector<std::byte> out;
+    out.reserve(text.size() / 4 * 3);
+    std::uint32_t buffer = 0;
+    int bits = 0;
+    for (const char character : text) {
+        if (std::isspace(static_cast<unsigned char>(character)) != 0) continue;
+        if (character == '=') break;
+        const auto value = table[static_cast<unsigned char>(character)];
+        if (value < 0) return std::nullopt;
+        buffer = (buffer << 6) | static_cast<std::uint32_t>(value);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<std::byte>((buffer >> bits) & 0xffu));
+        }
+    }
+    return out;
+}
 
 const Value* Value::find(std::string_view key) const {
     if (type != Type::map) return nullptr;

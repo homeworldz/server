@@ -47,4 +47,9 @@ struct Value {
 // are machine-written, so anything irregular is refused rather than repaired.
 std::optional<Value> parse_xml(std::string_view xml);
 
+// Standard base64 to bytes. Public because it is the only decoder in the tree
+// and a second one would drift from it; the encoder lives in session_protocol.h
+// for the same reason, which is a split worth collapsing one day.
+std::optional<std::vector<std::byte>> decode_base64(std::string_view text);
+
 } // namespace homeworldz::llsd
