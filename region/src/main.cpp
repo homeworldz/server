@@ -7707,20 +7707,42 @@ int main(int argc, char* argv[]) {
                         // relaxed eviction this state was unreachable. Once
                         // per circuit — Firestorm repeats UseCircuitCode until
                         // the handshake lands.
-                        if (facet_count > 1 && !avatars.contains(endpoint) &&
+                        if (!avatars.contains(endpoint) &&
                             !child_backfilled.contains(endpoint)) {
                             const auto session_id =
                                 homeworldz::viewer::format_uuid(identity->session_id);
-                            std::string primary_user;
-                            for (const auto& [live_endpoint, live] : avatars) {
-                                static_cast<void>(live_endpoint);
-                                if (live.session_id != session_id) continue;
-                                primary_user = live.user_id;
-                                break;
-                            }
-                            if (!primary_user.empty()) {
+                            std::string child_user;
+                            // A sibling facet of this same process (ADR 0036):
+                            // the same session stands on another facet here.
+                            if (facet_count > 1)
+                                for (const auto& [live_endpoint, live] : avatars) {
+                                    static_cast<void>(live_endpoint);
+                                    if (live.session_id != session_id) continue;
+                                    child_user = live.user_id;
+                                    break;
+                                }
+                            // Or a visitor whose avatar is in a neighbour
+                            // (ADR 0038). Not gated on facet_count, which the
+                            // facet case above is: a square region has one
+                            // facet and can still host a visitor, and gating
+                            // this on more than one would have made cross-region
+                            // children work only on rectangles by accident.
+                            bool visiting = false;
+                            if (child_user.empty())
+                                if (const auto* child = child_agents.find(session_id, now)) {
+                                    child_user = child->agent_id;
+                                    visiting = true;
+                                }
+                            if (!child_user.empty()) {
                                 child_backfilled.insert(endpoint);
-                                backfill_child_circuit(endpoint, *identity, primary_user, now);
+                                backfill_child_circuit(endpoint, *identity, child_user, now);
+                                if (visiting)
+                                    std::cout << "{\"level\":\"info\",\"message\":\"visiting child "
+                                                 "circuit backfilled\",\"facet\":"
+                                              << endpoint_facet_of(endpoint)
+                                              << ",\"session\":"
+                                              << homeworldz::api::json_string(session_id)
+                                              << "}" << std::endl;
                             }
                         }
                     } else if (identity) {
