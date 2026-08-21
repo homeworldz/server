@@ -10764,17 +10764,33 @@ int main(int argc, char* argv[]) {
                                         homeworldz::viewer::encode_avatar_appearance({
                                             identity->agent_id, 1, bake->bake.texture_entry,
                                             bake->visual_params, {}, std::uint8_t{1}});
-                                    // Send the seeded bake only to OTHER
-                                    // avatars, never back to the joiner: a real
-                                    // baker (e.g. Firestorm) would otherwise apply
-                                    // this server-side (v1) default to itself and
-                                    // lose its own local bake. Its own appearance
-                                    // still overrides this entry for others when it
-                                    // sends AgentSetAppearance.
+                                    // A joiner that logged in is not sent a
+                                    // seed of its own: a real baker (e.g.
+                                    // Firestorm) would apply this server-side
+                                    // (v1) default to itself and lose its own
+                                    // local bake, and it is about to send
+                                    // AgentSetAppearance anyway, which overrides
+                                    // this entry for everyone else.
+                                    //
+                                    // An arriver from a transit is the opposite
+                                    // case, and it is where a crossing lost the
+                                    // avatar's clothes (found live, 2026-08-21):
+                                    // a viewer bakes once per session, not once
+                                    // per region, so it sends nothing on arrival
+                                    // and nothing else establishes an appearance
+                                    // for its own avatar here. It rezzed as a
+                                    // cloud, taking every attachment parented to
+                                    // it with it. The only recovery was a
+                                    // manual rebake in the viewer, whose own
+                                    // AgentSetAppearance the region relays back
+                                    // to it — proof that what was missing was an
+                                    // appearance for self, not the bake.
+                                    const bool seed_the_arriver = arrival.has_value();
                                     if (!seeded_appearance.empty())
                                         for (const auto& [recipient_endpoint, recipient] : avatars) {
                                             static_cast<void>(recipient);
-                                            if (recipient_endpoint == endpoint) continue;
+                                            if (recipient_endpoint == endpoint && !seed_the_arriver)
+                                                continue;
                                             if (const auto outgoing = circuits.send(
                                                     recipient_endpoint, seeded_appearance, true, now,
                                                     true))
@@ -10783,7 +10799,9 @@ int main(int argc, char* argv[]) {
                                         }
                                     std::cout << "{\"level\":\"info\",\"message\":\"server "
                                                  "appearance seeded on join\",\"slots\":"
-                                              << bake->bake.assets.size() << "}" << std::endl;
+                                              << bake->bake.assets.size() << ",\"toArriver\":"
+                                              << (seed_the_arriver ? "true" : "false")
+                                              << "}" << std::endl;
                                 }
                             }
                             // The arriving viewer gets its facet's window of
