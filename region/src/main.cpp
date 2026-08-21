@@ -393,6 +393,10 @@ struct PendingAgentMovementComplete {
     std::string visit_id;
     std::vector<std::byte> payload;
     std::chrono::steady_clock::time_point deadline{};
+    // The arrival's world waits with the message: it may only be described to a
+    // viewer that has been told it is here (see deliver_arrival_world).
+    int facet{};
+    std::string user_id;
 };
 
 void stop(int) { running = false; }
@@ -4527,6 +4531,65 @@ int main(int argc, char* argv[]) {
                     static_cast<void>(send_udp(viewer_server, viewer_endpoint, *terrain));
             }
     };
+    // The arriving viewer's own facet: its terrain window and its objects.
+    //
+    // This must not run until AgentMovementComplete has actually gone out. A
+    // viewer that has not yet been told it is here still believes it is in the
+    // region it left, and files everything sent to it against that region: the
+    // fifteen attachments of a crossing arrived, were logged "unexpected", and
+    // drew nothing until a manual rebake (found live, 2026-08-21). Halcyon
+    // states the same rule as an invariant — CompleteMovement calls
+    // MoveAgentIntoRegion and only then SendInitialData, and nothing is sent to
+    // a presence until FullyInRegion, which requires CompleteMovementReceived.
+    //
+    // So it is a named step rather than a straight line of code: the arrival
+    // path can hold AgentMovementComplete behind the capability gate, and when
+    // it does, this has to wait with it.
+    const auto deliver_arrival_world = [&](const std::string& viewer_endpoint, int facet,
+                                           const std::string& viewer_user_id,
+                                           std::chrono::steady_clock::time_point when) {
+        send_facet_terrain_window(viewer_endpoint, when);
+        // Entities on sibling facets belong to the child circuits (the ADR's
+        // partition rule) and ride each child's backfill.
+        //
+        // Counted, because the child-circuit backfill reports its own numbers
+        // and this one did not, so an arrival that sent nothing looked exactly
+        // like an arrival that sent everything.
+        std::size_t backfilled_objects = 0;
+        std::size_t backfilled_attachments = 0;
+        std::size_t skipped_other_facet = 0;
+        std::size_t skipped_unencodable = 0;
+        for (const auto& [entity_id, entity] : scene.entities()) {
+            static_cast<void>(entity_id);
+            if (entity_facet(entity) != facet) {
+                ++skipped_other_facet;
+                continue;
+            }
+            const auto restored_object =
+                static_object_from_entity(scene, entity, viewer_user_id, falcon);
+            if (!restored_object) {
+                ++skipped_unencodable;
+                continue;
+            }
+            if (const auto object = circuits.send(viewer_endpoint,
+                    object_update_for(viewer_endpoint, *restored_object), true, when, true)) {
+                static_cast<void>(send_udp(viewer_server, viewer_endpoint, *object));
+                ++backfilled_objects;
+                if (entity.attachment_point != 0 ||
+                    (entity.parent_id != 0 && [&] {
+                        const auto* parent = scene.find(entity.parent_id);
+                        return parent && parent->attachment_point != 0;
+                    }()))
+                    ++backfilled_attachments;
+            }
+        }
+        std::cout << "{\"level\":\"info\",\"message\":\"arrival backfilled\",\"facet\":"
+                  << facet << ",\"objects\":" << backfilled_objects
+                  << ",\"attachments\":" << backfilled_attachments
+                  << ",\"skippedOtherFacet\":" << skipped_other_facet
+                  << ",\"skippedUnencodable\":" << skipped_unencodable
+                  << ",\"sceneSize\":" << scene.size() << "}" << std::endl;
+    };
     // A child circuit's backfill (ADR 0036): a UseCircuitCode arriving on a
     // facet key that has no avatar, while the same session's avatar lives
     // under another key of the same transport, is a standing child being
@@ -5045,6 +5108,9 @@ int main(int argc, char* argv[]) {
                 if (const auto outgoing = circuits.send(
                         pending.endpoint, pending.payload, true, http_now))
                     static_cast<void>(send_udp(viewer_server, pending.endpoint, *outgoing));
+                // Now, and not before: the viewer has just been told it is here.
+                deliver_arrival_world(
+                    pending.endpoint, pending.facet, pending.user_id, http_now);
                 if (!seed_served) {
                     std::cout << "{\"level\":\"warning\",\"message\":\"agent movement capability gate timed out\","
                                  "\"sessionId\":"
@@ -10730,7 +10796,8 @@ int main(int argc, char* argv[]) {
                             } else {
                                 pending_agent_movement_completes.push_back({
                                     endpoint, session_id, arrival->id, std::move(movement_complete),
-                                    now + std::chrono::milliseconds(500)});
+                                    now + std::chrono::milliseconds(500),
+                                    arrival_facet, live_avatar.user_id});
                             }
                             const homeworldz::viewer::AvatarAnimation animation_response{
                                 identity->agent_id, animations};
@@ -10850,50 +10917,15 @@ int main(int argc, char* argv[]) {
                                               << seeded.serial << "}" << std::endl;
                                 }
                             }
-                            // The arriving viewer gets its facet's window of
-                            // the macro heightmap (ADR 0036) — the whole map,
-                            // when the region is square.
-                            send_facet_terrain_window(endpoint, now);
-                            // And its facet's objects: entities on sibling
-                            // facets belong to the child circuits (the ADR's
-                            // partition rule) and ride each child's backfill.
-                            // Counted, because the child-circuit backfill below
-                            // reports its own numbers and this one did not, so
-                            // an arrival that sent nothing looked exactly like
-                            // an arrival that sent everything.
-                            std::size_t backfilled_objects = 0;
-                            std::size_t backfilled_attachments = 0;
-                            std::size_t skipped_other_facet = 0;
-                            std::size_t skipped_unencodable = 0;
-                            for (const auto& [entity_id, entity] : scene.entities()) {
-                                static_cast<void>(entity_id);
-                                if (entity_facet(entity) != arrival_facet) {
-                                    ++skipped_other_facet;
-                                    continue;
-                                }
-                                const auto restored_object = static_object_from_entity(scene, entity, live_avatar.user_id, falcon);
-                                if (!restored_object) {
-                                    ++skipped_unencodable;
-                                    continue;
-                                }
-                                if (const auto object = circuits.send(endpoint,
-                                        object_update_for(endpoint, *restored_object), true, now, true)) {
-                                    static_cast<void>(send_udp(viewer_server, endpoint, *object));
-                                    ++backfilled_objects;
-                                    if (entity.attachment_point != 0 ||
-                                        (entity.parent_id != 0 && [&] {
-                                            const auto* parent = scene.find(entity.parent_id);
-                                            return parent && parent->attachment_point != 0;
-                                        }()))
-                                        ++backfilled_attachments;
-                                }
-                            }
-                            std::cout << "{\"level\":\"info\",\"message\":\"arrival backfilled\",\"facet\":"
-                                      << arrival_facet << ",\"objects\":" << backfilled_objects
-                                      << ",\"attachments\":" << backfilled_attachments
-                                      << ",\"skippedOtherFacet\":" << skipped_other_facet
-                                      << ",\"skippedUnencodable\":" << skipped_unencodable
-                                      << ",\"sceneSize\":" << scene.size() << "}" << std::endl;
+                            // The world, but only if the viewer has already been
+                            // told it is here. When AgentMovementComplete was
+                            // held behind the capability gate above, this is
+                            // queued with it and goes out when it does —
+                            // sending it now would describe this region to a
+                            // viewer that still believes it is in the last one.
+                            if (arrival_seed_served)
+                                deliver_arrival_world(
+                                    endpoint, arrival_facet, live_avatar.user_id, now);
                             // The arrival greeting, privately, once the world
                             // has been backfilled. The name comes from the
                             // account the grid knows, in its legacy two-part
