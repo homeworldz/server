@@ -795,11 +795,6 @@ std::vector<std::byte> encode_teleport_failed(const TeleportFailed& message) {
     return output;
 }
 
-// RegionProtocols bit 0: this region does server-side appearance baking. The
-// viewer reads the field as mCentralBakeVersion, which is a version number in
-// name and a single bit in practice (`region_protocols & 1`).
-constexpr std::uint64_t region_protocol_server_side_bakes = 1ULL << 0;
-
 std::vector<std::byte> encode_region_handshake(const RegionHandshake& message) {
     std::vector<std::byte> output(region_handshake_id.begin(), region_handshake_id.end());
     // Region-wide permission flags (indra llregionflags.h): estate/region deny
@@ -827,24 +822,20 @@ std::vector<std::byte> encode_region_handshake(const RegionHandshake& message) {
     append_le_u32(output, 1); // CPU ratio
     if (!append_variable1(output, "") || !append_variable1(output, "homeworldz") ||
         !append_variable1(output, "Homeworldz Region")) return {};
-    // RegionInfo4 is where a viewer looks for what the region can do, and it
-    // has to be here. Two traps in one block:
+    // No RegionInfo4 block, and not by oversight. RegionProtocols lives here,
+    // and bit 0 tells a viewer the region bakes appearances server-side. Setting
+    // it (tried live, 2026-08-21) makes the viewer stop baking locally and wait
+    // for an UpdateAvatarAppearance capability to hand it the result — which
+    // this region does not serve, so the avatar stays a cloud permanently and
+    // neither a rebake nor an outfit change can recover it, because both are now
+    // the server's job. Sending no block reads as protocols 0, which keeps the
+    // viewer baking for itself.
     //
-    // RegionFlagsExtended *supersedes* the U32 RegionFlags above whenever this
-    // block is present (llviewerregion.cpp), so it carries the same flags
-    // widened. Writing zero here would silently drop every region flag.
-    //
-    // RegionProtocols bit 0 says the region bakes appearances server-side
-    // (ADR 0029). A viewer keeps it as mCentralBakeVersion, and on a region
-    // transition an avatar that is using server bakes and lands somewhere
-    // claiming zero has its appearance unwound. Sending no block at all read
-    // as zero, so every crossing did that: the avatar and all its rigged
-    // attachments went invisible on arrival and only a manual local rebake
-    // brought them back (found live, 2026-08-21). A login was unaffected,
-    // because nothing transitions.
-    output.push_back(std::byte{1}); // one RegionInfo4 block
-    append_le_u64(output, message.region_flags);
-    append_le_u64(output, region_protocol_server_side_bakes);
+    // The cost of that is real and is not this function's to pay: on a region
+    // transition a viewer holding a server-baked appearance that lands in a
+    // region claiming 0 unwinds it, so a crossing arrives invisible. Closing
+    // that means serving UpdateAvatarAppearance first, then setting this bit.
+    output.push_back(std::byte{}); // no RegionInfo4 blocks
     return output;
 }
 

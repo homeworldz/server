@@ -282,22 +282,11 @@ bool message_codecs() {
     // And the default-valued encoding differs, so the block above was not found
     // because every handshake happens to contain it.
     if (encoded_elevations == encoded_handshake) return false;
-    // The handshake must end with one RegionInfo4 block: RegionFlagsExtended
-    // carrying the same flags widened, then RegionProtocols with bit 0 set for
-    // server-side baking. A viewer that reads zero protocols unwinds a
-    // server-baked appearance on every region transition, so this bit is what
-    // keeps an avatar dressed across a crossing. Checked at the tail, where the
-    // block is, and against the flags the caller set rather than a default.
-    handshake.region_flags = 0x00ABCDEFU;
-    const auto encoded_protocols = encode_region_handshake(handshake);
-    std::vector<std::byte> expected_tail{std::byte{1}};
-    for (const std::uint64_t value : {std::uint64_t{0x00ABCDEFULL}, std::uint64_t{1}})
-        for (int shift = 0; shift < 64; shift += 8)
-            expected_tail.push_back(static_cast<std::byte>((value >> shift) & 0xFF));
-    if (encoded_protocols.size() < expected_tail.size() ||
-        !std::equal(expected_tail.begin(), expected_tail.end(),
-                    encoded_protocols.end() - static_cast<std::ptrdiff_t>(expected_tail.size())))
-        return false;
+    // The handshake must NOT advertise a RegionInfo4 block. RegionProtocols
+    // lives there, and bit 0 claims server-side baking the region cannot do,
+    // which leaves a viewer a permanent cloud (see encode_region_handshake).
+    // Asserted on the tail, where the block would be.
+    if (encoded_handshake.back() != std::byte{}) return false;
     AgentMovementComplete complete;
     complete.agent_id = expected.agent_id;
     complete.session_id = expected.session_id;
