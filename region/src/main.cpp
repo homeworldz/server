@@ -2864,6 +2864,45 @@ int main(int argc, char* argv[]) {
     // change now arrives unprompted from the grid, so the guard belongs here
     // and not in the caller's good manners.
     std::unordered_set<std::string> server_seeded_appearances;
+    // The highest appearance version this region has sent or seen for a user.
+    //
+    // AgentSetAppearance::serial is the wire's CofVersion, and a viewer treats
+    // it as strictly increasing for its own avatar: one that is not greater
+    // than the highest already received is discarded as an attempt to roll
+    // back. Both seed sites used to write a literal 1, so a user's second
+    // server-side bake in a session announced a version it had already used and
+    // was dropped without a word — which looks precisely like a bake that did
+    // not work (2026-08-21).
+    //
+    // Keyed by user, not by endpoint, so a reconnect or a new circuit continues
+    // the sequence instead of restarting it, and fed by what the viewer itself
+    // announces so a server bake never lands behind the client's own number.
+    // No inventory read: this is the region agreeing with what it has observed.
+    std::unordered_map<std::string, std::uint32_t> highest_appearance_versions;
+    // Keyed on the id folded to lower case, because the callers do not agree:
+    // format_uuid always produces lower case, and the refresh path takes the id
+    // out of a request URL as the sender wrote it. Two spellings of one user
+    // would be two counters, each rolling the other back.
+    const auto appearance_version_key = [](std::string_view user_id) {
+        std::string key{user_id};
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char letter) {
+            return static_cast<char>(std::tolower(letter));
+        });
+        return key;
+    };
+    // The version to announce next: one past the highest this region knows.
+    const auto next_appearance_version =
+        [&highest_appearance_versions, &appearance_version_key](std::string_view user_id) {
+            return ++highest_appearance_versions[appearance_version_key(user_id)];
+        };
+    // A version the client announced for itself. Recorded so a later server
+    // bake steps past it instead of colliding with it and being discarded.
+    const auto observe_appearance_version =
+        [&highest_appearance_versions, &appearance_version_key](
+            std::string_view user_id, std::uint32_t version) {
+            auto& highest = highest_appearance_versions[appearance_version_key(user_id)];
+            if (version > highest) highest = version;
+        };
     std::unordered_map<std::string, std::vector<homeworldz::viewer::AvatarAnimationEntry>> avatar_animations;
     std::unordered_map<std::string, std::int32_t> next_animation_sequences;
     std::unordered_map<std::string, homeworldz::viewer::MovementAnimation> movement_animations;
@@ -5252,7 +5291,7 @@ int main(int argc, char* argv[]) {
                                 // A viewer ignores an appearance whose serial it
                                 // has already seen, so a re-bake that reuses the
                                 // old one is a re-bake nobody renders.
-                                reseeded.serial = previous.serial + 1;
+                                reseeded.serial = next_appearance_version(requested_user);
                                 reseeded.texture_entry = bake->bake.texture_entry;
                                 reseeded.visual_params = bake->visual_params;
                                 reseeded.appearance_version = 1;
@@ -9887,6 +9926,13 @@ int main(int argc, char* argv[]) {
                             // Its own bake from here on. A client that composites
                             // for itself must never be handed a server bake back.
                             server_seeded_appearances.erase(endpoint);
+                            // And its CofVersion is now the number to beat: a
+                            // later server bake for this user has to announce
+                            // something higher or the viewer will read it as a
+                            // roll-back and discard it.
+                            observe_appearance_version(
+                                homeworldz::viewer::format_uuid(appearance->agent_id),
+                                appearance->serial);
                             if (const auto geometry = homeworldz::viewer::avatar_geometry(*appearance)) {
                                 avatar_geometries[endpoint] = *geometry;
                                 bool reshaped = false;
@@ -10732,7 +10778,7 @@ int main(int argc, char* argv[]) {
                                     homeworldz::viewer::AgentSetAppearance seeded;
                                     seeded.agent_id = identity->agent_id;
                                     seeded.session_id = identity->session_id;
-                                    seeded.serial = 1;
+                                    seeded.serial = next_appearance_version(agent_id);
                                     seeded.texture_entry = bake->bake.texture_entry;
                                     seeded.visual_params = bake->visual_params;
                                     seeded.appearance_version = 1;
@@ -10762,7 +10808,8 @@ int main(int argc, char* argv[]) {
                                     }
                                     const auto seeded_appearance =
                                         homeworldz::viewer::encode_avatar_appearance({
-                                            identity->agent_id, 1, bake->bake.texture_entry,
+                                            identity->agent_id, seeded.serial,
+                                            bake->bake.texture_entry,
                                             bake->visual_params, {}, std::uint8_t{1}});
                                     // Send the seeded bake only to OTHER
                                     // avatars, never back to the joiner: a real
@@ -10799,7 +10846,8 @@ int main(int argc, char* argv[]) {
                                         }
                                     std::cout << "{\"level\":\"info\",\"message\":\"server "
                                                  "appearance seeded on join\",\"slots\":"
-                                              << bake->bake.assets.size() << "}" << std::endl;
+                                              << bake->bake.assets.size() << ",\"cofVersion\":"
+                                              << seeded.serial << "}" << std::endl;
                                 }
                             }
                             // The arriving viewer gets its facet's window of
@@ -12925,7 +12973,7 @@ int main(int argc, char* argv[]) {
                         if (const auto* bake = ensure_worn_outfit_bake(inbound.user_id)) {
                             homeworldz::viewer::AgentSetAppearance seeded;
                             seeded.agent_id = *session_agent;
-                            seeded.serial = 1;
+                            seeded.serial = next_appearance_version(inbound.user_id);
                             seeded.texture_entry = bake->bake.texture_entry;
                             seeded.visual_params = bake->visual_params;
                             seeded.appearance_version = 1;
@@ -12935,6 +12983,7 @@ int main(int argc, char* argv[]) {
                             if (geometry) avatar_geometries[participant_key] = *geometry;
                             std::cout << "{\"level\":\"info\",\"message\":\"session avatar appearance seeded\""
                                       << ",\"agent\":" << homeworldz::api::json_string(inbound.user_id)
+                                      << ",\"cofVersion\":" << seeded.serial
                                       << ",\"height\":" << (geometry ? geometry->height : 0.0)
                                       << "}" << std::endl;
                         }
