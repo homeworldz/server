@@ -26,6 +26,37 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// Rectangular working surfaces for the macro regions of ADR 0036: flat at
+	// 22 m, falling to zero over the outer 8 m. The two "join" variants keep
+	// one half-edge flat where a neighbour abuts, so the shared border is
+	// ground you walk rather than a trough you swim. The spans are in local
+	// samples and follow from the pair's one-tile offset: Nova at (900,900)
+	// meets Nova B at (899,899) along Nova's western half and Nova B's
+	// eastern half.
+	const (
+		wide    = 512
+		tall    = 256
+		plateau = 22.0
+		ramp    = 8.0
+	)
+	rectangles := []struct {
+		name   string
+		joined []terrainimage.Span
+	}{
+		{"plateau-512x256", nil},
+		{"plateau-512x256-join-sw", []terrainimage.Span{{Edge: terrainimage.South, Begin: 0, End: 256}}},
+		{"plateau-512x256-join-ne", []terrainimage.Span{{Edge: terrainimage.North, Begin: 256, End: 512}}},
+	}
+	for _, rectangle := range rectangles {
+		heights := terrainimage.RampedPlateau(wide, tall, plateau, ramp, rectangle.joined)
+		path := filepath.Join(*output, rectangle.name+".r32")
+		if err := os.WriteFile(path, terrainimage.FloatRaw(heights), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "write rectangular terrain failed:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Generated %s.\n", path)
+	}
 }
 
 func writeTerrain(directory, name string, heights []float32) error {

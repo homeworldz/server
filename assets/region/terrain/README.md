@@ -36,6 +36,23 @@ Set `region.terrain_path` in `region.ini` to another raw 65,536-byte heightmap
 to override the development default. A missing or invalid file falls back to
 the former flat 25-metre terrain.
 
+## Rectangular plateaus (`.r32`)
+
+`plateau-512x256.r32` is a 512-by-256 working surface for the macro regions
+of ADR 0036: flat at 22 metres, falling to zero over the outermost 8 metres
+of every edge. It is not a shoreline — there is no seabed and no waterline
+transition — because its purpose is flat ground with a definite boundary.
+
+The two `-join-` variants keep one half-edge at plateau height where a
+neighbour abuts. Two adjacent regions that both ramp at their shared border
+produce a trough along it, and since the ramp bottoms out below the 20-metre
+waterline that border becomes a canal you swim rather than ground you walk.
+`-join-sw` leaves the western half of the south edge flat and `-join-ne` the
+eastern half of the north edge, which is the pairing for two 512-by-256
+regions offset by one 256-metre tile.
+
+All three are written by the same generator as the squares above.
+
 ## Exact heightfields (`.r32`)
 
 `region.terrain_path` also accepts a file of `width * width` little-endian

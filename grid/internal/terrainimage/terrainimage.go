@@ -3,6 +3,7 @@
 package terrainimage
 
 import (
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -39,6 +40,18 @@ func ByteRaw(heights []float32) []byte {
 	result := make([]byte, len(heights))
 	for index, height := range heights {
 		result[index] = byte(math.Round(float64(height)))
+	}
+	return result
+}
+
+// FloatRaw writes metre heights in the exact four-byte little-endian layout
+// the region reads as a .r32 — the same one OpenSimulator calls RAW32. Unlike
+// ByteRaw it loses nothing, which matters for a graded slope: rounding one to
+// whole metres turns a constant angle into a staircase.
+func FloatRaw(heights []float32) []byte {
+	result := make([]byte, 4*len(heights))
+	for index, height := range heights {
+		binary.LittleEndian.PutUint32(result[4*index:], math.Float32bits(height))
 	}
 	return result
 }
