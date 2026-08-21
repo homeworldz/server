@@ -303,16 +303,23 @@ func (a *API) copyAISLibraryCategory(w http.ResponseWriter, r *http.Request, use
 			SaleType: sourceItem.SaleType, SalePrice: sourceItem.SalePrice,
 		})
 	}
+	var batched inventory.FolderVersions
 	if len(items) > 0 {
-		items, err = a.inventory.CreateItems(r.Context(), items)
+		var created inventory.FolderVersions
+		items, created, err = a.inventory.CreateItems(r.Context(), items)
 		if writeAISItemError(w, err) {
 			return
 		}
+		batched = created
 	}
 	versions, err := a.inventoryFolderVersions(r.Context(), userID, destinationID, folderID)
 	if err != nil {
 		writeLLSDError(w, http.StatusServiceUnavailable, "AIS inventory folder version could not be loaded")
 		return
+	}
+	// The batch's own transaction is authoritative for the folder it filled.
+	for id, version := range batched {
+		versions[id] = version
 	}
 	createdFolder.Version = versions[folderID]
 	writeAISLibraryCategoryCopy(w, createdFolder, items, versions)
@@ -746,13 +753,8 @@ func (a *API) createAISInventoryLinks(w http.ResponseWriter, r *http.Request, us
 		}
 		seenSources[request.LinkedID] = true
 	}
-	created, err = a.inventory.CreateItems(r.Context(), created)
+	created, versions, err := a.inventory.CreateItems(r.Context(), created)
 	if writeAISItemError(w, err) {
-		return
-	}
-	versions, err := a.inventoryFolderVersions(r.Context(), userID, parentID)
-	if err != nil {
-		writeLLSDError(w, http.StatusServiceUnavailable, "AIS inventory folder version could not be loaded")
 		return
 	}
 	writeAISLinkCreation(w, created, versions)
@@ -848,16 +850,22 @@ func (a *API) slamAISInventoryLinks(w http.ResponseWriter, r *http.Request, user
 		}
 		removed = append(removed, item.ID)
 	}
+	var batched inventory.FolderVersions
 	if len(created) > 0 {
-		created, err = a.inventory.CreateItems(r.Context(), created)
+		var batch inventory.FolderVersions
+		created, batch, err = a.inventory.CreateItems(r.Context(), created)
 		if writeAISItemError(w, err) {
 			return
 		}
+		batched = batch
 	}
 	versions, err := a.inventoryFolderVersions(r.Context(), userID, folderID)
 	if err != nil {
 		writeLLSDError(w, http.StatusServiceUnavailable, "AIS inventory folder version could not be loaded")
 		return
+	}
+	for id, version := range batched {
+		versions[id] = version
 	}
 	writeAISLinksReplacement(w, created, removed, versions)
 }

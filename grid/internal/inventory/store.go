@@ -53,13 +53,22 @@ type Item struct {
 	CreatedAt           time.Time `json:"createdAt"`
 }
 
+// FolderVersions maps a folder id to its version. A mutation returns the
+// versions its own transaction produced, which is the only way the number can
+// describe the change it accompanies: read afterwards, in a separate query, it
+// reports whatever the folder looked like once every concurrent mutation had
+// also landed. AIS sends these to the viewer, and a viewer told a version that
+// belongs to somebody else's change re-reads and re-reconciles the outfit it
+// is already wearing.
+type FolderVersions map[string]int64
+
 type Store interface {
 	EnsureSystemFolders(context.Context, string) ([]Folder, error)
 	CreateFolder(context.Context, Folder) (Folder, error)
 	UpdateFolder(context.Context, Folder) (Folder, error)
 	ListFolders(context.Context, string) ([]Folder, error)
 	CreateItem(context.Context, Item) (Item, error)
-	CreateItems(context.Context, []Item) ([]Item, error)
+	CreateItems(context.Context, []Item) ([]Item, FolderVersions, error)
 	UpdateItem(context.Context, Item) (Item, error)
 	UpdateItemAsset(context.Context, string, string, string) (Item, error)
 	DeleteItem(context.Context, string, string) (Item, error)
@@ -502,9 +511,9 @@ func (s *PostgresStore) CreateItem(ctx context.Context, item Item) (Item, error)
 	return item, nil
 }
 
-func (s *PostgresStore) CreateItems(ctx context.Context, items []Item) ([]Item, error) {
+func (s *PostgresStore) CreateItems(ctx context.Context, items []Item) ([]Item, FolderVersions, error) {
 	if len(items) == 0 || len(items) > 256 {
-		return nil, ErrInvalidItem
+		return nil, nil, ErrInvalidItem
 	}
 	ownerID := items[0].OwnerUserID
 	folderID := items[0].FolderID
@@ -518,22 +527,22 @@ func (s *PostgresStore) CreateItems(ctx context.Context, items []Item) ([]Item, 
 			len(item.Description) > 1024 || item.AssetType < 0 || item.AssetType > 127 ||
 			item.InventoryType < 0 || item.InventoryType > 127 || item.SaleType < 0 ||
 			item.SaleType > 3 || item.SalePrice < 0 || seen[item.ID] {
-			return nil, ErrInvalidItem
+			return nil, nil, ErrInvalidItem
 		}
 		seen[item.ID] = true
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin inventory item batch creation: %w", err)
+		return nil, nil, fmt.Errorf("begin inventory item batch creation: %w", err)
 	}
 	defer tx.Rollback()
 	var folderVersion int64
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM inventory_folders
 		WHERE id = $1 AND owner_user_id = $2 FOR UPDATE`, folderID, ownerID).
 		Scan(&folderVersion); errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrItemFolderNotFound
+		return nil, nil, ErrItemFolderNotFound
 	} else if err != nil {
-		return nil, fmt.Errorf("find inventory item batch folder: %w", err)
+		return nil, nil, fmt.Errorf("find inventory item batch folder: %w", err)
 	}
 	for index := range items {
 		item := &items[index]
@@ -548,21 +557,23 @@ func (s *PostgresStore) CreateItems(ctx context.Context, items []Item) ([]Item, 
 			item.EveryonePermissions, item.NextPermissions, item.SaleType, item.SalePrice).
 			Scan(&item.CreatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrItemConflict
+			return nil, nil, ErrItemConflict
 		}
 		if err != nil {
-			return nil, fmt.Errorf("create inventory item batch member: %w", err)
+			return nil, nil, fmt.Errorf("create inventory item batch member: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE inventory_folders
+	var bumped int64
+	if err := tx.QueryRowContext(ctx, `UPDATE inventory_folders
 		SET version = version + $3, updated_at = now()
-		WHERE id = $1 AND owner_user_id = $2`, folderID, ownerID, len(items)); err != nil {
-		return nil, fmt.Errorf("update inventory item batch folder version: %w", err)
+		WHERE id = $1 AND owner_user_id = $2
+		RETURNING version`, folderID, ownerID, len(items)).Scan(&bumped); err != nil {
+		return nil, nil, fmt.Errorf("update inventory item batch folder version: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit inventory item batch creation: %w", err)
+		return nil, nil, fmt.Errorf("commit inventory item batch creation: %w", err)
 	}
-	return items, nil
+	return items, FolderVersions{folderID: bumped}, nil
 }
 
 func (s *PostgresStore) UpdateItem(ctx context.Context, item Item) (Item, error) {

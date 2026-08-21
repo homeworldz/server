@@ -84,7 +84,7 @@ func (s *durableStore) CreateItem(ctx context.Context, item Item) (Item, error) 
 	return s.Store.CreateItem(ctx, item)
 }
 
-func (s *durableStore) CreateItems(ctx context.Context, items []Item) ([]Item, error) {
+func (s *durableStore) CreateItems(ctx context.Context, items []Item) ([]Item, FolderVersions, error) {
 	// Every asset in the batch is made durable before any row is written, so a
 	// partially durable batch never becomes a partially durable folder.
 	seen := make(map[string]struct{}, len(items))
@@ -97,7 +97,7 @@ func (s *durableStore) CreateItems(ctx context.Context, items []Item) ([]Item, e
 		}
 		seen[item.AssetID] = struct{}{}
 		if err := s.ensure(ctx, item.AssetID, item.AssetType); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	return s.Store.CreateItems(ctx, items)

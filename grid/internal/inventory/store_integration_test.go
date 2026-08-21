@@ -125,7 +125,7 @@ func TestPostgresSystemFolderLifecycle(t *testing.T) {
 	linkOneID, _ := identifier.NewUUID()
 	linkTwoID, _ := identifier.NewUUID()
 	currentOutfitID := SystemFolderID(userID, 46)
-	links, err := store.CreateItems(ctx, []Item{
+	links, linkVersions, err := store.CreateItems(ctx, []Item{
 		{ID: linkOneID, OwnerUserID: userID, CreatorUserID: userID, FolderID: currentOutfitID,
 			AssetID: itemID, AssetType: 24, InventoryType: 18, Name: "Integration Shape",
 			BasePermissions: 0x7fffffff, CurrentPermissions: 0x7fffffff},
@@ -135,6 +135,24 @@ func TestPostgresSystemFolderLifecycle(t *testing.T) {
 	})
 	if err != nil || len(links) != 2 || links[0].CreatedAt.IsZero() || links[1].CreatedAt.IsZero() {
 		t.Fatalf("create inventory links = %#v, error = %v", links, err)
+	}
+	// The batch reports the version its own transaction produced, read before
+	// it committed anything else. Two links means two increments, and the
+	// number must be the folder's own — not whatever a later query happens to
+	// see once other mutations have landed.
+	folders, err := store.ListFolders(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outfitVersion int64
+	for _, folder := range folders {
+		if folder.ID == currentOutfitID {
+			outfitVersion = folder.Version
+		}
+	}
+	if linkVersions[currentOutfitID] != outfitVersion {
+		t.Fatalf("batch reported Current Outfit version %d, folder says %d",
+			linkVersions[currentOutfitID], outfitVersion)
 	}
 	uploaded.Name = "Renamed Uploaded Texture"
 	uploaded.Description = "AIS integration update"
