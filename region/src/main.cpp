@@ -10764,33 +10764,33 @@ int main(int argc, char* argv[]) {
                                         homeworldz::viewer::encode_avatar_appearance({
                                             identity->agent_id, 1, bake->bake.texture_entry,
                                             bake->visual_params, {}, std::uint8_t{1}});
-                                    // A joiner that logged in is not sent a
-                                    // seed of its own: a real baker (e.g.
-                                    // Firestorm) would apply this server-side
-                                    // (v1) default to itself and lose its own
-                                    // local bake, and it is about to send
-                                    // AgentSetAppearance anyway, which overrides
-                                    // this entry for everyone else.
+                                    // Send the seeded bake only to OTHER
+                                    // avatars, never back to the joiner: a real
+                                    // baker (e.g. Firestorm) would otherwise apply
+                                    // this server-side (v1) default to itself and
+                                    // lose its own local bake. Its own appearance
+                                    // still overrides this entry for others when it
+                                    // sends AgentSetAppearance.
                                     //
-                                    // An arriver from a transit is the opposite
-                                    // case, and it is where a crossing lost the
-                                    // avatar's clothes (found live, 2026-08-21):
-                                    // a viewer bakes once per session, not once
-                                    // per region, so it sends nothing on arrival
-                                    // and nothing else establishes an appearance
-                                    // for its own avatar here. It rezzed as a
-                                    // cloud, taking every attachment parented to
-                                    // it with it. The only recovery was a
-                                    // manual rebake in the viewer, whose own
-                                    // AgentSetAppearance the region relays back
-                                    // to it — proof that what was missing was an
-                                    // appearance for self, not the bake.
-                                    const bool seed_the_arriver = arrival.has_value();
+                                    // This holds for an arriving crossing too,
+                                    // which is not obvious and was tried the
+                                    // other way on 2026-08-21. An avatar that
+                                    // arrived invisible looked exactly like an
+                                    // avatar that had never been told its own
+                                    // appearance, but the viewer had one and was
+                                    // discarding it: the region advertised no
+                                    // RegionProtocols, so every crossing landed
+                                    // in what the viewer read as a region that
+                                    // does not bake, and it unwound its own
+                                    // server-baked appearance on arrival. The
+                                    // seed sent here was dropped as a stale COF
+                                    // version anyway. The handshake is the fix
+                                    // (encode_region_handshake); seeding the
+                                    // arriver was not.
                                     if (!seeded_appearance.empty())
                                         for (const auto& [recipient_endpoint, recipient] : avatars) {
                                             static_cast<void>(recipient);
-                                            if (recipient_endpoint == endpoint && !seed_the_arriver)
-                                                continue;
+                                            if (recipient_endpoint == endpoint) continue;
                                             if (const auto outgoing = circuits.send(
                                                     recipient_endpoint, seeded_appearance, true, now,
                                                     true))
@@ -10799,9 +10799,7 @@ int main(int argc, char* argv[]) {
                                         }
                                     std::cout << "{\"level\":\"info\",\"message\":\"server "
                                                  "appearance seeded on join\",\"slots\":"
-                                              << bake->bake.assets.size() << ",\"toArriver\":"
-                                              << (seed_the_arriver ? "true" : "false")
-                                              << "}" << std::endl;
+                                              << bake->bake.assets.size() << "}" << std::endl;
                                 }
                             }
                             // The arriving viewer gets its facet's window of
