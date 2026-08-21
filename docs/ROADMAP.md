@@ -33,7 +33,7 @@ client.
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
-| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="15" aria-label="Phase 6 progress: 15%">15%</progress> | 15% |
+| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="16" aria-label="Phase 6 progress: 16%">16%</progress> | 16% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="23" aria-label="Phase 7 progress: 23%">23%</progress> | 23% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="3" aria-label="Phase 8 progress: 3%">3%</progress> | 3% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="66" aria-label="Phase 9 progress: 66%">66%</progress> | 66% |
@@ -293,6 +293,7 @@ run.
 - [x] Return Falcon compilation success and escaped error arrays through the Firestorm task-script capability protocol, including line and column locations for lexical errors.
 - [ ] Inventory the complete Second Life LSL language and built-in surface plus Halcyon/InWorldz extensions, explicitly excluding OpenSimulator extensions.
 - [ ] Complete the handwritten lexer, parser, semantic analysis, diagnostics, and versioned Homeworldz bytecode compiler for that full supported language.
+- [ ] Make `float`, `vector` and `rotation` first-class types: variables, parameters, return values, arithmetic, component access, and integer-to-float promotion, with the operators LSL defines on vectors and rotations. What exists now is a deliberate stopgap — literal-only vectors and rotations that can be written and passed to a host call and nothing else — put in so `llSitTarget` could be real before the type system was.
 - [x] Store creator-attributed LSL source in personal and task inventory, with Firestorm creation, retrieval, editing, saving, and drag-to-contents behavior.
 - [ ] Cache immutable bytecode by source hash, compiler version, and runtime ABI.
 - [ ] Build compatibility tests for syntax, types, conversions, lists, strings, states, constants, built-ins, and observable errors.
@@ -312,7 +313,7 @@ run.
 - [x] Recompile task scripts after Firestorm edits, preserve the previous running instance after a failed compile, honor the viewer's running flag, and remove the live VM when its task inventory item is deleted.
 - [x] Route the initial `llSay` and `llOwnerSay` host calls to Firestorm object chat with owner-only and distance behavior, confirmed in the live cloud Grid.
 - [x] Advertise the `SCRIPTED` and `HANDLE_TOUCH` object-update flags so Firestorm enables Touch, then dispatch `touch_start` from `ObjectGrab`.
-- [ ] Implement `llSitTarget`, which puts a seat offset and rotation on a prim and is what makes a sit target exist at all. It comes first among the host functions because the Phase 2 sitting work is meaningless against a target nothing can set, and it is the smaller half: storage on the prim, persistence, and the call, with no avatar behavior of its own.
+- [x] Implement `llSitTarget`, which puts a seat offset and rotation on a prim and is what makes a sit target exist at all. It came first among the host functions because the Phase 2 sitting work is meaningless against a target nothing can set. Float literals and literal-only `vector` and `rotation` values were added to Falcon to carry the arguments; the seat is stored on the prim, persisted, and carried by the object asset, so a take, a rez, and a border crossing all preserve it.
 - [ ] Implement the remaining object lifecycle, sustained/ended touch, timer, listen, sensor, control, permission, inventory, changed, link-message, collision, land-collision, attachment, and moving events.
 - [ ] Implement bounded LSL host functions for scene, physics, inventory, communication, parcel, avatar, HTTP, and data operations.
 - [ ] Preserve Second Life event ordering and delay semantics where observable and document intentional Homeworldz differences.

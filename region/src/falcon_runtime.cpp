@@ -46,13 +46,22 @@ struct FalconRuntime::Impl {
         }
 
         LiveScript(Identity script_identity, Program compiled, bool start_enabled,
-                   const HostSink& sink)
+                   const HostSink& sink, const SitTargetSink& sit_target_sink)
             : identity(std::move(script_identity)), program(std::move(compiled)), vm(program),
               enabled(start_enabled) {
             const auto host_identity = identity;
-            vm.set_host([sink, host_identity](const std::string& name,
-                                              const std::vector<Value>& args)
+            vm.set_host([sink, sit_target_sink, host_identity](
+                            const std::string& name, const std::vector<Value>& args)
                             -> std::optional<Value> {
+                if (name == "llSitTarget" && args.size() == 2 &&
+                    args[0].type == Type::Vector && args[1].type == Type::Rotation) {
+                    if (sit_target_sink)
+                        sit_target_sink({host_identity,
+                                         {args[0].components[0], args[0].components[1],
+                                          args[0].components[2]},
+                                         args[1].components});
+                    return std::nullopt;
+                }
                 if (!sink) return std::nullopt;
                 if (name == "llOwnerSay" && args.size() == 1 &&
                     args[0].type == Type::String) {
@@ -70,12 +79,14 @@ struct FalconRuntime::Impl {
     };
 
     HostSink sink;
+    SitTargetSink sit_target_sink;
     std::unordered_map<std::string, std::unique_ptr<LiveScript>> scripts;
 };
 
-FalconRuntime::FalconRuntime(HostSink host_sink)
+FalconRuntime::FalconRuntime(HostSink host_sink, SitTargetSink sit_target_sink)
     : impl_(std::make_unique<Impl>()) {
     impl_->sink = std::move(host_sink);
+    impl_->sit_target_sink = std::move(sit_target_sink);
 }
 
 FalconRuntime::~FalconRuntime() = default;
@@ -88,7 +99,7 @@ FalconRezResult FalconRuntime::rez(Identity identity, std::string_view source,
         while (!source.empty() && source.back() == '\0') source.remove_suffix(1);
         auto program = compile_source(std::string(source));
         auto live = std::make_unique<Impl::LiveScript>(
-            identity, std::move(program), enabled, impl_->sink);
+            identity, std::move(program), enabled, impl_->sink, impl_->sit_target_sink);
         impl_->scripts.insert_or_assign(
             instance_key(identity.object_id, identity.inventory_item_id), std::move(live));
         return {true, enabled, {}};

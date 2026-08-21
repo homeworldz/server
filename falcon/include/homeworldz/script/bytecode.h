@@ -12,6 +12,7 @@
 // the compile -> dispatch -> run -> snapshot/restore pipeline end to end,
 // including state surviving across events and across a crossing.
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -22,20 +23,36 @@ namespace homeworldz::script {
 // region refuses to restore state produced by an incompatible ABI. v2 added
 // globals and the event-dispatch model.
 inline constexpr std::uint32_t kBytecodeAbiVersion = 2;
-inline constexpr std::uint32_t kCompilerVersion = 2;
+inline constexpr std::uint32_t kCompilerVersion = 3;
 
 // Compile-time value types. Void exists only for typing host calls used as
 // statements; a runtime Value is always Integer or String.
-enum class Type : std::uint8_t { Void, Integer, String };
+enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation };
 
 // A tagged LSL value. LSL integers are 32-bit; strings are UTF-8 bytes.
+//
+// Vector and Rotation are literal-only for now: they can be written and handed
+// to a host call, and that is all. There are no float variables and no
+// arithmetic on them yet, so `components` is never the result of a computation
+// — which is why three doubles and a fourth for the rotation's w is enough
+// shape to be going on with. Full float, vector and rotation types are their
+// own roadmap item, and this will grow into them rather than be replaced.
 struct Value {
     Type type = Type::Integer;
     std::int32_t integer = 0;
     std::string str;
+    std::array<double, 4> components{};
 
-    static Value make_integer(std::int32_t v) { return Value{Type::Integer, v, {}}; }
-    static Value make_string(std::string v) { return Value{Type::String, 0, std::move(v)}; }
+    static Value make_integer(std::int32_t v) { return Value{Type::Integer, v, {}, {}}; }
+    static Value make_string(std::string v) {
+        return Value{Type::String, 0, std::move(v), {}};
+    }
+    static Value make_vector(double x, double y, double z) {
+        return Value{Type::Vector, 0, {}, {x, y, z, 0.0}};
+    }
+    static Value make_rotation(double x, double y, double z, double w) {
+        return Value{Type::Rotation, 0, {}, {x, y, z, w}};
+    }
 };
 
 enum class Op : std::uint8_t {

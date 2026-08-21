@@ -4,6 +4,11 @@
 // per ADR 0021. It recognizes the identifiers, keywords, integer and string
 // literals, punctuation, and operators the recursive-descent parser needs, and
 // skips line and block comments.
+//
+// Float literals exist for one reason so far: a vector or rotation literal is
+// written with them, and those are what a seat offset is made of. There are no
+// float variables or float arithmetic yet, so a float outside such a literal
+// has nowhere to go and the parser says so.
 
 #include <cstdint>
 #include <stdexcept>
@@ -21,6 +26,7 @@ enum class TokenKind : std::uint8_t {
     End,
     Identifier,
     IntLiteral,
+    FloatLiteral,
     StringLiteral,
     KwDefault,
     KwInteger,
@@ -47,6 +53,7 @@ struct Token {
     TokenKind kind = TokenKind::End;
     std::string text;         // identifier or string-literal contents
     std::int32_t integer = 0; // value for IntLiteral
+    double number = 0.0;      // value for FloatLiteral
     int line = 1;
 };
 

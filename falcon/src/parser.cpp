@@ -243,7 +243,40 @@ private:
         return parse_primary();
     }
 
+    // A numeric component of a vector or rotation literal, with an optional
+    // sign. Integers are accepted and widened, because <0, 0, 1> is how anyone
+    // writes an axis and refusing it would be pedantry.
+    double parse_vector_component() {
+        double sign = 1.0;
+        if (match(TokenKind::Minus)) sign = -1.0;
+        else static_cast<void>(match(TokenKind::Plus));
+        if (check(TokenKind::FloatLiteral)) return sign * advance().number;
+        if (check(TokenKind::IntLiteral))
+            return sign * static_cast<double>(advance().integer);
+        throw ScriptError("expected a number inside a vector or rotation literal (line " +
+                          std::to_string(peek().line) + ")");
+    }
+
     ast::ExprPtr parse_primary() {
+        // '<' in a position where a value belongs opens a vector or rotation
+        // literal; everywhere else it is still less-than. This is LSL's own
+        // resolution of the ambiguity, and it is why the literal is only
+        // recognized here rather than anywhere an operator could appear.
+        if (check(TokenKind::Less)) {
+            advance();
+            auto node = std::make_unique<ast::VectorLiteral>();
+            node->components.push_back(parse_vector_component());
+            while (match(TokenKind::Comma))
+                node->components.push_back(parse_vector_component());
+            expect(TokenKind::Greater, "expected '>' to close a vector or rotation literal");
+            if (node->components.size() != 3 && node->components.size() != 4)
+                throw ScriptError("a vector takes 3 components and a rotation 4 (line " +
+                                  std::to_string(peek().line) + ")");
+            return node;
+        }
+        if (check(TokenKind::FloatLiteral))
+            throw ScriptError("floats are only available inside vector and rotation "
+                              "literals so far (line " + std::to_string(peek().line) + ")");
         if (check(TokenKind::IntLiteral)) {
             auto node = std::make_unique<ast::IntLiteral>();
             node->value = advance().integer;

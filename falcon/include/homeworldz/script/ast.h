@@ -26,6 +26,16 @@ struct StringLiteral : Expr {
     std::string value;
 };
 
+// A vector or rotation written out in full: <0, 0, 0.5> or <0, 0, 0, 1>.
+//
+// Its components are literal numbers rather than expressions, which is the
+// whole of the stopgap. Allowing an expression here would mean deciding what a
+// float expression is, and that is the type-system work this deliberately
+// defers. Three components make a vector, four a rotation.
+struct VectorLiteral : Expr {
+    std::vector<double> components;
+};
+
 struct VarRef : Expr {
     std::string name;
 };

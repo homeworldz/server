@@ -2,6 +2,7 @@
 
 #include "homeworldz/script_runtime.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -15,6 +16,15 @@ struct FalconHostMessage {
     bool owner_only{};
     std::int32_t channel{};
     std::string text;
+};
+
+// A seat a script set with llSitTarget on the prim it lives in. The runtime
+// does not know what a prim is; it reports the call and the region applies it,
+// which is the same split the chat sink already uses.
+struct FalconSitTarget {
+    Identity identity;
+    std::array<double, 3> position{};
+    std::array<double, 4> rotation{};
 };
 
 struct FalconRezResult {
@@ -32,8 +42,9 @@ struct FalconTickResult {
 class FalconRuntime {
 public:
     using HostSink = std::function<void(FalconHostMessage)>;
+    using SitTargetSink = std::function<void(FalconSitTarget)>;
 
-    explicit FalconRuntime(HostSink host_sink = {});
+    explicit FalconRuntime(HostSink host_sink = {}, SitTargetSink sit_target_sink = {});
     ~FalconRuntime();
     FalconRuntime(const FalconRuntime&) = delete;
     FalconRuntime& operator=(const FalconRuntime&) = delete;

@@ -2945,6 +2945,33 @@ int main(int argc, char* argv[]) {
                     chat_payload_for(chat, chat_payloads, recipient_endpoint), true, sent_at))
                 static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
         }
+    },
+    // llSitTarget: the seat lands on the prim the script lives in, which is
+    // what LSL means by it — a script in a child prim seats people on that
+    // child, not on the root.
+    [&](homeworldz::script::FalconSitTarget seat) {
+        homeworldz::scene::EntityId prim_id{};
+        for (const auto& [entity_id, candidate] : scene.entities())
+            if (candidate.object_id == seat.identity.object_id) {
+                prim_id = entity_id;
+                break;
+            }
+        auto* prim = prim_id == 0 ? nullptr : scene.find(prim_id);
+        if (!prim) return;
+        prim->sit_target_position = {seat.position[0], seat.position[1], seat.position[2]};
+        // The rotation is stored the way every other rotation on an entity is,
+        // as the imaginary part; w is recovered from it.
+        prim->sit_target_rotation = {seat.rotation[0], seat.rotation[1], seat.rotation[2]};
+        try {
+            storage->save_snapshot(scene);
+        } catch (const std::exception& error) {
+            std::cerr << "{\"level\":\"error\",\"message\":\"sit target not persisted\",\"error\":"
+                      << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+        }
+        std::cout << "{\"level\":\"info\",\"message\":\"sit target set\",\"objectId\":"
+                  << homeworldz::api::json_string(seat.identity.object_id) << ",\"seated\":"
+                  << (homeworldz::scene::has_sit_target(*prim) ? "true" : "false") << "}"
+                  << std::endl;
     });
     const auto rez_task_script = [&](const homeworldz::scene::Entity& entity,
                                      const homeworldz::scene::TaskInventoryItem& item,

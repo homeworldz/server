@@ -1,5 +1,7 @@
 #include "homeworldz/script/lexer.h"
 
+#include <cstdlib>
+
 #include <cctype>
 #include <unordered_map>
 #include <utility>
@@ -106,8 +108,29 @@ std::vector<Token> tokenize(const std::string& source) {
                 }
                 ++i;
             }
+            // A dot with digits after it, or a trailing dot, makes this a
+            // float: LSL writes 1.0, 0.5 and 1. and means the same by all three.
+            if (i < n && source[i] == '.') {
+                const auto start = i - std::to_string(value).size();
+                ++i;
+                while (i < n && std::isdigit(static_cast<unsigned char>(source[i])) != 0) ++i;
+                token.kind = TokenKind::FloatLiteral;
+                token.number = std::strtod(source.substr(start, i - start).c_str(), nullptr);
+                tokens.push_back(std::move(token));
+                continue;
+            }
             token.kind = TokenKind::IntLiteral;
             token.integer = static_cast<std::int32_t>(value);
+            tokens.push_back(std::move(token));
+            continue;
+        }
+        // A leading dot, as in .5, which LSL also accepts.
+        if (c == '.' && i + 1 < n && std::isdigit(static_cast<unsigned char>(source[i + 1])) != 0) {
+            const auto start = i;
+            ++i;
+            while (i < n && std::isdigit(static_cast<unsigned char>(source[i])) != 0) ++i;
+            token.kind = TokenKind::FloatLiteral;
+            token.number = std::strtod(source.substr(start, i - start).c_str(), nullptr);
             tokens.push_back(std::move(token));
             continue;
         }
@@ -179,7 +202,7 @@ std::vector<Token> tokenize(const std::string& source) {
         tokens.push_back(std::move(token));
     }
 
-    tokens.push_back(Token{TokenKind::End, {}, 0, line});
+    tokens.push_back(Token{TokenKind::End, {}, 0, 0.0, line});
     return tokens;
 }
 

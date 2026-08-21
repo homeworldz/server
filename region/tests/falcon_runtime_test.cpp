@@ -8,11 +8,15 @@ int main() {
     using namespace std::string_literals;
     using homeworldz::script::FalconHostMessage;
     using homeworldz::script::FalconRuntime;
+    using homeworldz::script::FalconSitTarget;
     using homeworldz::script::Identity;
 
     std::vector<FalconHostMessage> messages;
+    std::vector<FalconSitTarget> seats;
     FalconRuntime runtime([&](FalconHostMessage message) {
         messages.push_back(std::move(message));
+    }, [&](FalconSitTarget seat) {
+        seats.push_back(std::move(seat));
     });
     const Identity identity{
         "asset", "item", "object", "owner"};
@@ -114,5 +118,44 @@ int main() {
         const auto status = runtime.object_script_status("touch-object");
         assert(status.scripted && !status.handles_touch);
     }
+
+    // llSitTarget: a vector and a rotation literal reach the region as the
+    // seat the script asked for, attributed to the prim the script lives in.
+    messages.clear();
+    const auto seated = runtime.rez({"seat-asset", "seat-item", "seat-object", "owner"},
+        R"LSL(
+        default { state_entry() { llSitTarget(<0.0, 0.25, .5>, <0, 0, -0.5, 1>); } }
+    )LSL", true);
+    assert(seated.compiled && seated.running);
+    runtime.run_tick();
+    assert(seats.size() == 1 && seats[0].identity.object_id == "seat-object");
+    assert(seats[0].position[0] == 0.0 && seats[0].position[1] == 0.25 &&
+           seats[0].position[2] == 0.5);
+    assert(seats[0].rotation[2] == -0.5 && seats[0].rotation[3] == 1.0);
+    // The call is not chat, and must not arrive as any.
+    assert(messages.empty());
+
+    // The argument types are checked, not coerced: a rotation is four
+    // components and a vector three, and passing one for the other is the
+    // mistake most worth catching at compile time.
+    const auto swapped = runtime.rez({"bad-asset", "bad-item", "bad-object", "owner"},
+        R"LSL(
+        default { state_entry() { llSitTarget(<0, 0, 0, 1>, <0, 0, 0>); } }
+    )LSL", true);
+    assert(!swapped.compiled && !swapped.diagnostic.empty());
+    // A float outside a vector literal says so plainly rather than parsing as
+    // something else.
+    const auto stray_float = runtime.rez({"f-asset", "f-item", "f-object", "owner"},
+        R"LSL(
+        default { state_entry() { llSay(0, (string)1.5); } }
+    )LSL", true);
+    assert(!stray_float.compiled);
+    // A three-component rotation or a five-component vector is a mistake, not
+    // a shape to guess at.
+    const auto miscounted = runtime.rez({"m-asset", "m-item", "m-object", "owner"},
+        R"LSL(
+        default { state_entry() { llSitTarget(<0, 0, 0, 0, 0>, <0, 0, 0, 1>); } }
+    )LSL", true);
+    assert(!miscounted.compiled);
     return 0;
 }

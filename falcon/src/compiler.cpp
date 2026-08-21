@@ -15,6 +15,8 @@ const char* type_name(Type type) {
     case Type::Integer: return "integer";
     case Type::String: return "string";
     case Type::Void: return "void";
+    case Type::Vector: return "vector";
+    case Type::Rotation: return "rotation";
     }
     return "?";
 }
@@ -30,6 +32,9 @@ const HostSignature* lookup_host(const std::string& name) {
     static const std::unordered_map<std::string, HostSignature> table = {
         {"llOwnerSay", HostSignature{{Type::String}, Type::Void}},
         {"llSay", HostSignature{{Type::Integer, Type::String}, Type::Void}},
+        // The seat: an offset from the prim's centre and a rotation, both in
+        // the prim's own space. A zero offset takes the seat away.
+        {"llSitTarget", HostSignature{{Type::Vector, Type::Rotation}, Type::Void}},
     };
     const auto it = table.find(name);
     return it == table.end() ? nullptr : &it->second;
@@ -252,6 +257,19 @@ private:
         if (const auto* lit = dynamic_cast<const ast::StringLiteral*>(&expr)) {
             emit(Op::PushConst, add_constant(Value::make_string(lit->value)));
             return Type::String;
+        }
+        if (const auto* lit = dynamic_cast<const ast::VectorLiteral*>(&expr)) {
+            // Component count already checked by the parser; three is a vector
+            // and four a rotation, and there is no third possibility.
+            const auto& parts = lit->components;
+            if (parts.size() == 4) {
+                emit(Op::PushConst, add_constant(
+                    Value::make_rotation(parts[0], parts[1], parts[2], parts[3])));
+                return Type::Rotation;
+            }
+            emit(Op::PushConst, add_constant(
+                Value::make_vector(parts[0], parts[1], parts[2])));
+            return Type::Vector;
         }
         if (const auto* ref = dynamic_cast<const ast::VarRef*>(&expr)) {
             const Symbol symbol = resolve(ref->name);
