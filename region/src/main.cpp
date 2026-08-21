@@ -10753,15 +10753,43 @@ int main(int argc, char* argv[]) {
                             // And its facet's objects: entities on sibling
                             // facets belong to the child circuits (the ADR's
                             // partition rule) and ride each child's backfill.
+                            // Counted, because the child-circuit backfill below
+                            // reports its own numbers and this one did not, so
+                            // an arrival that sent nothing looked exactly like
+                            // an arrival that sent everything.
+                            std::size_t backfilled_objects = 0;
+                            std::size_t backfilled_attachments = 0;
+                            std::size_t skipped_other_facet = 0;
+                            std::size_t skipped_unencodable = 0;
                             for (const auto& [entity_id, entity] : scene.entities()) {
                                 static_cast<void>(entity_id);
-                                if (entity_facet(entity) != arrival_facet) continue;
+                                if (entity_facet(entity) != arrival_facet) {
+                                    ++skipped_other_facet;
+                                    continue;
+                                }
                                 const auto restored_object = static_object_from_entity(scene, entity, live_avatar.user_id, falcon);
-                                if (!restored_object) continue;
+                                if (!restored_object) {
+                                    ++skipped_unencodable;
+                                    continue;
+                                }
                                 if (const auto object = circuits.send(endpoint,
-                                        object_update_for(endpoint, *restored_object), true, now, true))
+                                        object_update_for(endpoint, *restored_object), true, now, true)) {
                                     static_cast<void>(send_udp(viewer_server, endpoint, *object));
+                                    ++backfilled_objects;
+                                    if (entity.attachment_point != 0 ||
+                                        (entity.parent_id != 0 && [&] {
+                                            const auto* parent = scene.find(entity.parent_id);
+                                            return parent && parent->attachment_point != 0;
+                                        }()))
+                                        ++backfilled_attachments;
+                                }
                             }
+                            std::cout << "{\"level\":\"info\",\"message\":\"arrival backfilled\",\"facet\":"
+                                      << arrival_facet << ",\"objects\":" << backfilled_objects
+                                      << ",\"attachments\":" << backfilled_attachments
+                                      << ",\"skippedOtherFacet\":" << skipped_other_facet
+                                      << ",\"skippedUnencodable\":" << skipped_unencodable
+                                      << ",\"sceneSize\":" << scene.size() << "}" << std::endl;
                             // The arrival greeting, privately, once the world
                             // has been backfilled. The name comes from the
                             // account the grid knows, in its legacy two-part
