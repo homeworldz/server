@@ -203,5 +203,39 @@ int main() {
     if (children.establish(reestablished, now + 302s).seed != "seed-three") return 1;
     children.remove(forgotten.session_id);
     if (children.size(now + 302s) != 0) return 1;
+
+    // The establishment call's wire format.
+    const auto request = homeworldz::region::encode_child_agent_request(visitor);
+    const auto decoded = homeworldz::region::parse_child_agent_request(request);
+    if (!decoded || decoded->agent_id != visitor.agent_id ||
+        decoded->session_id != visitor.session_id ||
+        decoded->circuit_code != visitor.circuit_code ||
+        decoded->home_region_id != visitor.home_region_id ||
+        decoded->position != visitor.position) return 1;
+    // The seed is the destination's to mint. A request that names one is
+    // accepted with the name dropped, not honoured: a source that could choose
+    // it could choose a capability path on a region it does not run.
+    if (!decoded->seed.empty()) return 1;
+    const auto forged = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":7,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0],\"seed\":\"/caps/seed/somebody-elses\"}";
+    const auto sanitized = homeworldz::region::parse_child_agent_request(forged);
+    if (!sanitized || !sanitized->seed.empty()) return 1;
+    // A circuit code of zero is not a circuit, and it is what both an absent
+    // field and a malformed one become once they are numbers.
+    const auto no_circuit = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"circuitCode\":0,\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0]}";
+    if (homeworldz::region::parse_child_agent_request(no_circuit)) return 1;
+    if (homeworldz::region::parse_child_agent_request("{}")) return 1;
+    // The answer, and the refusal a source must not announce a neighbour on.
+    if (homeworldz::region::parse_child_agent_acceptance(
+            homeworldz::region::encode_child_agent_acceptance("/caps/seed/abc")) !=
+        "/caps/seed/abc") return 1;
+    if (!homeworldz::region::parse_child_agent_acceptance("{}").empty()) return 1;
     return 0;
 }

@@ -147,6 +147,20 @@ struct ChildAgent {
     std::array<float, 3> position{};
 };
 
+// The establishment call, region to region (ADR 0038). The source describes the
+// visitor; the destination answers with the seed it minted.
+//
+// `seed` is deliberately not part of the request, and the parser drops one if it
+// is sent: the seed belongs to the region that will serve it, and a source that
+// could name it could name a capability path on a region it does not run.
+std::string encode_child_agent_request(const ChildAgent& agent);
+std::optional<ChildAgent> parse_child_agent_request(std::string_view document);
+std::string encode_child_agent_acceptance(std::string_view seed);
+// The seed, or empty when the answer did not carry one — which a source must
+// treat as a refusal, because announcing a neighbour whose seed does not answer
+// stalls the viewer.
+std::string parse_child_agent_acceptance(std::string_view document);
+
 class ChildAgentRegistry {
 public:
     // Establish, or refresh what is already there, and return the child as this

@@ -4,6 +4,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -382,6 +383,53 @@ std::size_t InboundTransitRegistry::size(std::chrono::steady_clock::time_point n
 
 void InboundTransitRegistry::purge(std::chrono::steady_clock::time_point now) {
     std::erase_if(entries_, [&](const auto& entry) { return entry.second.expires_at <= now; });
+}
+
+std::string encode_child_agent_request(const ChildAgent& agent) {
+    const std::array<double, 3> position{
+        static_cast<double>(agent.position[0]),
+        static_cast<double>(agent.position[1]),
+        static_cast<double>(agent.position[2])};
+    return std::string{"{\"agentId\":"} + quoted_string(agent.agent_id) +
+        ",\"sessionId\":" + quoted_string(agent.session_id) +
+        ",\"circuitCode\":" + std::to_string(agent.circuit_code) +
+        ",\"homeRegionId\":" + quoted_string(agent.home_region_id) +
+        ",\"position\":" + number_array(position) + "}";
+}
+
+std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
+    ChildAgent agent;
+    agent.agent_id = json_string_field(document, "agentId");
+    agent.session_id = json_string_field(document, "sessionId");
+    agent.home_region_id = json_string_field(document, "homeRegionId");
+    const auto circuit_code = json_number_field(document, "circuitCode");
+    const auto position = json_number_array<3>(document, "position");
+    if (agent.agent_id.empty() || agent.session_id.empty() ||
+        agent.home_region_id.empty() || !circuit_code || !position)
+        return std::nullopt;
+    // A circuit code of zero is not a circuit, and it is what an absent field
+    // and a malformed one both look like once they are numbers.
+    if (*circuit_code <= 0.0 ||
+        *circuit_code > static_cast<double>((std::numeric_limits<std::uint32_t>::max)()))
+        return std::nullopt;
+    for (const auto value : *position)
+        if (!std::isfinite(value)) return std::nullopt;
+    agent.circuit_code = static_cast<std::uint32_t>(*circuit_code);
+    agent.position = {
+        static_cast<float>((*position)[0]),
+        static_cast<float>((*position)[1]),
+        static_cast<float>((*position)[2])};
+    // Whatever the request said about a seed is not carried: see the header.
+    agent.seed.clear();
+    return agent;
+}
+
+std::string encode_child_agent_acceptance(std::string_view seed) {
+    return std::string{"{\"seed\":"} + quoted_string(std::string(seed)) + "}";
+}
+
+std::string parse_child_agent_acceptance(std::string_view document) {
+    return std::string{json_string_field(document, "seed")};
 }
 
 const ChildAgent& ChildAgentRegistry::establish(
