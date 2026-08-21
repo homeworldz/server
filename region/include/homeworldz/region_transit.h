@@ -142,8 +142,12 @@ struct ChildAgent {
     // expected from one it did not.
     std::string home_region_id;
     std::string seed;
-    // Last known, in this region's coordinates. A child is told where the
-    // avatar is so it can decide what of its world is worth sending.
+    // Where the avatar is, in absolute grid metres — its region's map corner
+    // times 256 plus its local position. Absolute because a region-local number
+    // needs both ends to agree *which* region, and they did not: the source was
+    // measuring from a neighbour's facet corner and the destination reading it
+    // against its own region corner, which put a viewer at the wrong facet
+    // (2026-08-21). A single frame both ends already know cannot be misread.
     std::array<float, 3> position{};
     // What the avatar is wearing, carried by the source rather than read here.
     // The source already holds it; a destination that fetched it would do one
@@ -187,27 +191,17 @@ struct ChildAgent {
 std::string encode_child_agent_request(const ChildAgent& agent);
 std::optional<ChildAgent> parse_child_agent_request(std::string_view document);
 
-// What a destination answers an establishment with.
+// The seed the destination minted, or empty when it answered without one, which
+// a source must treat as a refusal: announcing a neighbour whose seed does not
+// answer stalls the viewer.
 //
-// The facet is the point. A rectangular region presents to viewers as square
-// facets (ADR 0036), and the facet adjacent to the source is not necessarily the
-// first one — Nova B is a 2x1 whose *second* facet borders Nova. Only the
-// destination knows its own layout, so it names the facet to announce rather
-// than letting the source guess from a region corner and an extent, which is
-// what pointed a viewer at the wrong half of a neighbour (found live,
-// 2026-08-21).
-struct ChildAgentAcceptance {
-    std::string seed;
-    int grid_x{};
-    int grid_y{};
-    int edge{256};
-    int viewer_port{};
-};
-
-std::string encode_child_agent_acceptance(const ChildAgentAcceptance& acceptance);
-// Nullopt when the answer was unusable, which a source must treat as a refusal:
-// announcing a neighbour whose seed does not answer stalls the viewer.
-std::optional<ChildAgentAcceptance> parse_child_agent_acceptance(std::string_view document);
+// It carries only the seed. Which facet of a neighbour borders you is already
+// answered — the grid resolves a neighbour to its facet, corner, extent and
+// port — and having the destination name it too was a second authority for one
+// fact, which is how a viewer got pointed at the wrong half of a neighbour
+// (2026-08-21).
+std::string encode_child_agent_acceptance(std::string_view seed);
+std::string parse_child_agent_acceptance(std::string_view document);
 
 class ChildAgentRegistry {
 public:

@@ -4245,13 +4245,15 @@ int main(int argc, char* argv[]) {
                 child.session_id = live.session_id;
                 child.circuit_code = live.circuit_code;
                 child.home_region_id = registration->region_id();
-                // Where the avatar is, in the neighbour's coordinates. It is
-                // outside that region's extent, which is exactly what a child
-                // agent's position is: somewhere over the border.
+                // Where the avatar is, in absolute grid metres. Not relative to
+                // the neighbour: that needs both ends to agree which frame, and
+                // they did not — this was measured from the neighbour's *facet*
+                // corner and read against its *region* corner, so the offset
+                // came out zero and the child landed on the wrong facet.
                 const auto& standing = live.controller.state().position;
                 child.position = {
-                    static_cast<float>(standing.x + (region_grid_x - neighbor.grid_x) * 256),
-                    static_cast<float>(standing.y + (region_grid_y - neighbor.grid_y) * 256),
+                    static_cast<float>(standing.x + region_grid_x * 256),
+                    static_cast<float>(standing.y + region_grid_y * 256),
                     static_cast<float>(standing.z)};
                 // The worn set from this region's own scene rather than the
                 // grid: the attachments are standing here, so their items and
@@ -4267,12 +4269,12 @@ int main(int argc, char* argv[]) {
                 child.visual_params = dressed->second.visual_params;
                 child.cof_version = dressed->second.serial;
                 child.appearance_version = dressed->second.appearance_version;
-                std::optional<homeworldz::region::ChildAgentAcceptance> accepted;
+                std::string seed;
                 try {
                     auto transport = homeworldz::grid::socket_transport(
                         neighbor.public_endpoint, service_token);
                     if (transport)
-                        accepted = homeworldz::region::parse_child_agent_acceptance(
+                        seed = homeworldz::region::parse_child_agent_acceptance(
                             homeworldz::grid::establish_child_agent(*transport,
                                 homeworldz::region::encode_child_agent_request(child)));
                 } catch (const std::exception& error) {
@@ -4281,45 +4283,49 @@ int main(int argc, char* argv[]) {
                               << ",\"error\":" << homeworldz::api::json_string(error.what())
                               << "}" << std::endl;
                 }
-                // Remembered either way: see above.
+                // Remembered either way: retrying every pass against a neighbour
+                // that is refusing is a busy loop against its HTTP server.
                 offered_child_agents.insert(pair_key);
-                if (!accepted) {
+                if (seed.empty()) {
                     std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
                                  "child agent refused\",\"neighborId\":"
                               << homeworldz::api::json_string(neighbor.id) << "}" << std::endl;
                     return true;
                 }
-                // The facet the neighbour named, on the port it named: see the
-                // establishment handler for why the source must not choose.
-                const auto facet_simulator = simulator_event_endpoint(
-                    neighbor.public_endpoint, accepted->viewer_port);
-                if (!facet_simulator) {
+                // The neighbour record IS the facet: the grid resolves a
+                // neighbour to the square facet that borders this one, with its
+                // own corner, extent and viewer port (see the /neighbors reply —
+                // "Nova B 2", facet 1, 900/899, port 42113). Announce that and
+                // nothing computed from it.
+                const auto simulator = simulator_event_endpoint(
+                    neighbor.public_endpoint, neighbor.viewer_port);
+                if (!simulator) {
                     std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
-                                 "facet endpoint unresolved\",\"neighborId\":"
+                                 "endpoint unresolved\",\"neighborId\":"
                               << homeworldz::api::json_string(neighbor.id) << "}" << std::endl;
                     return true;
                 }
-                // Only now, and both events or neither: a neighbour announced
-                // without a seed that answers stalls the viewer, which is what
+                // Both events or neither: a neighbour announced without a seed
+                // that answers stalls the viewer, which is what
                 // enqueue_facet_child_events guards for facets.
                 const auto announced_handle =
-                    (static_cast<std::uint64_t>(accepted->grid_x * 256) << 32) |
-                    static_cast<std::uint32_t>(accepted->grid_y * 256);
+                    (static_cast<std::uint64_t>(neighbor.grid_x * 256) << 32) |
+                    static_cast<std::uint32_t>(neighbor.grid_y * 256);
                 enqueue_viewer_event(live.session_id,
                     homeworldz::viewer::enable_simulator_event_xml(
-                        announced_handle, *facet_simulator,
-                        static_cast<std::uint32_t>(accepted->edge),
-                        static_cast<std::uint32_t>(accepted->edge)));
+                        announced_handle, *simulator,
+                        static_cast<std::uint32_t>(neighbor.size_x),
+                        static_cast<std::uint32_t>(neighbor.size_y)));
                 enqueue_viewer_event(live.session_id,
                     homeworldz::viewer::establish_agent_communication_event_xml({
                         child.agent_id,
-                        simulator_endpoint(neighbor.public_endpoint, accepted->viewer_port),
-                        accepted->seed}));
+                        simulator_endpoint(neighbor.public_endpoint, neighbor.viewer_port),
+                        seed}));
                 std::cout << "{\"level\":\"info\",\"message\":\"neighbor announced to viewer\""
-                             ",\"neighborId\":" << homeworldz::api::json_string(neighbor.id)
+                             ",\"neighbor\":" << homeworldz::api::json_string(neighbor.name)
                           << ",\"direction\":" << homeworldz::api::json_string(neighbor.direction)
-                          << ",\"facetGrid\":[" << accepted->grid_x << "," << accepted->grid_y
-                          << "],\"viewerPort\":" << accepted->viewer_port
+                          << ",\"grid\":[" << neighbor.grid_x << "," << neighbor.grid_y
+                          << "],\"viewerPort\":" << neighbor.viewer_port
                           << ",\"worn\":" << child.worn.size()
                           << ",\"appearance\":" << (child.has_appearance() ? "true" : "false")
                           << "}" << std::endl;
@@ -6196,35 +6202,15 @@ int main(int argc, char* argv[]) {
                                 child.session_id + "/0000000c-a9e7-4000-8000-000000000000";
                             const auto now = std::chrono::steady_clock::now();
                             const auto& established = child_agents.establish(child, now);
-                            // Which facet the source should announce. A viewer
-                            // sees square facets, not this region's extent
-                            // (ADR 0036), and the facet bordering the source is
-                            // not necessarily the first — so the region that
-                            // owns the layout names it, rather than the source
-                            // guessing from a corner and a size and pointing a
-                            // viewer at the wrong half of a neighbour.
-                            //
-                            // The position is already in this region's
-                            // coordinates and lies outside it, over the border;
-                            // facet_of_position clamps, which is what makes the
-                            // nearest facet the answer.
-                            const auto child_facet = facet_of_position(
-                                established.position[0], established.position[1]);
-                            const auto& facet =
-                                region_facets[static_cast<std::size_t>(child_facet)];
                             std::cout << "{\"level\":\"info\",\"message\":\"child agent established\""
                                          ",\"agent\":" << homeworldz::api::json_string(established.agent_id)
                                       << ",\"homeRegionId\":"
                                       << homeworldz::api::json_string(established.home_region_id)
-                                      << ",\"facet\":" << homeworldz::api::json_string(facet.name)
-                                      << ",\"facetGrid\":[" << facet.grid_x << "," << facet.grid_y
-                                      << "],\"children\":" << child_agents.size(now)
+                                      << ",\"children\":" << child_agents.size(now)
                                       << "}" << std::endl;
                             response = homeworldz::http::response_for_content(
                                 request, 200, "application/json",
-                                homeworldz::region::encode_child_agent_acceptance({
-                                    established.seed, facet.grid_x, facet.grid_y,
-                                    facet.edge, facet.viewer_port}));
+                                homeworldz::region::encode_child_agent_acceptance(established.seed));
                         }
                     }
                     // An object arriving from a neighbor. Staging and activation

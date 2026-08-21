@@ -514,35 +514,12 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
     return agent;
 }
 
-std::string encode_child_agent_acceptance(const ChildAgentAcceptance& acceptance) {
-    return std::string{"{\"seed\":"} + quoted_string(acceptance.seed) +
-        ",\"facetGridX\":" + std::to_string(acceptance.grid_x) +
-        ",\"facetGridY\":" + std::to_string(acceptance.grid_y) +
-        ",\"facetEdge\":" + std::to_string(acceptance.edge) +
-        ",\"facetViewerPort\":" + std::to_string(acceptance.viewer_port) + "}";
+std::string encode_child_agent_acceptance(std::string_view seed) {
+    return std::string{"{\"seed\":"} + quoted_string(std::string(seed)) + "}";
 }
 
-std::optional<ChildAgentAcceptance> parse_child_agent_acceptance(std::string_view document) {
-    ChildAgentAcceptance acceptance;
-    acceptance.seed = std::string{json_string_field(document, "seed")};
-    const auto grid_x = json_number_field(document, "facetGridX");
-    const auto grid_y = json_number_field(document, "facetGridY");
-    const auto edge = json_number_field(document, "facetEdge");
-    const auto viewer_port = json_number_field(document, "facetViewerPort");
-    if (acceptance.seed.empty() || !grid_x || !grid_y || !edge || !viewer_port)
-        return std::nullopt;
-    // A map coordinate the viewer cannot express, an edge of nothing, or a port
-    // that is not one, are refusals rather than values to pass along: each would
-    // become an EnableSimulator the viewer either ignores or chases.
-    if (*grid_x < 0.0 || *grid_x > 65535.0 || *grid_y < 0.0 || *grid_y > 65535.0)
-        return std::nullopt;
-    if (*edge <= 0.0 || *edge > 65535.0) return std::nullopt;
-    if (*viewer_port < 1.0 || *viewer_port > 65535.0) return std::nullopt;
-    acceptance.grid_x = static_cast<int>(*grid_x);
-    acceptance.grid_y = static_cast<int>(*grid_y);
-    acceptance.edge = static_cast<int>(*edge);
-    acceptance.viewer_port = static_cast<int>(*viewer_port);
-    return acceptance;
+std::string parse_child_agent_acceptance(std::string_view document) {
+    return std::string{json_string_field(document, "seed")};
 }
 
 const ChildAgent& ChildAgentRegistry::establish(
