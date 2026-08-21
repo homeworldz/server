@@ -4188,6 +4188,123 @@ int main(int argc, char* argv[]) {
         return facet_seed;
     };
 
+    // ADR 0038 part 1: offer one live session a child circuit on one adjacent
+    // region, so that when it crosses there the crossing is a promotion instead
+    // of an avatar built from nothing.
+    //
+    // Deliberately NOT on the arrival path, and deliberately one at a time. The
+    // establishment is a synchronous POST to a neighbour, and the arrival path
+    // is already the slowest thing this region does; up to eight of them in the
+    // tick that answers CompleteAgentMovement would make the stall it is meant
+    // to remove considerably worse. So the offers trickle out afterwards, one
+    // per pass, and a session simply becomes ready to cross a border a moment
+    // after it can walk toward one.
+    //
+    // Each pair is offered once. A refusal is remembered too: retrying every
+    // pass against a neighbour that is answering 409 would be a busy loop
+    // against another region's HTTP server.
+    std::unordered_set<std::string> offered_child_agents;
+    auto next_child_agent_offer = std::chrono::steady_clock::time_point{};
+    auto next_child_agent_sweep = std::chrono::steady_clock::time_point{};
+    const auto offer_one_child_agent = [&]() {
+        if (service_token.empty() || !registration || region_neighbors.empty()) return false;
+        for (const auto& [viewer_endpoint, live] : avatars) {
+            if (live.session_id.empty()) continue;
+            const auto agent = homeworldz::viewer::parse_uuid(live.user_id);
+            if (!agent) continue;
+            for (const auto& neighbor : region_neighbors) {
+                if (!neighbor.online || neighbor.public_endpoint.empty() ||
+                    neighbor.id.empty() || neighbor.id == registration->region_id())
+                    continue;
+                const auto pair_key = live.session_id + '|' + neighbor.id;
+                if (offered_child_agents.contains(pair_key)) continue;
+                const auto simulator = simulator_event_endpoint(
+                    neighbor.public_endpoint, neighbor.viewer_port);
+                if (!simulator) {
+                    offered_child_agents.insert(pair_key);
+                    continue;
+                }
+                homeworldz::region::ChildAgent child;
+                child.agent_id = homeworldz::viewer::format_uuid(*agent);
+                child.session_id = live.session_id;
+                child.circuit_code = live.circuit_code;
+                child.home_region_id = registration->region_id();
+                // Where the avatar is, in the neighbour's coordinates. It is
+                // outside that region's extent, which is exactly what a child
+                // agent's position is: somewhere over the border.
+                const auto& standing = live.controller.state().position;
+                child.position = {
+                    static_cast<float>(standing.x + (region_grid_x - neighbor.grid_x) * 256),
+                    static_cast<float>(standing.y + (region_grid_y - neighbor.grid_y) * 256),
+                    static_cast<float>(standing.z)};
+                // The worn set from this region's own scene rather than the
+                // grid: the attachments are standing here, so their items and
+                // points are already in hand and no read is needed.
+                for (const auto& [entity_id, entity] : scene.entities()) {
+                    static_cast<void>(entity_id);
+                    if (entity.attachment_point == 0 || entity.owner_id != live.user_id ||
+                        entity.attachment_item_id.empty())
+                        continue;
+                    child.worn.push_back({entity.attachment_item_id, entity.attachment_point});
+                }
+                if (const auto dressed = avatar_appearances.find(viewer_endpoint);
+                    dressed != avatar_appearances.end() &&
+                    !dressed->second.texture_entry.empty() &&
+                    !dressed->second.visual_params.empty()) {
+                    child.texture_entry = dressed->second.texture_entry;
+                    child.visual_params = dressed->second.visual_params;
+                    child.cof_version = dressed->second.serial;
+                    child.appearance_version = dressed->second.appearance_version;
+                }
+                std::string seed;
+                try {
+                    auto transport = homeworldz::grid::socket_transport(
+                        neighbor.public_endpoint, service_token);
+                    if (transport)
+                        seed = homeworldz::grid::establish_child_agent(*transport,
+                            homeworldz::region::encode_child_agent_request(child));
+                } catch (const std::exception& error) {
+                    std::cerr << "{\"level\":\"warning\",\"message\":\"child agent not established\""
+                                 ",\"neighborId\":" << homeworldz::api::json_string(neighbor.id)
+                              << ",\"error\":" << homeworldz::api::json_string(error.what())
+                              << "}" << std::endl;
+                }
+                // Remembered either way: see above.
+                offered_child_agents.insert(pair_key);
+                if (seed.empty()) {
+                    std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
+                                 "no child seed\",\"neighborId\":"
+                              << homeworldz::api::json_string(neighbor.id) << "}" << std::endl;
+                    return true;
+                }
+                // Only now, and both events or neither: a neighbour announced
+                // without a seed that answers stalls the viewer, which is what
+                // enqueue_facet_child_events guards for facets.
+                const auto neighbor_handle =
+                    (static_cast<std::uint64_t>(neighbor.grid_x * 256) << 32) |
+                    static_cast<std::uint32_t>(neighbor.grid_y * 256);
+                enqueue_viewer_event(live.session_id,
+                    homeworldz::viewer::enable_simulator_event_xml(
+                        neighbor_handle, *simulator,
+                        static_cast<std::uint32_t>(neighbor.size_x),
+                        static_cast<std::uint32_t>(neighbor.size_y)));
+                enqueue_viewer_event(live.session_id,
+                    homeworldz::viewer::establish_agent_communication_event_xml({
+                        child.agent_id,
+                        simulator_endpoint(neighbor.public_endpoint, neighbor.viewer_port),
+                        seed}));
+                std::cout << "{\"level\":\"info\",\"message\":\"neighbor announced to viewer\""
+                             ",\"neighborId\":" << homeworldz::api::json_string(neighbor.id)
+                          << ",\"direction\":" << homeworldz::api::json_string(neighbor.direction)
+                          << ",\"worn\":" << child.worn.size()
+                          << ",\"appearance\":" << (child.has_appearance() ? "true" : "false")
+                          << "}" << std::endl;
+                return true;
+            }
+        }
+        return false;
+    };
+
     // Estate owner/manager check: the estate owner and any listed manager (and the
     // provisioned region owner) bypass parcel and estate restrictions.
     const auto is_estate_manager = [&](std::string_view agent) {
@@ -14503,6 +14620,28 @@ int main(int argc, char* argv[]) {
         }
         if (viewer_grid && now >= next_neighbor_refresh)
             static_cast<void>(refresh_region_neighbors(false));
+        // One child agent offer per pass, and only when nothing else is waiting
+        // on this thread. See offer_one_child_agent for why it is not on the
+        // arrival path.
+        if (now >= next_child_agent_offer) {
+            next_child_agent_offer = now + std::chrono::milliseconds(250);
+            static_cast<void>(offer_one_child_agent());
+        }
+        // A session that has gone stops being owed offers, or the set grows for
+        // the life of the process and a returning session is never re-offered.
+        if (now >= next_child_agent_sweep) {
+            next_child_agent_sweep = now + std::chrono::seconds(30);
+            std::erase_if(offered_child_agents, [&](const std::string& pair_key) {
+                const auto separator = pair_key.find('|');
+                if (separator == std::string::npos) return true;
+                const auto session = pair_key.substr(0, separator);
+                for (const auto& [live_endpoint, live] : avatars) {
+                    static_cast<void>(live_endpoint);
+                    if (live.session_id == session) return false;
+                }
+                return true;
+            });
+        }
     }
     // Graceful shutdown (SIGINT/SIGTERM set running=false): tell every connected
     // viewer why it is being disconnected — a KickUser with a reason string, so

@@ -502,6 +502,12 @@ bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id)
 // in both regions at once. The source removes its own copy between the two
 // calls, so activation is the destination's authority to exist, and a staged
 // object the source never activated expires having been created nowhere.
+// Establish a child agent at a neighbour (ADR 0038) and return the seed it
+// minted. Empty means it refused, or answered without one — either way the
+// caller must not announce that neighbour to the viewer, because a neighbour
+// whose seed will not answer stalls it.
+std::string establish_child_agent(Transport& destination, std::string_view document);
+
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document);
 bool activate_object_arrival(Transport& destination, std::string_view transit_id);

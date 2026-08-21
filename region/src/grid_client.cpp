@@ -1241,6 +1241,13 @@ bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id)
         "/prepare-arrival", {}).status_code == 200;
 }
 
+std::string establish_child_agent(Transport& destination, std::string_view document) {
+    const auto response = destination.send(
+        "POST", "/api/v1/child-agents", std::string(document));
+    if (response.status_code != 200) return {};
+    return json_field(response.body, "seed");
+}
+
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document) {
     return destination.send("POST", "/api/v1/object-transits/" + std::string(transit_id) +
