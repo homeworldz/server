@@ -61,6 +61,23 @@ bool reliability() {
     return true;
 }
 
+bool empty_payload_refused() {
+    const auto start = Circuit::Clock::time_point{};
+    Circuit sender(start);
+    // A bare header is not a message: Firestorm reports it as mangled network
+    // data, and sent reliably it can never be acknowledged, so the resend
+    // timer repeats it every 500ms. Refused at the gate, reliable or not.
+    if (sender.send({}, true, start)) return false;
+    if (sender.pending_reliable() != 0) return false;
+    if (sender.send({}, false, start)) return false;
+    // The refusal consumes nothing: the next real send still goes out first
+    // in sequence order.
+    const auto real = sender.send(bytes({1, 2, 3}), true, start);
+    if (!real) return false;
+    const auto decoded = decode_packet(*real);
+    return decoded && decoded->sequence == 1 && decoded->payload == bytes({1, 2, 3});
+}
+
 bool task_inventory_codecs() {
     const auto agent = *parse_uuid("12345678-1234-4234-8234-123456789abc");
     const auto session = *parse_uuid("87654321-4321-4321-8321-cba987654321");
@@ -1782,6 +1799,7 @@ int main() {
     if (!teleport_codecs()) return 18;
     if (!map_codecs()) return 17;
     if (!reliability()) return 3;
+    if (!empty_payload_refused()) return 56;
     if (!resend_throttle_and_timeout()) return 4;
     if (!circuit_registry()) return 5;
     if (!circuit_registry_facet_children()) return 55;

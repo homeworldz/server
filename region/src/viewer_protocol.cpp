@@ -3439,6 +3439,15 @@ Circuit::Circuit(Clock::time_point now, double bytes_per_second, std::chrono::se
 
 std::optional<std::vector<std::byte>> Circuit::send(std::vector<std::byte> payload, bool reliable,
                                                     Clock::time_point now, bool zero_coded) {
+    // An empty payload is never a message. On the wire it is a bare header,
+    // which Firestorm reports as "mangled network data" and stops trusting
+    // the circuit over — and sent reliably it can never be acknowledged, so
+    // the resend timer repeats the damage every 500ms (seen live 2026-08-22:
+    // an appearance with no texture entry encoded to nothing and was sent
+    // anyway, and the session died of unanswered pings a minute later).
+    // Every encoder in the tree returns empty for "could not encode"; this is
+    // the one gate all of those results pass through.
+    if (payload.empty()) return std::nullopt;
     Packet packet;
     packet.flags = (reliable ? flag_reliable : 0) | (zero_coded ? flag_zero_coded : 0);
     packet.sequence = next_sequence_++;

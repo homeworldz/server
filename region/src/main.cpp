@@ -11225,7 +11225,19 @@ int main(int argc, char* argv[]) {
                                         identity->agent_id, seeded->second.serial,
                                         seeded->second.texture_entry, seeded->second.visual_params,
                                         {}, seeded->second.appearance_version});
-                                    if (const auto dressed = circuits.send(
+                                    // A viewer that has not finished its own bake
+                                    // sends AgentSetAppearance with an empty
+                                    // texture entry, and that is what is stored:
+                                    // nothing encodes, and there is nothing this
+                                    // avatar can be re-dressed with yet. Say so
+                                    // rather than sending nothing (2026-08-22).
+                                    if (appearance.empty())
+                                        std::cout << "{\"level\":\"warn\",\"message\":\"crossing appearance "
+                                                     "not re-sent (nothing to encode)\",\"textureEntryBytes\":"
+                                                  << seeded->second.texture_entry.size()
+                                                  << ",\"visualParams\":" << seeded->second.visual_params.size()
+                                                  << "}" << std::endl;
+                                    else if (const auto dressed = circuits.send(
                                             endpoint, appearance, true, now, true))
                                         static_cast<void>(send_udp(viewer_server, endpoint, *dressed));
                                 }
