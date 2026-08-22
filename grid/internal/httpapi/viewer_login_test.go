@@ -277,6 +277,41 @@ func TestViewerLoginPicksFacetFromRegionSpawn(t *testing.T) {
 	}
 }
 
+// A facet of a rectangular region is a region to the viewer (ADR 0036), so
+// its name must work in the login location field like any region name. The
+// facet name lives only on the provisioned record; the login must still land
+// on the live lease, on the facet's own port and map corner.
+func TestViewerLoginResolvesFacetName(t *testing.T) {
+	identities := newMemoryIdentityStore()
+	if _, err := identities.CreateUser(context.Background(), "facet.name", "development-password"); err != nil {
+		t.Fatal(err)
+	}
+	regionStore := newMemoryRegionStore()
+	target, _ := regionStore.Register(context.Background(), regions.Registration{Name: "Sandbox", GridX: 1001, GridY: 1000,
+		PublicEndpoint: "http://127.0.0.13:42021", ViewerPort: 43002, LeaseDuration: time.Minute})
+	provisionedPath := filepath.Join(t.TempDir(), "regions.json")
+	provisionedJSON := fmt.Sprintf(`[{"id":%q,"name":"Sandbox","mapX":1001,"mapY":1000,"sizeX":1,"sizeY":2,"facetNames":["Sandbox 2"],"accessKey":"sandbox-key"}]`, target.ID)
+	if err := os.WriteFile(provisionedPath, []byte(provisionedJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+	provisioned, err := provisioning.Load(provisionedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(checker{}, "test", Options{Identity: identities, Regions: regionStore, Provisioned: provisioned,
+		Inventory: &memoryInventoryStore{folders: make(map[string][]inventory.Folder)}})
+	fields := viewerResponse(t, handler, viewerRequest("Facet", "Name", "development-password", "uri:Sandbox 2&128&128&25"))
+	if fields["login"].text() != "true" {
+		t.Fatalf("login = %q, reason = %q, message = %q", fields["login"].text(), fields["reason"].text(), fields["message"].text())
+	}
+	// Facet 1 of a 1x2 at (1001,1000): one square north, on the next port.
+	if fields["sim_port"].text() != "43003" ||
+		fields["region_x"].text() != "256256" || fields["region_y"].text() != "256256" {
+		t.Fatalf("unexpected facet destination: port=%q x=%q y=%q",
+			fields["sim_port"].text(), fields["region_x"].text(), fields["region_y"].text())
+	}
+}
+
 func TestViewerLoginUsesDurableLastRegion(t *testing.T) {
 	identities := newMemoryIdentityStore()
 	user, err := identities.CreateUser(context.Background(), "last.user", "development-password")

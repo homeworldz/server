@@ -21,6 +21,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/gestures"
 	"github.com/homeworldz/server/grid/internal/identity"
 	"github.com/homeworldz/server/grid/internal/inventory"
+	"github.com/homeworldz/server/grid/internal/provisioning"
 	"github.com/homeworldz/server/grid/internal/regions"
 )
 
@@ -243,7 +244,7 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 			storedPosition = &position
 		}
 	}
-	region, err := resolveDestination(r.Context(), a.regions, start, preferredRegionID, a.welcomePoints)
+	region, requestedFacet, err := resolveDestination(r.Context(), a.regions, a.provisioned, start, preferredRegionID, a.welcomePoints)
 	if err != nil {
 		_ = a.identity.RevokeSession(r.Context(), session.ID)
 		return nil, "destination", "No online region matches the requested destination."
@@ -323,7 +324,14 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	regionX, regionY := region.GridX*256, region.GridY*256
 	if a.provisioned != nil {
 		if provisioned, provisionErr := a.provisioned.Get(r.Context(), region.ID); provisionErr == nil {
+			// A destination that named a facet lands on that facet — unless a
+			// position places the avatar, which always wins, because the
+			// region spawns it there regardless of which facet this reply
+			// names (the mismatch is the 2026-08-20 ceremony-at-login fault).
 			facet := 0
+			if requestedFacet > 0 && requestedFacet < provisioned.FacetCount() {
+				facet = requestedFacet
+			}
 			if spawnPosition != nil {
 				facet = provisioned.FacetAtPosition(spawnPosition[0], spawnPosition[1])
 			} else if storedPosition != nil && preferredRegionID == region.ID {
@@ -473,32 +481,73 @@ func isFinite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(val
 // wins while it is leased, and otherwise the welcome list decides. The legacy
 // first-region fallback survives only for grids with no welcome list, so an
 // unconfigured development grid still logs a viewer in somewhere.
-func resolveDestination(ctx context.Context, store regions.Store, start, preferredRegionID string,
-	welcome []arrival.Point) (regions.Region, error) {
+//
+// The returned facet is the one the uri: named when it named a facet of a
+// rectangular region rather than the region itself (ADR 0036: to the viewer
+// every facet is a region, so its name must be a valid destination on every
+// discovery surface, login included), and -1 otherwise. The caller treats it
+// as a default: a persisted spawn position still decides the arrival facet,
+// because the region spawns the avatar there regardless and a facet that
+// disagrees with the spawn fires the crossing ceremony into a viewer still
+// logging in (2026-08-20).
+func resolveDestination(ctx context.Context, store regions.Store, provisioned provisioning.Store,
+	start, preferredRegionID string, welcome []arrival.Point) (regions.Region, int, error) {
 	if strings.HasPrefix(strings.ToLower(start), "uri:") {
 		name := strings.TrimPrefix(start, "uri:")
 		if before, _, found := strings.Cut(name, "&"); found {
 			name = before
 		}
 		destination, err := arrival.ResolveNamed(ctx, store, name)
-		if err != nil {
-			return regions.Region{}, regions.ErrNotFound
+		if err == nil {
+			return destination.Region, -1, nil
 		}
-		return destination.Region, nil
+		if provisioned != nil {
+			if region, facet, ok := resolveFacetNamed(ctx, store, provisioned, name); ok {
+				return region, facet, nil
+			}
+		}
+		return regions.Region{}, -1, regions.ErrNotFound
 	}
 	// preferredRegionID is the home region for start=home, else the last region.
 	destination, err := arrival.Resolve(ctx, store, preferredRegionID, welcome)
 	if err == nil {
-		return destination.Region, nil
+		return destination.Region, -1, nil
 	}
 	items, listErr := store.List(ctx)
 	if listErr != nil || len(items) == 0 || len(welcome) > 0 {
 		// With a welcome list configured, its exhaustion means no listed
 		// region is online: refuse rather than land the user somewhere the
 		// operator never named.
-		return regions.Region{}, regions.ErrNotFound
+		return regions.Region{}, -1, regions.ErrNotFound
 	}
-	return items[0], nil
+	return items[0], -1, nil
+}
+
+// resolveFacetNamed matches a login destination against the provisioned
+// facet names (facet 0 carries the region's own name, which the live lookup
+// already answered). The region still has to be online — facet names come
+// from the provisioned record, but only the live store can say the region is
+// actually there to log into.
+func resolveFacetNamed(ctx context.Context, store regions.Store, provisioned provisioning.Store,
+	name string) (regions.Region, int, bool) {
+	items, err := provisioned.List(ctx)
+	if err != nil {
+		return regions.Region{}, -1, false
+	}
+	trimmed := strings.TrimSpace(name)
+	for _, item := range items {
+		for facet := 1; facet < item.FacetCount(); facet++ {
+			if !strings.EqualFold(item.FacetNameAt(facet), trimmed) {
+				continue
+			}
+			live, liveErr := store.Get(ctx, item.ID)
+			if liveErr != nil {
+				return regions.Region{}, -1, false
+			}
+			return live, facet, true
+		}
+	}
+	return regions.Region{}, -1, false
 }
 
 func normalizeStart(start string) string {
