@@ -3722,6 +3722,12 @@ int main(int argc, char* argv[]) {
                         static_cast<void>(send_udp(viewer_server, route, *outgoing));
                 });
             }
+            for_each_child_circuit(every_facet, when,
+                [&](const std::string& route, const auto& child) {
+                    static_cast<void>(child);
+                    if (const auto outgoing = circuits.send(route, kill, true, when))
+                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                });
             deliver_to_embodied(session_kill_many(killed));
         }
         bool activated = false;
@@ -4801,6 +4807,10 @@ int main(int argc, char* argv[]) {
         for (const auto& [recipient_endpoint, recipient] : avatars)
             for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
                 send_parcel_overlay(route, recipient.user_id, when);
+            });
+        for_each_child_circuit(every_facet, when,
+            [&](const std::string& route, const auto& child) {
+                send_parcel_overlay(route, child.agent_id, when);
             });
     };
     // One facet's window of the macro heightmap (ADR 0036) — the whole map
@@ -8322,6 +8332,14 @@ int main(int argc, char* argv[]) {
                                                         viewer_server, route, *outgoing));
                                             });
                                     }
+                                    for_each_child_circuit(every_facet, now,
+                                        [&](const std::string& route, const auto& child) {
+                                            static_cast<void>(child);
+                                            if (const auto outgoing = circuits.send(
+                                                    route, kill, true, now))
+                                                static_cast<void>(send_udp(
+                                                    viewer_server, route, *outgoing));
+                                        });
                                     std::cout << "{\"level\":\"info\",\"message\":\"parcel objects returned\","
                                                  "\"parcel\":" << ret->local_id << ",\"removed\":"
                                               << removed_ids.size() << "}" << std::endl;
@@ -10643,6 +10661,20 @@ int main(int argc, char* argv[]) {
                                         recipient_endpoint, payload, false, now, true))
                                     static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
                             }
+                            // And to sessions watching from a neighbour (ADR
+                            // 0038), routed on the facet the emitter stands on.
+                            if (const auto emitting = avatars.find(endpoint);
+                                emitting != avatars.end()) {
+                                const auto& standing = emitting->second.controller.state().position;
+                                for_each_child_circuit(
+                                    facet_of_position(standing.x, standing.y), now,
+                                    [&](const std::string& route, const auto& child) {
+                                        if (child.session_id == emitting->second.session_id) return;
+                                        if (const auto outgoing = circuits.send(
+                                                route, payload, false, now, true))
+                                            static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                                    });
+                            }
                             // Session clients too, or a clip would appear only at
                             // the next movement change: a gesture played while
                             // standing still would never be published at all, and
@@ -11288,6 +11320,17 @@ int main(int argc, char* argv[]) {
                                     static_cast<void>(send_udp(
                                         viewer_server, recipient_endpoint, *outgoing));
                             }
+                            // Watchers in a neighbour (ADR 0038) hear the
+                            // arrival's animations too, or it glides. The
+                            // arriving session is still a child here and is
+                            // skipped as everywhere.
+                            for_each_child_circuit(arrival_facet, now,
+                                [&](const std::string& route, const auto& child) {
+                                    if (child.session_id == session_id) return;
+                                    if (const auto outgoing = circuits.send(
+                                            route, new_animation, false, now))
+                                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                                });
                             for (const auto& [animation_endpoint, retained] : avatar_animations) {
                                 if (animation_endpoint == endpoint || retained.empty()) continue;
                                 const auto existing = avatars.find(animation_endpoint);
@@ -12322,6 +12365,16 @@ int main(int argc, char* argv[]) {
                                             static_cast<void>(send_udp(
                                                 viewer_server, route, *sent));
                                     }
+                                    for_each_child_circuit(duplicate_facet, now,
+                                        [&](const std::string& route, const auto& child) {
+                                            const auto object = static_object_from_entity(
+                                                scene, *entity, child.agent_id, falcon);
+                                            if (!object) return;
+                                            if (const auto sent = circuits.send(route,
+                                                    object_update_for(route, *object), true, now, true))
+                                                static_cast<void>(send_udp(
+                                                    viewer_server, route, *sent));
+                                        });
                                     // An insert, not an update: these local_ids are new to every
                                     // session client. Same envelope kind as any other object
                                     // change, so the receiving handler has to upsert rather than
@@ -12771,6 +12824,18 @@ int main(int argc, char* argv[]) {
                                                 object_update_for(route, *object), true, now, true))
                                             static_cast<void>(send_udp(viewer_server, route, *sent));
                                     }
+                                    // A watcher next door (ADR 0038) never owns
+                                    // the new prim, so the selection flag above
+                                    // cannot apply to it.
+                                    for_each_child_circuit(added_facet, now,
+                                        [&](const std::string& route, const auto& child) {
+                                            const auto object = static_object_from_entity(
+                                                scene, *entity, child.agent_id, falcon);
+                                            if (!object) return;
+                                            if (const auto sent = circuits.send(route,
+                                                    object_update_for(route, *object), true, now, true))
+                                                static_cast<void>(send_udp(viewer_server, route, *sent));
+                                        });
                                     // And to session clients: this is the insert. The loop above
                                     // is a hand-inlined copy of broadcast_object_update's UDP
                                     // half — inlined because only rez marks the new prim selected
@@ -12944,6 +13009,13 @@ int main(int argc, char* argv[]) {
                                                 static_cast<void>(send_udp(viewer_server, route, *outgoing));
                                         });
                                 }
+                                for_each_child_circuit(every_facet, now,
+                                    [&](const std::string& route, const auto& child) {
+                                        static_cast<void>(child);
+                                        if (const auto outgoing = circuits.send(
+                                                route, kill, true, now))
+                                            static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                                    });
                             }
                             std::cout << "{\"level\":"
                                       << (persisted && inventory_items_created == processed_roots.size()
@@ -13994,6 +14066,17 @@ int main(int argc, char* argv[]) {
                                 route, payload, true, now))
                             static_cast<void>(send_udp(viewer_server, route, *outgoing));
                 }
+                // And sessions watching from a neighbour (ADR 0038), whose
+                // terrain window arrived with their backfill and would
+                // otherwise never follow an edit.
+                for_each_child_circuit(facet, now,
+                    [&](const std::string& route, const auto& child) {
+                        static_cast<void>(child);
+                        for (const auto& payload : payloads)
+                            if (const auto outgoing = circuits.send(
+                                    route, payload, true, now))
+                                static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                    });
             }
             pending_viewer_terrain_patches.clear();
             next_viewer_terrain_notice = now + std::chrono::milliseconds(250);
@@ -14760,6 +14843,32 @@ int main(int argc, char* argv[]) {
                                 entity_id, SentDynamicTransform{state, now});
                     }
                 }
+                // Sessions watching from a neighbour (ADR 0038): no interest
+                // filter — the child's recorded position goes stale the moment
+                // its avatar moves at home, and filtering on it would freeze
+                // exactly the border cases the circuit exists for. The cache
+                // still throttles unchanged transforms, keyed by the child's
+                // facet route the way viewers key by their primary.
+                for_each_child_circuit(entity_facet(*entity), now,
+                    [&](const std::string& route, const auto& child) {
+                        auto& child_cache = sent_dynamic_transforms[route];
+                        const auto previous = child_cache.find(entity_id);
+                        const bool child_heartbeat_due = previous != child_cache.end() &&
+                            now - previous->second.sent_at >= std::chrono::seconds(1);
+                        if (previous != child_cache.end() && !child_heartbeat_due &&
+                            !homeworldz::physics::body_transform_changed(
+                                previous->second.state, state))
+                            return;
+                        const auto object = static_object_from_entity(
+                            scene, *entity, child.agent_id, falcon);
+                        if (!object) return;
+                        if (const auto sent = circuits.send(route,
+                                object_update_for(route, *object), false, now, true)) {
+                            if (send_udp(viewer_server, route, *sent))
+                                child_cache.insert_or_assign(
+                                    entity_id, SentDynamicTransform{state, now});
+                        }
+                    });
             }
             for (const auto& [entity_id, plan] : departing) {
                 if (cross_object(entity_id, plan.first, plan.second, now)) {
@@ -15023,6 +15132,12 @@ int main(int argc, char* argv[]) {
                         static_cast<void>(send_udp(viewer_server, route, *outgoing));
                 });
             }
+            for_each_child_circuit(every_facet, now,
+                [&](const std::string& route, const auto& child) {
+                    static_cast<void>(child);
+                    if (const auto outgoing = circuits.send(route, payload, true, now, true))
+                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                });
             std::cout << "{\"level\":\"info\",\"message\":\"temporary object expired\",\"rootEntityId\":"
                       << root_id << ",\"parts\":" << part_ids.size() << "}" << std::endl;
         }
@@ -15086,6 +15201,12 @@ int main(int argc, char* argv[]) {
                             static_cast<void>(send_udp(viewer_server, route, *outgoing));
                     });
                 }
+                for_each_child_circuit(every_facet, now,
+                    [&](const std::string& route, const auto& child) {
+                        static_cast<void>(child);
+                        if (const auto outgoing = circuits.send(route, kill, true, now))
+                            static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                    });
                 std::cout << "{\"level\":\"info\",\"message\":\"parcel objects auto-returned\","
                              "\"count\":" << auto_removed.size() << "}" << std::endl;
             }
