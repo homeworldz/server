@@ -1,0 +1,31 @@
+{
+  // The one place in this repository that needs Wrangler. Pages deploys from
+  // git with no Wrangler and no config file; a Worker cannot, so this exists
+  // because it is required rather than by preference.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "homeworldz-client-app",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-01",
+  "observability": { "enabled": true },
+
+  // Serves the client at the management site's own hostname. The route is more
+  // specific than the hostname the Pages project answers on, so this wins for
+  // /app/* and Pages keeps serving the site. Same origin, so the client reads
+  // the token the site already stored.
+  "routes": [
+    { "pattern": "my.homeworldz.com/app/*", "zone_name": "homeworldz.com" }
+  ],
+
+  "r2_buckets": [
+    { "binding": "CLIENT_BUCKET", "bucket_name": "homeworldz-client-web" }
+  ],
+
+  "vars": {
+    // Godot's export writes stable filenames, so content changes under an
+    // unchanged name. Leave this false until uploads go to a versioned prefix,
+    // or a stale 42 MiB engine gets pinned in every browser that loaded it.
+    "CACHE_IMMUTABLE": "false",
+    // Set when the bucket holds more than this one export.
+    "KEY_PREFIX": ""
+  }
+}
