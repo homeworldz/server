@@ -3911,7 +3911,15 @@ int main(int argc, char* argv[]) {
             std::cout << "{\"level\":\"info\",\"message\":\"task scripts restored\",\"count\":"
                       << restored_scripts << "}" << std::endl;
     }
-    const auto clear_viewer_endpoint = [&](const std::string& endpoint, const std::string& session_id) {
+    // `demoting` means the avatar left across a border and this region becomes a
+    // child of its session rather than a stranger to it (ADR 0038). The avatar
+    // has genuinely gone, so everything about its presence still goes: the kill
+    // broadcast, its attachments, its physics character, its appearance. What
+    // must survive is the viewer's *connection* to this region and the seed it
+    // holds for it — see the two guarded blocks below.
+    const auto clear_viewer_endpoint = [&](const std::string& endpoint,
+                                           const std::string& session_id,
+                                           bool demoting = false) {
         // Tell the remaining viewers to remove this avatar's rezzed
         // representation. Every avatar-removal path (logout, disconnect/timeout,
         // duplicate-login replacement, and teleport/crossing source-retirement
@@ -3974,7 +3982,12 @@ int main(int argc, char* argv[]) {
         movement_animations.erase(endpoint);
         handshake_replies.erase(endpoint);
         established_events.erase(session_id);
-        session_facet_seeds.erase(session_id);
+        // A demoted session keeps its seeds. The viewer still holds the
+        // capabilities it was given for this region, and a later crossing back
+        // must repeat that seed rather than mint another: a second seed for a
+        // region the viewer already has makes Firestorm rebuild its
+        // capabilities in place, which is the crash this has caused twice.
+        if (!demoting) session_facet_seeds.erase(session_id);
         session_arrival_facets.erase(session_id);
         parcel_overlay_sent.erase(session_id);
         queued_viewer_events.erase(session_id);
@@ -4014,7 +4027,10 @@ int main(int argc, char* argv[]) {
         // carry no avatar state of their own — the erasures above covered
         // everything keyed by the primary. Found by session, since behind a
         // symmetric NAT each facet circuit has its own address.
-        if (facet_count > 1) {
+        // A demoted session keeps its facet children too. Disabling them would
+        // take the region off the viewer's minimap and out of its world, which
+        // is the whole thing a demotion exists to prevent.
+        if (facet_count > 1 && !demoting) {
             child_backfilled.erase(endpoint);
             if (const auto session_uuid = homeworldz::viewer::parse_uuid(session_id)) {
                 for (int facet = 0; facet < facet_count; ++facet) {
@@ -4237,20 +4253,13 @@ int main(int argc, char* argv[]) {
     std::unordered_map<std::string, std::string> announced_child_seeds;
     auto next_child_agent_offer = std::chrono::steady_clock::time_point{};
     auto next_child_agent_sweep = std::chrono::steady_clock::time_point{};
-    // OFF by default, and it must stay off until the departure half exists.
-    //
-    // Announcing neighbours works: the circuit comes up, the world backfills,
-    // and a crossing promotes the child (all proven live 2026-08-21). What does
-    // not exist is the reverse. Crossing *out* of a region runs
-    // `circuits.remove(endpoint)` and destroys the viewer's circuit to it — so
-    // the region behind you stops answering pings, the viewer drops it after
-    // ~100 seconds, and there is no way back. In SL a crossing demotes you to a
-    // child agent at the origin, which is precisely the mirror of the promotion
-    // this feature added and the only piece still missing.
-    //
-    // Left in the tree rather than reverted because everything except that
-    // mirror is proven; set `child_agents = on` in a region's ini to work on it.
-    const bool child_agents_enabled = configured_value("child_agents", "off") == "on";
+    // On unless a region's ini says `child_agents = off`, which exists because
+    // this was shipped once without its mirror and had to be switched off: a
+    // crossing promoted a child at the destination while the origin destroyed
+    // the circuit behind it, so the region just left stopped answering pings and
+    // the viewer dropped it after ~100 seconds with no way back. The departure
+    // path now demotes instead (see departed_avatars), and the pair is whole.
+    const bool child_agents_enabled = configured_value("child_agents", "on") != "off";
     const auto offer_one_child_agent = [&]() {
         if (!child_agents_enabled) return false;
         if (service_token.empty() || !registration || region_neighbors.empty()) return false;
@@ -13571,7 +13580,18 @@ int main(int argc, char* argv[]) {
         }
         const auto elapsed = std::chrono::duration<double>(now - previous_tick).count();
         const auto fixed_steps = simulation.advance(elapsed);
-        std::vector<std::pair<std::string, std::string>> departed_avatars;
+        struct DepartedAvatar {
+            std::string endpoint;
+            std::string session_id;
+            // A crossing, rather than a logout or a lost connection: the avatar
+            // is somewhere else on this grid and can walk back.
+            bool demote{};
+            // Where the grid says it went. Carried rather than re-derived: this
+            // is the one place that knows, and a child agent whose home region
+            // is a guess is a child agent that cannot be told from a stale one.
+            std::string home_region_id;
+        };
+        std::vector<DepartedAvatar> departed_avatars;
         // One terrain event per quarter second at most, carrying the union of
         // everything dirtied since the last one. Lossy by design and safe
         // because the revision rides along: a client that misses this entirely
@@ -13827,7 +13847,10 @@ int main(int argc, char* argv[]) {
                               << std::chrono::duration_cast<std::chrono::seconds>(
                                      now - avatar.last_pong).count()
                               << "}" << std::endl;
-                    departed_avatars.emplace_back(endpoint, session_id);
+                    // No ping reply: the viewer is gone, not next door. Nothing
+                    // to demote to, and holding a circuit open for it would keep
+                    // a dead session in the registry.
+                    departed_avatars.push_back({endpoint, session_id, false, {}});
                     continue;
                 }
                 try {
@@ -13835,7 +13858,14 @@ int main(int argc, char* argv[]) {
                         viewer_sessions->validate(session_id, now) : std::nullopt;
                     if (!session || !registration ||
                         session->destination_region_id != registration->region_id()) {
-                        departed_avatars.emplace_back(endpoint, session_id);
+                        // The grid says this session belongs to another region
+                        // now. If it named one, the avatar crossed and this
+                        // region becomes a child of it; if the session is gone
+                        // entirely, it logged out.
+                        const bool crossed = session.has_value() &&
+                            !session->destination_region_id.empty();
+                        departed_avatars.push_back({endpoint, session_id, crossed,
+                            crossed ? session->destination_region_id : std::string{}});
                         continue;
                     }
                 } catch (const std::exception& error) {
@@ -14231,11 +14261,67 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
-        for (const auto& [endpoint, session_id] : departed_avatars) {
-            clear_viewer_endpoint(endpoint, session_id);
-            circuits.remove(endpoint);
-            std::cout << "{\"level\":\"info\",\"message\":\"departed avatar retired\",\"sessionId\":"
-                      << homeworldz::api::json_string(session_id) << "}" << std::endl;
+        for (const auto& departed : departed_avatars) {
+            const auto& endpoint = departed.endpoint;
+            const auto& session_id = departed.session_id;
+            // Everything the child agent will need has to be read now: the
+            // teardown below removes the avatar, its attachments from the scene,
+            // and its appearance.
+            std::optional<homeworldz::region::ChildAgent> demoted;
+            if (departed.demote && registration) {
+                if (const auto live = avatars.find(endpoint); live != avatars.end()) {
+                    homeworldz::region::ChildAgent child;
+                    child.agent_id = live->second.user_id;
+                    child.session_id = session_id;
+                    if (const auto* who = circuits.identity(endpoint))
+                        child.circuit_code = who->circuit_code;
+                    child.home_region_id = departed.home_region_id;
+                    const auto& standing = live->second.controller.state().position;
+                    child.position = {
+                        static_cast<float>(standing.x + region_grid_x * 256),
+                        static_cast<float>(standing.y + region_grid_y * 256),
+                        static_cast<float>(standing.z)};
+                    for (const auto& [entity_id, entity] : scene.entities()) {
+                        static_cast<void>(entity_id);
+                        if (entity.attachment_point == 0 ||
+                            entity.owner_id != live->second.user_id ||
+                            entity.attachment_item_id.empty())
+                            continue;
+                        child.worn.push_back({entity.attachment_item_id, entity.attachment_point});
+                    }
+                    if (const auto dressed = avatar_appearances.find(endpoint);
+                        dressed != avatar_appearances.end()) {
+                        child.texture_entry = dressed->second.texture_entry;
+                        child.visual_params = dressed->second.visual_params;
+                        child.cof_version = dressed->second.serial;
+                        child.appearance_version = dressed->second.appearance_version;
+                    }
+                    // The seed the viewer already holds for this region, so a
+                    // later announcement or crossing repeats it rather than
+                    // inventing a second one. establish() keeps the first seed
+                    // it is given, which is what makes this stick.
+                    if (const auto seeds = session_facet_seeds.find(session_id);
+                        seeds != session_facet_seeds.end() && !seeds->second.empty())
+                        child.seed = seeds->second.begin()->second;
+                    if (child.seed.empty())
+                        child.seed = region_public_endpoint + "/caps/seed/" + session_id +
+                            "/0000000c-a9e7-4000-8000-000000000000";
+                    demoted = std::move(child);
+                }
+            }
+            clear_viewer_endpoint(endpoint, session_id, demoted.has_value());
+            if (demoted) {
+                const auto& child = child_agents.establish(*demoted, now);
+                std::cout << "{\"level\":\"info\",\"message\":\"departed avatar demoted to child\""
+                             ",\"sessionId\":" << homeworldz::api::json_string(session_id)
+                          << ",\"worn\":" << child.worn.size()
+                          << ",\"appearance\":" << (child.has_appearance() ? "true" : "false")
+                          << ",\"children\":" << child_agents.size(now) << "}" << std::endl;
+            } else {
+                circuits.remove(endpoint);
+                std::cout << "{\"level\":\"info\",\"message\":\"departed avatar retired\",\"sessionId\":"
+                          << homeworldz::api::json_string(session_id) << "}" << std::endl;
+            }
         }
         for (const auto& participant_key : crossing_session_avatars)
             retire_session_avatar(participant_key);
