@@ -1,1 +1,8 @@
+# The Homeworldz client is served from this origin under /app/ so it shares the
+# management site's localStorage and needs no sign-in handoff (operator,
+# 2026-08-22). This rule must stay ABOVE the catch-all: first match wins, and
+# without it any /app/ path that is not a real file falls through to the
+# management SPA's index.html, whose router has no fallback route — a blank
+# page with a 200 and nothing in the console to explain it.
+/app/* /app/index.html 200
 /* /index.html 200
