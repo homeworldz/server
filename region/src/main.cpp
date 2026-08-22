@@ -964,6 +964,29 @@ homeworldz::viewer::ObjectPhysicsProperties physics_properties_of(
             entity.physics_gravity_multiplier};
 }
 
+// Whether a viewer's edit may address this entity at all.
+//
+// An entity with no object id is not a rezzed object. An avatar's own scene
+// entity is the ordinary case, and it persists after its owner leaves — and it
+// passes every ownership and permission check an edit makes, because the avatar
+// really does own it.
+//
+// Local ids are numbered per region, so an edit addressed to the wrong region
+// resolves to whatever holds that number *there*. Dragging a prim over a border
+// does exactly that: the viewer decides the object is next door and edits it by
+// number. On 2026-08-22 one such stray update reached a region whose entity of
+// that number was an avatar's. Moving one rewrites where that avatar next
+// appears, and nothing says so until somebody logs in somewhere odd.
+//
+// Refused for every edit, not only the one that was caught: the id is resolved
+// the same way by all of them.
+bool entity_is_editable_object(const homeworldz::scene::Entity& entity) {
+    if (!entity.object_id.empty()) return true;
+    std::cerr << "{\"level\":\"warning\",\"message\":\"edit refused for an entity that is not "
+                 "an object\",\"localId\":" << entity.id << "}" << std::endl;
+    return false;
+}
+
 std::optional<homeworldz::viewer::StaticObject> static_object_from_entity(
     const homeworldz::scene::Scene& scene, const homeworldz::scene::Entity& entity,
     std::string_view recipient_id, const homeworldz::script::FalconRuntime& falcon) {
@@ -11688,7 +11711,7 @@ int main(int argc, char* argv[]) {
                             const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
                             for (auto& update : transform_update->objects) {
                                 auto* entity = scene.find(update.local_id);
-                                if (!entity) continue;
+                                if (!entity || !entity_is_editable_object(*entity)) continue;
                                 requested_entities.insert(entity->id);
                                 if (entity->owner_id != user_id ||
                                     (entity->owner_permissions & homeworldz::scene::permission_modify) == 0)
@@ -11848,7 +11871,7 @@ int main(int argc, char* argv[]) {
                             const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
                             for (const auto& update : object_name->objects) {
                                 auto* entity = scene.find(update.local_id);
-                                if (!entity) continue;
+                                if (!entity || !entity_is_editable_object(*entity)) continue;
                                 requested_entities.insert(entity->id);
                                 if (entity->owner_id != user_id ||
                                     (entity->owner_permissions & homeworldz::scene::permission_modify) == 0)
@@ -11897,7 +11920,7 @@ int main(int argc, char* argv[]) {
                             const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
                             for (const auto& update : object_description->objects) {
                                 auto* entity = scene.find(update.local_id);
-                                if (!entity) continue;
+                                if (!entity || !entity_is_editable_object(*entity)) continue;
                                 requested_entities.insert(entity->id);
                                 if (entity->owner_id != user_id ||
                                     (entity->owner_permissions & homeworldz::scene::permission_modify) == 0)
@@ -11954,7 +11977,7 @@ int main(int argc, char* argv[]) {
                             if (!object_permissions->override_permissions) {
                                 for (const auto& update : object_permissions->objects) {
                                     auto* entity = scene.find(update.local_id);
-                                    if (!entity) continue;
+                                    if (!entity || !entity_is_editable_object(*entity)) continue;
                                     requested_entities.insert(entity->id);
                                     const PermissionState before{
                                         entity->owner_permissions, entity->group_permissions,
@@ -12151,7 +12174,7 @@ int main(int argc, char* argv[]) {
                             const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
                             for (const auto& update : object_material->objects) {
                                 auto* entity = scene.find(update.local_id);
-                                if (!entity) continue;
+                                if (!entity || !entity_is_editable_object(*entity)) continue;
                                 requested_entities.insert(entity->id);
                                 if (update.material > last_supported_material ||
                                     entity->owner_id != user_id ||
@@ -12251,7 +12274,7 @@ int main(int argc, char* argv[]) {
                             };
                             for (const auto& update : object_shape->objects) {
                                 auto* entity = scene.find(update.local_id);
-                                if (!entity) continue;
+                                if (!entity || !entity_is_editable_object(*entity)) continue;
                                 requested_entities.insert(entity->id);
                                 // Same well-formedness gate as ObjectAdd: a recognized
                                 // path curve and profile curve keep every basic shape
@@ -12307,7 +12330,7 @@ int main(int argc, char* argv[]) {
                             const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
                             for (const auto& update : object_image->objects) {
                                 auto* entity = scene.find(update.local_id);
-                                if (!entity) continue;
+                                if (!entity || !entity_is_editable_object(*entity)) continue;
                                 requested_entities.insert(entity->id);
                                 auto texture_entry = update.texture_entry;
                                 homeworldz::viewer::normalize_primitive_texture_entry(
