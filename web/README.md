@@ -38,6 +38,15 @@ arrive as `application/wasm` or streaming instantiation refuses it, and a
 stale cached module is indistinguishable from an unchanged build failure, so
 the proxy forces `Cache-Control: no-store` on everything it returns.
 
+The client's *deployed* copy is staged into `public/app/` by
+`scripts/stage-client-web.mjs`, which reads the client repository's
+`build-web/` (read-only — it is a separate project) and refuses any file over
+Cloudflare Pages' 25 MiB per-asset limit rather than letting the deploy be
+rejected. Vite copies `public/` verbatim, so a staged export lands at
+`dist/app/` where `_redirects` already routes it. It is deliberately **not** a
+`prebuild` hook: the Pages build has no client repository beside it, and a
+build that required one would fail there.
+
 There is no test suite; a successful `pnpm build` is the minimum validation,
 plus a manual pass over affected routes.
 
