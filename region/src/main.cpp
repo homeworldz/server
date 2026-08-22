@@ -4281,7 +4281,14 @@ int main(int argc, char* argv[]) {
                 if (!neighbor.online || neighbor.public_endpoint.empty() ||
                     neighbor.id.empty() || neighbor.id == registration->region_id())
                     continue;
-                const auto pair_key = live.session_id + '|' + neighbor.id;
+                // Keyed by facet, not by region. A rectangular neighbour
+                // presents as several square facets and each is its own region
+                // to the viewer, with its own handle and port; keyed by region
+                // id alone the second facet looked already-offered and was
+                // silently skipped, which is why a diagonal neighbour never
+                // appeared while the one beside it did.
+                const auto pair_key = live.session_id + '|' + neighbor.id + '|' +
+                    std::to_string(neighbor.grid_x) + ',' + std::to_string(neighbor.grid_y);
                 if (offered_child_agents.contains(pair_key)) continue;
                 homeworldz::region::ChildAgent child;
                 child.agent_id = homeworldz::viewer::format_uuid(*agent);
@@ -4364,7 +4371,9 @@ int main(int argc, char* argv[]) {
                         child.agent_id,
                         simulator_endpoint(neighbor.public_endpoint, neighbor.viewer_port),
                         seed}));
-                announced_child_seeds[live.session_id + '|' + neighbor.id] = seed;
+                announced_child_seeds[live.session_id + '|' + neighbor.id + '|' +
+                    std::to_string(neighbor.grid_x) + ',' +
+                    std::to_string(neighbor.grid_y)] = seed;
                 std::cout << "{\"level\":\"info\",\"message\":\"neighbor announced to viewer\""
                              ",\"neighbor\":" << homeworldz::api::json_string(neighbor.name)
                           << ",\"direction\":" << homeworldz::api::json_string(neighbor.direction)
@@ -11111,7 +11120,21 @@ int main(int argc, char* argv[]) {
                             }
                             auto movement_complete =
                                 homeworldz::viewer::encode_agent_movement_complete(response);
-                            const bool arrival_seed_served = !arrival ||
+                            // Was this session already a child here (ADR 0038)?
+                            // Consumed either way: it is arriving, so it is not
+                            // a child of this region any more, and leaving the
+                            // record would let a second arrival believe the
+                            // viewer still holds a world it may not.
+                            const auto promoted = child_agents.promote(
+                                session_id, std::chrono::steady_clock::now());
+                            // The gate waits for the viewer to fetch this
+                            // arrival's seed capability. A promoted child
+                            // fetched this region's capabilities when it was
+                            // announced and will never fetch them again, so the
+                            // gate has nothing to wait for and times out after
+                            // 500ms — which is most of what made a crossing feel
+                            // rough (measured 2026-08-22).
+                            const bool arrival_seed_served = !arrival || promoted.has_value() ||
                                 capability_arrival_gate.consume_seed(session_id, arrival->id);
                             if (arrival_seed_served) {
                                 if (const auto outgoing = circuits.send(
@@ -11247,9 +11270,24 @@ int main(int argc, char* argv[]) {
                             // queued with it and goes out when it does —
                             // sending it now would describe this region to a
                             // viewer that still believes it is in the last one.
-                            if (arrival_seed_served)
+                            //
+                            // And a circuit that was a child already has this
+                            // facet's world: it was backfilled when the child
+                            // was established, and re-sending it means every
+                            // object arrives twice, which is the rest of what
+                            // made a crossing rough. The static world does not
+                            // change between being announced and being walked
+                            // into; the avatar and its attachments are new here
+                            // and are sent by the paths above regardless.
+                            const bool world_already_sent =
+                                promoted.has_value() && child_backfilled.contains(endpoint);
+                            if (arrival_seed_served && !world_already_sent)
                                 deliver_arrival_world(
                                     endpoint, arrival_facet, live_avatar.user_id, now);
+                            if (world_already_sent)
+                                std::cout << "{\"level\":\"info\",\"message\":\"arrival promoted a child, "
+                                             "world already present\",\"facet\":" << arrival_facet
+                                          << ",\"worn\":" << promoted->worn.size() << "}" << std::endl;
                             // The arrival greeting, privately, once the world
                             // has been backfilled. The name comes from the
                             // account the grid knows, in its legacy two-part
@@ -14076,8 +14114,12 @@ int main(int argc, char* argv[]) {
                         // has. A second EnableSimulator and a fresh seed for a
                         // region already established is what crashed the viewer
                         // on the way back (2026-08-21).
+                        // The facet being crossed into, for the reason the
+                        // offer keys by facet: its seed is not its sibling's.
                         const auto announced = announced_child_seeds.find(
-                            session_id + '|' + crossing->destination.id);
+                            session_id + '|' + crossing->destination.id + '|' +
+                            std::to_string(crossing->destination.grid_x) + ',' +
+                            std::to_string(crossing->destination.grid_y));
                         const bool promoting = announced != announced_child_seeds.end();
                         if (!promoting)
                             enqueue_viewer_event(session_id,
