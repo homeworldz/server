@@ -189,7 +189,7 @@ be slow, restarting, or gone.
 
 - [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it.
 - [ ] Serve objects to a viewer whose avatar stands in a neighbouring region, interest-filtered by that viewer's camera and draw distance rather than by which region it belongs to.
-- [ ] Serve avatars the same way, so a resident is visible to people standing across the line and their movement is continuous rather than appearing only on arrival.
+- [ ] Serve avatars the same way, so a resident is visible to people standing across the line and their movement is continuous rather than appearing only on arrival. *Built 2026-08-22 — movement, animations, arrivals, departures, and appearance changes all reach standing child circuits; awaiting live proof.*
 - [ ] Say out loud when something leaves a neighbouring viewer's interest, since a viewer keeps what it was told about and a silent departure strands an object at a stale position forever.
 - [ ] Reduce a border crossing to promoting a circuit the viewer already holds, as an internal facet line already is, and confirm in Firestorm that the world across the line is drawn before the crossing rather than after it.
 - [ ] Define what a viewer is shown when a neighbour is unreachable, restarting, or newly online, so the border degrades to empty rather than to a stall.
