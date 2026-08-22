@@ -566,6 +566,17 @@ void ChildAgentRegistry::remove(std::string_view session_id) {
     entries_.erase(std::string(session_id));
 }
 
+std::vector<ChildAgent> ChildAgentRegistry::live(std::chrono::steady_clock::time_point now) {
+    purge(now);
+    std::vector<ChildAgent> children;
+    children.reserve(entries_.size());
+    for (const auto& [session_id, entry] : entries_) {
+        static_cast<void>(session_id);
+        children.push_back(entry.agent);
+    }
+    return children;
+}
+
 std::size_t ChildAgentRegistry::size(std::chrono::steady_clock::time_point now) {
     purge(now);
     return entries_.size();

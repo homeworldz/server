@@ -3457,6 +3457,27 @@ int main(int argc, char* argv[]) {
                     true, when, true))
                 static_cast<void>(send_udp(viewer_server, route, *sent));
         }
+        // And every child circuit (ADR 0038). This region owns the object, so
+        // this region is the one that has to say it moved — including to a
+        // viewer whose avatar is in a neighbour, which is the whole point of it
+        // holding a circuit here. Without this a child got one backfill and then
+        // never heard of the place again, so anything that moved after the
+        // circuit came up stayed frozen where it was: a snapshot, not a view.
+        //
+        // A child's session has no avatar here by definition, so this cannot
+        // double-send to anyone the loop above already reached.
+        for (const auto& child : child_agents.live(when)) {
+            const auto session_uuid = homeworldz::viewer::parse_uuid(child.session_id);
+            if (!session_uuid) continue;
+            const auto route = circuits.session_endpoint_for_facet(*session_uuid, facet);
+            if (!route) continue;
+            const auto object =
+                static_object_from_entity(scene, entity, child.agent_id, falcon);
+            if (!object) continue;
+            if (const auto sent = circuits.send(
+                    *route, object_update_for(*route, *object), true, when, true))
+                static_cast<void>(send_udp(viewer_server, *route, *sent));
+        }
     };
     const auto broadcast_object_update = [&](const homeworldz::scene::Entity& entity,
                                              std::chrono::steady_clock::time_point when) {

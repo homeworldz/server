@@ -227,6 +227,10 @@ public:
                                       std::chrono::steady_clock::time_point now);
     void remove(std::string_view session_id);
     std::size_t size(std::chrono::steady_clock::time_point now);
+    // Every live child. The region that owns an object is the region that must
+    // say it moved, and that includes saying so to viewers whose avatar is
+    // somewhere else — which is what a child circuit is for.
+    std::vector<ChildAgent> live(std::chrono::steady_clock::time_point now);
 
 private:
     struct Entry {
