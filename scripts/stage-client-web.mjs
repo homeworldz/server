@@ -27,6 +27,29 @@ const target = join(root, "web", "public", "app");
 const PAGES_MAX_ASSET = 25 * 1024 * 1024;
 const MiB = (bytes) => (bytes / 1024 / 1024).toFixed(1) + " MiB";
 
+// Why an oversized asset here is not something the client can fix by building
+// differently, recorded because the obvious guess is wrong and was guessed
+// once already: index.side.wasm is Godot's ENGINE, not the extension. It
+// carries no debug sections and matches the engine in the official release
+// template byte for byte, so there is nothing to strip. A plain Godot 4.7.1
+// nothreads export is 37 MiB, meaning Pages cannot host ANY Godot web export
+// as-is, and Workers static assets share the same 25 MiB limit. R2 does not
+// (5 TiB per object), so serving /app from R2 behind a Worker route on THIS
+// hostname moves only the storage and leaves the origin — and so the shared
+// token — intact. A custom engine template with unused modules disabled is
+// the other route; the shipped engine contains NavigationServer, OpenXR and
+// ufbx, none of which a client needs.
+const OVERSIZED_ADVICE = [
+  "If that is index.side.wasm, it is Godot's ENGINE, not the extension, and",
+  "there is nothing to strip: no debug sections, and byte-identical to the",
+  "engine in the official release template. A plain Godot 4.7.1 nothreads",
+  "export is 37 MiB, so Pages cannot host ANY Godot web export as-is, and",
+  "Workers static assets share the same 25 MiB limit. R2 does not (5 TiB per",
+  "object): serving /app from R2 behind a Worker route on THIS hostname moves",
+  "only the storage, leaving the origin and the shared token intact. A custom",
+  "engine template with unused modules disabled is the other route.",
+];
+
 if (!existsSync(source)) {
   console.error(`[stage-client-web] no client export at ${source}`);
   console.error("[stage-client-web] build it in the client repository first, or pass a path.");
@@ -48,8 +71,8 @@ if (files.length === 0) {
 }
 
 const oversized = files
-  .map((f) => ({ file: f, size: statSync(f).size }))
-  .filter((f) => f.size > PAGES_MAX_ASSET)
+  .map((file) => ({ file, size: statSync(file).size }))
+  .filter((entry) => entry.size > PAGES_MAX_ASSET)
   .sort((a, b) => b.size - a.size);
 
 if (oversized.length > 0) {
@@ -60,14 +83,7 @@ if (oversized.length > 0) {
   for (const { file, size } of oversized) {
     console.error(`  ${MiB(size).padStart(10)}  ${relative(source, file)}`);
   }
-  console.error(
-    "[stage-client-web] A wasm module this size is usually unstripped debug info.\n" +
-      "[stage-client-web] Strip it in the client's export (wasm-opt --strip-debug\n" +
-      "[stage-client-web] --strip-dwarf, or a release build without -g) rather than\n" +
-      "[stage-client-web] splitting it across origins — cross-origin wasm needs CORS\n" +
-      "[stage-client-web] and the correct MIME type, and loses the same-origin property\n" +
-      "[stage-client-web] this arrangement exists for.",
-  );
+  for (const line of OVERSIZED_ADVICE) console.error(`[stage-client-web] ${line}`);
   process.exit(2);
 }
 
