@@ -2317,9 +2317,19 @@ int main(int argc, char* argv[]) {
             }
         }
         CachedOutfitBake cached;
-        // appearance_version 1 marks this as a server-side bake so the viewer
-        // uses the baked textures directly instead of compositing locally.
-        cached.visual_params = homeworldz::viewer::build_visual_params(baked->worn, 1);
+        // Legacy (v0) on purpose, though this is a server-side bake. This
+        // region advertises no RegionProtocols server-bake bit, so a viewer
+        // told v1 tries the AgentAppearanceServiceURL it was never given,
+        // fails all five slots, latches the avatar as server-baked, and then
+        // discards every later legacy message for it as stale — a grey
+        // statue (Spicy watching Jim, 2026-08-22; the bot-as-cloud report has
+        // the same shape). Under v0 a watcher fetches the baked ids as
+        // ordinary textures, which is the path a viewer's own uploaded bakes
+        // already take, and these assets are registered in the same store.
+        // When the bit and its UpdateAvatarAppearance capability ship (ADR
+        // 0029's deferred half), this becomes 1 with them — the byte and
+        // visual param 11000 must move together.
+        cached.visual_params = homeworldz::viewer::build_visual_params(baked->worn, 0);
         cached.bake = std::move(*baked);
         // A mask the bake could not fetch means a body region the wearer asked
         // to hide is still showing. The bake otherwise succeeds, so without
@@ -5694,7 +5704,10 @@ int main(int argc, char* argv[]) {
                                 reseeded.serial = next_appearance_version(requested_user);
                                 reseeded.texture_entry = bake->bake.texture_entry;
                                 reseeded.visual_params = bake->visual_params;
-                                reseeded.appearance_version = 1;
+                                // v0 to match the region's advertised protocol
+                                // — see the bake cache for why v1 greys the
+                                // avatar for every watcher.
+                                reseeded.appearance_version = 0;
                                 avatar_appearances.insert_or_assign(key, reseeded);
                                 if (const auto geometry =
                                         homeworldz::viewer::avatar_geometry(reseeded))
@@ -11420,7 +11433,10 @@ int main(int argc, char* argv[]) {
                                     seeded.serial = next_appearance_version(agent_id);
                                     seeded.texture_entry = bake->bake.texture_entry;
                                     seeded.visual_params = bake->visual_params;
-                                    seeded.appearance_version = 1;
+                                    // v0 to match the region's advertised
+                                    // protocol — see the bake cache for why v1
+                                    // greys the avatar for every watcher.
+                                    seeded.appearance_version = 0;
                                     avatar_appearances.insert_or_assign(endpoint, seeded);
                                     server_seeded_appearances.insert(endpoint);
                                     // LMV never sends AgentSetAppearance, so derive
@@ -11449,7 +11465,7 @@ int main(int argc, char* argv[]) {
                                         homeworldz::viewer::encode_avatar_appearance({
                                             identity->agent_id, seeded.serial,
                                             bake->bake.texture_entry,
-                                            bake->visual_params, {}, std::uint8_t{1}});
+                                            bake->visual_params, {}, seeded.appearance_version});
                                     // Send the seeded bake only to OTHER
                                     // avatars, never back to the joiner: a real
                                     // baker (e.g. Firestorm) would otherwise apply
@@ -13703,7 +13719,10 @@ int main(int argc, char* argv[]) {
                             seeded.serial = next_appearance_version(inbound.user_id);
                             seeded.texture_entry = bake->bake.texture_entry;
                             seeded.visual_params = bake->visual_params;
-                            seeded.appearance_version = 1;
+                            // v0 to match the region's advertised protocol —
+                            // see the bake cache for why v1 greys the avatar
+                            // for every watcher.
+                            seeded.appearance_version = 0;
                             avatar_appearances.insert_or_assign(participant_key, seeded);
                             server_seeded_appearances.insert(participant_key);
                             const auto geometry = homeworldz::viewer::avatar_geometry(seeded);
