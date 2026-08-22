@@ -30,7 +30,9 @@ Runtime configuration uses ordinary INI files in `config/`. Start from the
 matching files in `config/examples/`: `grid.ini` controls grid server and client
 settings, `db.ini` contains central database access, and `region.ini` controls
 one region instance. Files directly under `config/` are ignored by Git because
-they may contain credentials. Environment variables override INI values.
+they may contain credentials. INI files are the only source of configuration:
+environment variables are deliberately not consulted, for the grid as well as
+the region ([ADR 0005](docs/adr/0005-external-postgres.md)).
 
 After installing PostgreSQL, grid operators bootstrap the application role,
 database, all pending migrations, and ignored `config/db.ini`. The cross-platform Go

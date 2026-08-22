@@ -146,8 +146,16 @@ func LoadGrid(directory string) (Grid, error) {
 	website := parsed.Section("website")
 	result.WebsiteAddress = website.Key("address").MustString("127.0.0.1:42010")
 	result.WebsitePublicURL = strings.TrimRight(strings.TrimSpace(website.Key("public_url").String()), "/")
+	// The management site's own origin belongs in the default, not only in a
+	// deployed grid.ini. It is the browser client this API exists to serve —
+	// every page it renders is a /v1 call — and a missing origin is a 403
+	// origin_forbidden on all of them, so a fresh deployment from these
+	// defaults would answer nothing. The live grid has carried the `my.`
+	// origin since before this default did, which is exactly the shape ADR
+	// 0034 refused for reset_url: correct in the deployed file, wrong in the
+	// code, and invisible because nothing failed.
 	result.WebsiteAllowedOrigins = splitList(website.Key("allowed_origins").
-		MustString("https://homeworldz.com,https://www.homeworldz.com"))
+		MustString("https://homeworldz.com,https://www.homeworldz.com,https://my.homeworldz.com"))
 	result.WebsiteJWTSecret = website.Key("jwt_secret").String()
 	result.WebsiteJWTIssuer = website.Key("jwt_issuer").MustString("https://api.homeworldz.com")
 	result.WebsiteJWTAudience = website.Key("jwt_audience").MustString("https://homeworldz.com")
