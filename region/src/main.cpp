@@ -5709,7 +5709,7 @@ int main(int argc, char* argv[]) {
                                 // must not be handed a server bake of its own.
                                 std::size_t told = 0;
                                 const auto sent_at = std::chrono::steady_clock::now();
-                                if (!encoded.empty())
+                                if (!encoded.empty()) {
                                     for (const auto& [recipient_endpoint, recipient] : avatars) {
                                         static_cast<void>(recipient);
                                         if (recipient_endpoint == key) continue;
@@ -5720,6 +5720,26 @@ int main(int argc, char* argv[]) {
                                             ++told;
                                         }
                                     }
+                                    // Sessions watching from a neighbour (ADR
+                                    // 0038) render this wearer too, and they
+                                    // never bake for themselves, so the
+                                    // wearer-only exclusion above cannot apply.
+                                    if (const auto wearer = avatars.find(key);
+                                        wearer != avatars.end()) {
+                                        const auto& standing = wearer->second.controller.state().position;
+                                        for_each_child_circuit(
+                                            facet_of_position(standing.x, standing.y), sent_at,
+                                            [&](const std::string& route, const auto& child) {
+                                                if (child.session_id == wearer->second.session_id) return;
+                                                if (const auto outgoing = circuits.send(
+                                                        route, encoded, true, sent_at, true)) {
+                                                    static_cast<void>(send_udp(
+                                                        viewer_server, route, *outgoing));
+                                                    ++told;
+                                                }
+                                            });
+                                    }
+                                }
                                 std::cout << "{\"level\":\"info\",\"message\":\"appearance refreshed\","
                                              "\"userId\":" << homeworldz::api::json_string(requested_user)
                                           << ",\"serial\":" << reseeded.serial << ",\"slots\":"
@@ -10619,6 +10639,25 @@ int main(int argc, char* argv[]) {
                                             ++recipients;
                                     }
                                 }
+                                // Sessions watching from a neighbour (ADR
+                                // 0038): an outfit change mid-session must
+                                // reach an established child agent too, or the
+                                // watcher keeps rendering whatever outfit its
+                                // backfill carried.
+                                if (const auto wearer = avatars.find(endpoint);
+                                    wearer != avatars.end()) {
+                                    const auto& standing = wearer->second.controller.state().position;
+                                    for_each_child_circuit(
+                                        facet_of_position(standing.x, standing.y), now,
+                                        [&](const std::string& route, const auto& child) {
+                                            if (child.session_id == wearer->second.session_id) return;
+                                            if (const auto outgoing = circuits.send(
+                                                    route, remote_appearance, true, now, true)) {
+                                                if (send_udp(viewer_server, route, *outgoing))
+                                                    ++recipients;
+                                            }
+                                        });
+                                }
                             }
                             std::cout << "{\"level\":\"info\",\"message\":\"avatar appearance distributed\",\"bytes\":"
                                       << remote_appearance.size() << ",\"recipients\":" << recipients << "}"
@@ -11422,7 +11461,7 @@ int main(int argc, char* argv[]) {
                                     // version anyway. The handshake is the fix
                                     // (encode_region_handshake); seeding the
                                     // arriver was not.
-                                    if (!seeded_appearance.empty())
+                                    if (!seeded_appearance.empty()) {
                                         for (const auto& [recipient_endpoint, recipient] : avatars) {
                                             static_cast<void>(recipient);
                                             if (recipient_endpoint == endpoint) continue;
@@ -11432,6 +11471,19 @@ int main(int argc, char* argv[]) {
                                                 static_cast<void>(send_udp(
                                                     viewer_server, recipient_endpoint, *outgoing));
                                         }
+                                        // And to sessions watching from a
+                                        // neighbour (ADR 0038); the arriving
+                                        // session is still a child here and is
+                                        // spared like the wearer above.
+                                        for_each_child_circuit(arrival_facet, now,
+                                            [&](const std::string& route, const auto& child) {
+                                                if (child.session_id == session_id) return;
+                                                if (const auto outgoing = circuits.send(
+                                                        route, seeded_appearance, true, now, true))
+                                                    static_cast<void>(send_udp(
+                                                        viewer_server, route, *outgoing));
+                                            });
+                                    }
                                     std::cout << "{\"level\":\"info\",\"message\":\"server "
                                                  "appearance seeded on join\",\"slots\":"
                                               << bake->bake.assets.size() << ",\"cofVersion\":"
