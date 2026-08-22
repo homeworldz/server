@@ -11749,6 +11749,26 @@ int main(int argc, char* argv[]) {
                                     return std::all_of(value.begin(), value.end(),
                                         [](float component) { return std::isfinite(component); });
                                 };
+                                // Off the far side of the region is not an
+                                // invalid edit, it is a crossing. Dragging an
+                                // object over a border is ordinary on every
+                                // grid, and refusing it here left the viewer
+                                // predicting a move the region never made — so
+                                // it looked as though it worked, and reverted on
+                                // the next relog (ADR 0037, revised).
+                                //
+                                // Height and finiteness are still limits, and a
+                                // child prim's offset is still bounded: only a
+                                // root's horizontal position can name somewhere
+                                // that is another region's to accept.
+                                const bool leaves_region = update.position &&
+                                    entity->parent_id == 0 && finite_vector(*update.position) &&
+                                    (*update.position)[2] >= -64.0F &&
+                                    (*update.position)[2] <= 4096.0F &&
+                                    ((*update.position)[0] < 0.0F ||
+                                     (*update.position)[0] > static_cast<float>(region_size_x) ||
+                                     (*update.position)[1] < 0.0F ||
+                                     (*update.position)[1] > static_cast<float>(region_size_y));
                                 const bool valid_position = !update.position ||
                                     (finite_vector(*update.position) &&
                                      (entity->parent_id != 0
@@ -11761,6 +11781,52 @@ int main(int argc, char* argv[]) {
                                             (*update.position)[1] >= 0.0F &&
                                             (*update.position)[1] <= static_cast<float>(region_size_y) &&
                                             (*update.position)[2] >= -64.0F && (*update.position)[2] <= 4096.0F)));
+                                if (leaves_region) {
+                                    // Only a whole object crosses. A worn thing
+                                    // travels with its wearer and a temporary
+                                    // one is not worth a protocol (ADR 0037).
+                                    if (entity->attachment_point != 0 || entity->temporary) continue;
+                                    const homeworldz::scene::Vector3 requested{
+                                        (*update.position)[0], (*update.position)[1],
+                                        (*update.position)[2]};
+                                    const auto crossing = homeworldz::region::plan_border_crossing(
+                                        region_grid_x, region_grid_y, region_size_x, region_size_y,
+                                        {requested.x, requested.y, requested.z}, region_neighbors);
+                                    if (!crossing) {
+                                        // Nothing owns the far side, so the edit
+                                        // really is out of bounds. Say the
+                                        // object's real position, or the viewer
+                                        // keeps the one it invented.
+                                        broadcast_object_update(*entity, now);
+                                        continue;
+                                    }
+                                    // Dragged, so it is not moving of its own
+                                    // accord: the envelope carries where it is
+                                    // and no motion, rather than inventing some.
+                                    homeworldz::physics::BodyState dragged;
+                                    dragged.entity_id = entity->id;
+                                    dragged.position = requested;
+                                    // Rotation is left at identity on purpose:
+                                    // the envelope's motion describes how the
+                                    // object is travelling, and a dragged object
+                                    // is not. Its actual orientation crosses in
+                                    // the linkset asset, like every other
+                                    // property of it.
+                                    const auto crossed_id = entity->id;
+                                    if (cross_object(crossed_id, *crossing, dragged, now)) {
+                                        std::cout << "{\"level\":\"info\",\"message\":\"object crossed by "
+                                                     "an edit\",\"destinationRegionId\":"
+                                                  << homeworldz::api::json_string(crossing->destination.id)
+                                                  << ",\"localId\":" << update.local_id << "}" << std::endl;
+                                        continue;
+                                    }
+                                    // The neighbour would not take it. It is
+                                    // still here, and the viewer must be told
+                                    // so rather than left holding the move.
+                                    if (auto* still_here = scene.find(crossed_id))
+                                        broadcast_object_update(*still_here, now);
+                                    continue;
+                                }
                                 const bool valid_rotation = !update.rotation ||
                                     (finite_vector(*update.rotation) &&
                                      std::all_of(update.rotation->begin(), update.rotation->end(),

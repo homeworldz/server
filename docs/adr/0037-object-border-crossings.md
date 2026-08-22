@@ -5,6 +5,20 @@ Status: Accepted
 This ADR records **current expectation and intent**, not a commitment, and is
 expected to be revised as evidence arrives.
 
+**Revision (2026-08-22).** A non-physical object dragged over a border now
+crosses instead of being refused. The refusal was not a neutral simplification:
+the viewer predicts the move it asked for, so a silent refusal *looked* like a
+success and reverted at the next relog — and once the object was believed to be
+next door, the viewer addressed its edits there, where local ids mean something
+else entirely. One such stray edit resolved to an avatar's own scene entity,
+which every ownership and permission check accepts. Edits are now refused for
+anything that is not a rezzed object, and a root leaving the extent is handed to
+the neighbour that owns the far side by the same two-phase crossing a physical
+object uses.
+
+Not yet enforced: parcel and region entry permission, which the table below now
+names as the one legitimate refusal.
+
 **Implementation state (2026-08-20).** The disposition rules below are in the
 region, and so is the crossing itself: the source detects a physical root
 outside the extent, serializes it as a take-format linkset with a motion
@@ -46,7 +60,7 @@ whichever one the containment clamp happens to produce.
 | Child prim | Never alone; travels as part of its root's linkset |
 | Attachment | Never alone; travels with its wearer, and is rebuilt at the destination from the grid's worn list |
 | Temporary-on-rez object | Contained. Its remaining lifetime is not a thing the crossing carries, and sixty seconds of borrowed existence is not worth a protocol |
-| Non-physical object | Cannot move itself; an edit that would push it over the line is refused where the edit is validated |
+| Non-physical object, dragged over the line | Crossed, by the same handoff a physical one uses. Revised 2026-08-22: this row said the edit was refused where it was validated, and that was wrong — editing an object across a border is ordinary on every grid, and the only thing entitled to refuse it is a parcel or region that disallows entry |
 | Anything, no eligible neighbor | Contained: origin clamped to the extent, outward velocity cancelled |
 
 The attachment row is the one that looks like a gap and is not. A worn object
