@@ -58,6 +58,13 @@ and `immutable` would pin a stale engine in every browser that had loaded it.
 Revalidation costs one small conditional request; the 42 MiB body still comes
 from cache on a 304.
 
+Measured on the live deployment: **Cloudflare strips the ETag from responses
+it compresses**, so `text/html` and `text/javascript` arrive with no validator
+and refetch in full on every load (`index.js` is 2.7 MB). `application/wasm` is
+not compressed, keeps its ETag, and answers `304` with **zero bytes**
+transferred — so the 42 MiB engine, the one that matters, revalidates for free.
+A cold fetch of it measured 1.8 s.
+
 Set it to `true` only once uploads go to a versioned prefix via `KEY_PREFIX`,
 where a filename genuinely cannot change meaning. That is the real speed win
 and worth doing before any public traffic.
