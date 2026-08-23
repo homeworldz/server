@@ -3392,11 +3392,29 @@ int main(int argc, char* argv[]) {
                                           std::string_view reason) {
         if (!viewer_grid || !registration || user_id.empty()) return;
         const auto& state = controller.state();
-        const bool recorded = viewer_grid->update_last_location(
+        // Wrapped because this is a socket call to the grid and every caller is
+        // a path that must complete regardless: a logout that threw here would
+        // escape the handler, and an unreachable grid is a bad reason to fail a
+        // departure. The original logout site caught for this reason and the
+        // consolidation would have dropped it.
+        bool recorded = false;
+        try {
+            recorded = viewer_grid->update_last_location(
             user_id, registration->region_id(),
             {static_cast<float>(state.position.x), static_cast<float>(state.position.y),
              static_cast<float>(state.position.z)},
-            state.rotation, state.flying);
+            // look_direction(), not state.rotation: the grid's field is a
+            // look-AT direction and rotation is the quaternion's xyz. The
+            // logout path had this right and retire_session_avatar had it
+            // wrong, and copying the nearer one put the wrong value at three
+            // new sites before this was noticed.
+                controller.look_direction(), state.flying);
+        } catch (const std::exception& error) {
+            std::cout << "{\"level\":\"warn\",\"message\":\"last location write failed\",\"reason\":"
+                      << homeworldz::api::json_string(reason) << ",\"error\":"
+                      << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+            return;
+        }
         // Logged on success as well as failure. A silent write is exactly what
         // made "which path last wrote this row" cost a database query and two
         // sessions of guessing, and a crossing already logs several lines.
@@ -3436,17 +3454,8 @@ int main(int argc, char* argv[]) {
             });
         if (physics_world && found->second.physics_character != 0)
             physics_world->remove_character(found->second.physics_character);
-        if (viewer_grid && registration) {
-            // Persist where the avatar stood, so re-entry with start=last
-            // lands sensibly — including after a crossing the client never
-            // completes.
-            const auto& state = found->second.controller.state();
-            static_cast<void>(viewer_grid->update_last_location(
-                found->second.user_id, registration->region_id(),
-                {static_cast<float>(state.position.x), static_cast<float>(state.position.y),
-                 static_cast<float>(state.position.z)},
-                state.rotation, state.flying));
-        }
+        // A session client leaving, whether it said `leave` or just dropped.
+        record_last_location(found->second.user_id, found->second.controller, "session retire");
         if (viewer_grid)
             static_cast<void>(viewer_grid->clear_presence(found->second.user_id));
         session_draw_distances.erase(found->second.session_id);
@@ -9365,24 +9374,14 @@ int main(int argc, char* argv[]) {
                             const auto session_id = homeworldz::viewer::format_uuid(identity->session_id);
                             const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
                             if (viewer_grid) {
+                                // Logging off always persists, whatever else
+                                // happened this session (operator, 2026-08-23):
+                                // it is the one exit where the avatar's final
+                                // position is known and acknowledged, so it is
+                                // not left to the arrival writes to approximate.
                                 if (const auto live = avatars.find(endpoint);
-                                    live != avatars.end() && registration) {
-                                    const auto& state = live->second.controller.state();
-                                    const std::array<float, 3> position{
-                                        static_cast<float>(state.position.x),
-                                        static_cast<float>(state.position.y),
-                                        static_cast<float>(state.position.z)};
-                                    try {
-                                        if (!viewer_grid->update_last_location(
-                                                user_id, registration->region_id(), position,
-                                                live->second.controller.look_direction(), state.flying))
-                                            std::cout << "{\"level\":\"warn\",\"message\":\"last location update rejected during logout\",\"userId\":"
-                                                      << homeworldz::api::json_string(user_id) << "}" << std::endl;
-                                    } catch (const std::exception& error) {
-                                        std::cout << "{\"level\":\"warn\",\"message\":\"last location update failed during logout\",\"error\":"
-                                                  << homeworldz::api::json_string(error.what()) << "}" << std::endl;
-                                    }
-                                }
+                                    live != avatars.end())
+                                    record_last_location(user_id, live->second.controller, "logout");
                                 static_cast<void>(viewer_grid->clear_presence(user_id));
                                 static_cast<void>(viewer_grid->revoke_viewer_session(session_id));
                             }
