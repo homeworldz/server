@@ -11348,25 +11348,39 @@ int main(int argc, char* argv[]) {
                                         persisted->avatar_flying = arrival->flying;
                                     }
                                 } else if (persisted) {
-                                    // Facing and flight carry over from where
-                                    // the avatar left off; a login names a
-                                    // place, not a heading.
-                                    controller.restore_motion(
-                                        persisted->velocity,
-                                        {static_cast<float>(persisted->rotation.x),
-                                         static_cast<float>(persisted->rotation.y),
-                                         static_cast<float>(persisted->rotation.z)},
-                                        persisted->avatar_flying);
-                                    // The entity moves too when a login placed
-                                    // the avatar somewhere else. The tick would
-                                    // sync it a frame later, but until then the
-                                    // scene disagrees with the controller, and
-                                    // start-state reads the scene — so the grid
-                                    // would be told the old position by anything
-                                    // that asked in that window.
                                     if (login_spawn) {
+                                        // A login that named coordinates named
+                                        // a place and nothing else, so the
+                                        // facing must be decided rather than
+                                        // inherited: carrying over where the
+                                        // avatar happened to look last session
+                                        // makes the same request land two ways
+                                        // (operator, 2026-08-23). Halcyon picks
+                                        // a constant for exactly this case and
+                                        // this is the same one, look-at
+                                        // (0,1,0), converted the way the
+                                        // transit path converts its own.
+                                        // Restoring "last" or "home" keeps the
+                                        // stored facing, because there the
+                                        // facing IS part of what was asked for.
+                                        constexpr double login_look_x = 0.0;
+                                        constexpr double login_look_y = 1.0;
+                                        const auto yaw = std::atan2(login_look_y, login_look_x);
+                                        const std::array<float, 3> rotation{
+                                            0.0F, 0.0F, static_cast<float>(std::sin(yaw * 0.5))};
+                                        controller.restore_motion({}, rotation, persisted->avatar_flying);
                                         persisted->position = spawn;
                                         persisted->velocity = {};
+                                        persisted->rotation = {rotation[0], rotation[1], rotation[2]};
+                                    } else {
+                                        // Facing and flight carry over from
+                                        // where the avatar left off.
+                                        controller.restore_motion(
+                                            persisted->velocity,
+                                            {static_cast<float>(persisted->rotation.x),
+                                             static_cast<float>(persisted->rotation.y),
+                                             static_cast<float>(persisted->rotation.z)},
+                                            persisted->avatar_flying);
                                     }
                                 }
                                 const auto initial_position = controller.state().position;

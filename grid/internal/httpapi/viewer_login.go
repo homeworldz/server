@@ -321,6 +321,14 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	if requested, ok := parseRequestedStart(start); ok && requested.position != nil {
 		if a.postLoginSpawn(r.Context(), region.PublicEndpoint, session.UserID, *requested.position) {
 			requestedPosition = requested.position
+			// A login that named coordinates named a place and nothing else, so
+			// the facing is decided rather than inherited — the same request
+			// must not land two ways depending on where the avatar last looked
+			// (operator, 2026-08-23). This is Halcyon's constant for the same
+			// case, and the region applies the matching body rotation, so the
+			// camera and the avatar agree. Restoring "last" or "home" keeps the
+			// stored facing, which there is part of what was asked for.
+			lookAt = "[r0,r1,r0]"
 		}
 	}
 
