@@ -418,3 +418,48 @@ func TestViewerLoginRejectsCredentialsAndMissingDestination(t *testing.T) {
 		t.Fatalf("destination failure = %#v", fields)
 	}
 }
+
+// The coordinates a viewer types on the login screen were parsed and discarded
+// until 2026-08-23, so every named position landed on the avatar's leftover
+// scene entity instead. Firestorm sends "Region/x/y/z" as "uri:Region&x&y&z".
+func TestParseRequestedStart(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		start    string
+		wantName string
+		wantPos  *[3]float64
+	}{
+		{"name and position", "uri:Nova 2&4&4&25", "Nova 2", &[3]float64{4, 4, 25}},
+		{"fractional", "uri:Nova&128.5&4.25&25", "Nova", &[3]float64{128.5, 4.25, 25}},
+		{"name only", "uri:Nova", "Nova", nil},
+		{"name with no coordinates", "uri:Nova&", "Nova", nil},
+		// All three or none: two good numbers and one bad would place an
+		// avatar somewhere nobody asked for.
+		{"partial coordinates", "uri:Nova&4&4", "Nova", nil},
+		{"unparseable coordinate", "uri:Nova&4&x&25", "Nova", nil},
+		{"negative refused", "uri:Nova&4&-1&25", "Nova", nil},
+		{"space in region name", "uri:Nova B 2&10&20&30", "Nova B 2", &[3]float64{10, 20, 30}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, ok := parseRequestedStart(testCase.start)
+			if !ok {
+				t.Fatalf("parseRequestedStart(%q) reported not-a-uri", testCase.start)
+			}
+			if got.name != testCase.wantName {
+				t.Errorf("name = %q, want %q", got.name, testCase.wantName)
+			}
+			switch {
+			case testCase.wantPos == nil && got.position != nil:
+				t.Errorf("position = %v, want none", *got.position)
+			case testCase.wantPos != nil && got.position == nil:
+				t.Errorf("position = none, want %v", *testCase.wantPos)
+			case testCase.wantPos != nil && *got.position != *testCase.wantPos:
+				t.Errorf("position = %v, want %v", *got.position, *testCase.wantPos)
+			}
+		})
+	}
+	// Not a uri: start at all.
+	if _, ok := parseRequestedStart("last"); ok {
+		t.Error(`parseRequestedStart("last") should report not-a-uri`)
+	}
+}

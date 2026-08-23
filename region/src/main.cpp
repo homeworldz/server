@@ -778,6 +778,37 @@ std::optional<std::pair<std::string, std::string>> inventory_asset_update_data_r
     return std::pair{std::string(session), std::string(token)};
 }
 
+// A three-number JSON array field, for the small documents the grid POSTs.
+// Hand-rolled to match the rest of this file's parsing rather than taking a
+// JSON dependency into a path that reads exactly one field. Returns nothing
+// unless all three numbers are present and finite: a partly-parsed position
+// would place an avatar somewhere nobody asked for.
+std::optional<std::array<double, 3>> json_vector3_field(std::string_view object,
+                                                        std::string_view name) {
+    const auto key = "\"" + std::string(name) + "\"";
+    const auto at = object.find(key);
+    if (at == std::string_view::npos) return std::nullopt;
+    const auto open = object.find('[', at + key.size());
+    if (open == std::string_view::npos) return std::nullopt;
+    const auto close = object.find(']', open);
+    if (close == std::string_view::npos) return std::nullopt;
+    const std::string list(object.substr(open + 1, close - open - 1));
+    std::array<double, 3> values{};
+    std::size_t index = 0;
+    const char* cursor = list.c_str();
+    const char* const end = cursor + list.size();
+    while (index < 3 && cursor < end) {
+        char* stop = nullptr;
+        const auto value = std::strtod(cursor, &stop);
+        if (stop == cursor || !std::isfinite(value)) return std::nullopt;
+        values[index++] = value;
+        cursor = stop;
+        while (cursor < end && (*cursor == ',' || *cursor == ' ')) ++cursor;
+    }
+    if (index != 3) return std::nullopt;
+    return values;
+}
+
 std::string_view http_request_body(std::string_view request) {
     const auto separator = request.find("\r\n\r\n");
     return separator == std::string_view::npos ? std::string_view{} : request.substr(separator + 4);
@@ -2842,6 +2873,23 @@ int main(int argc, char* argv[]) {
     }
     const auto viewer_server = viewer_facet_sockets.front();
     homeworldz::region::InboundTransitRegistry inbound_transits;
+    // A position the grid was asked for on the login screen, waiting for the
+    // avatar it belongs to (grid POSTs /api/v1/agents/{user}/login-spawn).
+    //
+    // Deliberately NOT an avatar transit, though the arrival path would honour
+    // one for free: `avatar_transits` requires a source region that differs
+    // from the destination, and a login has no source at all. Reusing it would
+    // mean relaxing a CHECK that is what makes a transit mean "an avatar is
+    // moving from A to B" (ADR 0025). A login is a spawn, not a move.
+    //
+    // Keyed by user, one-shot, and short-lived: it is consumed by the
+    // CompleteAgentMovement that follows within seconds, and a request that
+    // never arrives must not silently relocate a later session.
+    struct PendingLoginSpawn {
+        homeworldz::scene::Vector3 position;
+        std::chrono::steady_clock::time_point expires_at;
+    };
+    std::unordered_map<std::string, PendingLoginSpawn> pending_login_spawns;
     homeworldz::region::InboundObjectRegistry inbound_objects;
     // Sessions whose avatar lives in a neighbour and which hold a child circuit
     // here (ADR 0038). Empty until something establishes one.
@@ -6627,6 +6675,71 @@ int main(int argc, char* argv[]) {
                                     (agent->avatar_flying ? "true}" : "false}");
                                 response = homeworldz::http::response_for_content(
                                     request, 200, "application/json", body);
+                            }
+                        }
+                    }
+                    // The grid asking for an avatar to appear somewhere
+                    // specific because the login screen named a location.
+                    // Answers the question start-state cannot: that one reports
+                    // where the avatar WOULD spawn, and there was no way to say
+                    // where it SHOULD. Without this the coordinates a viewer
+                    // sends are parsed and dropped, and every login lands on
+                    // the avatar's leftover scene entity.
+                    constexpr std::string_view login_spawn_suffix = "/login-spawn";
+                    if (response.path.starts_with(start_state_prefix) &&
+                        response.path.ends_with(login_spawn_suffix)) {
+                        const auto user_id = response.path.substr(
+                            start_state_prefix.size(), response.path.size() -
+                            start_state_prefix.size() - login_spawn_suffix.size());
+                        const auto authorization =
+                            homeworldz::http::request_header_value(request, "Authorization");
+                        if (response.method != "POST") {
+                            response = homeworldz::http::response_for_content(
+                                request, 405, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "method_not_allowed", "login spawn requires POST"}));
+                        } else if (service_token.empty() ||
+                                   authorization != "Bearer " + service_token) {
+                            response = homeworldz::http::response_for_content(
+                                request, 401, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "unauthorized", "a valid grid service token is required"}));
+                        } else if (!homeworldz::viewer::parse_uuid(user_id)) {
+                            response = homeworldz::http::response_for_content(
+                                request, 404, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "agent_not_found", "agent was not found"}));
+                        } else {
+                            const auto body = http_request_body(request);
+                            const auto requested = json_vector3_field(body, "position");
+                            // Refused rather than clamped. A position outside
+                            // the region is a caller that has the wrong region,
+                            // and clamping it to an edge would put the avatar
+                            // somewhere nobody asked for while reporting
+                            // success.
+                            const bool inside = requested &&
+                                (*requested)[0] >= 0.0 && (*requested)[0] <= region_size_x &&
+                                (*requested)[1] >= 0.0 && (*requested)[1] <= region_size_y &&
+                                (*requested)[2] >= 0.0 && (*requested)[2] <= 4096.0;
+                            if (!inside) {
+                                response = homeworldz::http::response_for_content(
+                                    request, 400, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "invalid_position",
+                                        "position must be inside the region extent"}));
+                            } else {
+                                pending_login_spawns.insert_or_assign(
+                                    user_id,
+                                    PendingLoginSpawn{
+                                        {(*requested)[0], (*requested)[1], (*requested)[2]},
+                                        std::chrono::steady_clock::now() + std::chrono::seconds(60)});
+                                std::cout << "{\"level\":\"info\",\"message\":\"login spawn accepted\""
+                                             ",\"position\":[" << (*requested)[0] << ','
+                                          << (*requested)[1] << ',' << (*requested)[2] << "]}"
+                                          << std::endl;
+                                response = homeworldz::http::response_for_content(
+                                    request, 200, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Status{"accepted"}));
                             }
                         }
                     }
@@ -11192,8 +11305,29 @@ int main(int argc, char* argv[]) {
                                     arrival->position[1] + facet_origin_y(arrival_facet),
                                     arrival->position[2]} :
                                     initial_spawn;
+                                // A position the login screen asked for, if
+                                // the grid passed one on and it has not gone
+                                // stale. Ranked below a transit, which is an
+                                // in-world move already underway, and above
+                                // the avatar's leftover entity, which is only
+                                // where it happened to be last.
+                                std::optional<homeworldz::scene::Vector3> login_spawn;
+                                if (const auto requested = pending_login_spawns.find(name);
+                                    requested != pending_login_spawns.end()) {
+                                    if (requested->second.expires_at >= now)
+                                        login_spawn = requested->second.position;
+                                    // Consumed either way: one login, one use.
+                                    // A stale entry left behind would relocate
+                                    // some later session instead.
+                                    pending_login_spawns.erase(requested);
+                                }
                                 const auto spawn = arrival ? arrival_position :
-                                    (persisted ? persisted->position : initial_spawn);
+                                    (login_spawn ? *login_spawn :
+                                     (persisted ? persisted->position : initial_spawn));
+                                if (login_spawn && !arrival)
+                                    std::cout << "{\"level\":\"info\",\"message\":\"login spawn honoured\""
+                                                 ",\"position\":[" << spawn.x << ',' << spawn.y << ','
+                                              << spawn.z << "]}" << std::endl;
                                 const auto known_geometry = avatar_geometries.find(endpoint);
                                 const auto geometry = known_geometry == avatar_geometries.end() ?
                                     homeworldz::viewer::AvatarGeometry{} : known_geometry->second;
@@ -11213,12 +11347,28 @@ int main(int argc, char* argv[]) {
                                         persisted->rotation = {rotation[0], rotation[1], rotation[2]};
                                         persisted->avatar_flying = arrival->flying;
                                     }
-                                } else if (persisted) controller.restore_motion(
-                                    persisted->velocity,
-                                    {static_cast<float>(persisted->rotation.x),
-                                     static_cast<float>(persisted->rotation.y),
-                                     static_cast<float>(persisted->rotation.z)},
-                                    persisted->avatar_flying);
+                                } else if (persisted) {
+                                    // Facing and flight carry over from where
+                                    // the avatar left off; a login names a
+                                    // place, not a heading.
+                                    controller.restore_motion(
+                                        persisted->velocity,
+                                        {static_cast<float>(persisted->rotation.x),
+                                         static_cast<float>(persisted->rotation.y),
+                                         static_cast<float>(persisted->rotation.z)},
+                                        persisted->avatar_flying);
+                                    // The entity moves too when a login placed
+                                    // the avatar somewhere else. The tick would
+                                    // sync it a frame later, but until then the
+                                    // scene disagrees with the controller, and
+                                    // start-state reads the scene — so the grid
+                                    // would be told the old position by anything
+                                    // that asked in that window.
+                                    if (login_spawn) {
+                                        persisted->position = spawn;
+                                        persisted->velocity = {};
+                                    }
+                                }
                                 const auto initial_position = controller.state().position;
                                 const auto initial_viewer_position = controller.viewer_position();
                                 response.position = {

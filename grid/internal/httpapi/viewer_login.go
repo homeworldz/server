@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -310,6 +311,19 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 		}
 		spawnPosition = state.Position
 	}
+	// The coordinates the login screen named, if any. Delivered to the region
+	// before the reply goes out, because the viewer's CompleteAgentMovement
+	// follows within seconds and the region spawns from whatever it knows then.
+	// A refusal is not fatal: the login proceeds and the avatar appears at its
+	// persisted spot, which is the behaviour that existed before this and is
+	// better than failing a sign-in over a position.
+	var requestedPosition *[3]float64
+	if requested, ok := parseRequestedStart(start); ok && requested.position != nil {
+		if a.postLoginSpawn(r.Context(), region.PublicEndpoint, session.UserID, *requested.position) {
+			requestedPosition = requested.position
+		}
+	}
+
 	// A viewer logs into one square facet of the region (ADR 0036): the facet
 	// containing the arrival position, or facet 0 when nothing places the
 	// avatar more precisely. The region's own persisted spawn decides when it
@@ -324,15 +338,20 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	regionX, regionY := region.GridX*256, region.GridY*256
 	if a.provisioned != nil {
 		if provisioned, provisionErr := a.provisioned.Get(r.Context(), region.ID); provisionErr == nil {
-			// A destination that named a facet lands on that facet — unless a
-			// position places the avatar, which always wins, because the
-			// region spawns it there regardless of which facet this reply
-			// names (the mismatch is the 2026-08-20 ceremony-at-login fault).
+			// A position the login screen named outranks both, because it is
+			// what the user asked for and the region has been told to spawn
+			// them there. Below that, the region's own persisted spawn decides,
+			// since CompleteAgentMovement uses it regardless of which facet this
+			// reply names — and a login handed the wrong facet arrives standing
+			// across an internal line, which fires the crossing ceremony into a
+			// viewer still logging in (2026-08-20).
 			facet := 0
 			if requestedFacet > 0 && requestedFacet < provisioned.FacetCount() {
 				facet = requestedFacet
 			}
-			if spawnPosition != nil {
+			if requestedPosition != nil {
+				facet = provisioned.FacetAtPosition(requestedPosition[0], requestedPosition[1])
+			} else if spawnPosition != nil {
 				facet = provisioned.FacetAtPosition(spawnPosition[0], spawnPosition[1])
 			} else if storedPosition != nil && preferredRegionID == region.ID {
 				facet = provisioned.FacetAtPosition(float64(storedPosition[0]), float64(storedPosition[1]))
@@ -432,6 +451,45 @@ type regionStartState struct {
 	LookAt   *[3]float64 `json:"lookAt"`
 }
 
+// postLoginSpawn tells the region where a login asked to appear. The region
+// holds it one-shot for the CompleteAgentMovement that follows.
+//
+// This exists because start-state runs the other way: it asks the region where
+// the avatar WOULD spawn, so the grid can pick the facet, and there was no way
+// to say where it SHOULD. Reusing an avatar transit was the tempting
+// alternative — the region's arrival path already honours a transit's position,
+// look-at and flying for free — but avatar_transits requires a source region
+// that differs from the destination, and a login has no source at all. That
+// CHECK is what makes a transit mean "an avatar is moving from A to B"
+// (ADR 0025), so a login gets its own channel rather than weakening it.
+func (a *API) postLoginSpawn(ctx context.Context, endpoint, userID string, position [3]float64) bool {
+	if a.serviceToken == "" {
+		return false
+	}
+	body, err := json.Marshal(struct {
+		Position [3]float64 `json:"position"`
+	}{Position: position})
+	if err != nil {
+		return false
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(endpoint, "/")+"/api/v1/agents/"+url.PathEscape(userID)+"/login-spawn",
+		bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	request.Header.Set("Authorization", "Bearer "+a.serviceToken)
+	request.Header.Set("Content-Type", "application/json")
+	client := http.Client{Timeout: time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	return response.StatusCode == http.StatusOK
+}
+
 func (a *API) regionStartState(ctx context.Context, endpoint, userID string) (regionStartState, bool) {
 	if a.serviceToken == "" {
 		return regionStartState{}, false
@@ -474,6 +532,39 @@ func (a *API) regionStartState(ctx context.Context, endpoint, userID string) (re
 }
 
 func isFinite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+// requestedStart is the destination a viewer typed on the login screen:
+// "uri:Region&x&y&z", which Firestorm sends for a location field of
+// "Region/x/y/z". The name resolves the region; the coordinates were parsed
+// and thrown away until 2026-08-23, so every login with a named position
+// landed on the avatar's leftover scene entity instead.
+type requestedStart struct {
+	name     string
+	position *[3]float64
+}
+
+func parseRequestedStart(start string) (requestedStart, bool) {
+	if !strings.HasPrefix(strings.ToLower(start), "uri:") {
+		return requestedStart{}, false
+	}
+	fields := strings.Split(strings.TrimPrefix(start, "uri:"), "&")
+	result := requestedStart{name: fields[0]}
+	if len(fields) < 4 {
+		return result, true
+	}
+	// All three or none: two good numbers and one bad would place an avatar
+	// somewhere nobody asked for, which is worse than ignoring the request.
+	var values [3]float64
+	for index := 0; index < 3; index++ {
+		value, err := strconv.ParseFloat(strings.TrimSpace(fields[index+1]), 64)
+		if err != nil || !isFinite(value) || value < 0 {
+			return result, true
+		}
+		values[index] = value
+	}
+	result.position = &values
+	return result, true
+}
 
 // resolveDestination selects the viewer's login region on the shared arrival
 // logic (docs/CLIENT2.md, "Default and fallback arrival points"): an explicit
