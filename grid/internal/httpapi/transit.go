@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/identity"
 	"github.com/homeworldz/server/grid/internal/regions"
 	"github.com/homeworldz/server/grid/internal/transit"
@@ -58,7 +59,28 @@ func (a *API) transitsRoot(w http.ResponseWriter, r *http.Request) {
 		Position: request.Position, LookAt: request.LookAt, Flying: request.Flying,
 		Lifetime: time.Duration(lifetime) * time.Second,
 	})
+	if err == nil {
+		eventlog.Note(r.Context(), a.events, a.logger, eventlog.Event{
+			Kind: transitEventKind(request.Kind), UserID: request.AgentID,
+			RegionID: request.DestinationRegionID,
+		})
+	}
 	a.writeTransitResult(w, value, err)
+}
+
+// transitEventKind maps the region's stated reason for a transit onto the
+// event kind that counts it. An unrecognized or absent reason is recorded as
+// a plain transit: it happened, and nothing about it says which figure it
+// belongs in.
+func transitEventKind(kind string) eventlog.Kind {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "teleport":
+		return eventlog.KindTeleport
+	case "crossing":
+		return eventlog.KindCrossing
+	default:
+		return eventlog.KindTransit
+	}
 }
 
 func (a *API) transitByID(w http.ResponseWriter, r *http.Request) {

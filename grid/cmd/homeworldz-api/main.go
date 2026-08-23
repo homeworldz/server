@@ -22,6 +22,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/api"
 	"github.com/homeworldz/server/grid/internal/arrival"
 	"github.com/homeworldz/server/grid/internal/config"
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/identity"
 	"github.com/homeworldz/server/grid/internal/inventory"
 	"github.com/homeworldz/server/grid/internal/locations"
@@ -30,6 +31,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/presence"
 	"github.com/homeworldz/server/grid/internal/provisioning"
 	"github.com/homeworldz/server/grid/internal/regions"
+	"github.com/homeworldz/server/grid/internal/stats"
 	"github.com/homeworldz/server/grid/internal/schema"
 	"github.com/homeworldz/server/grid/internal/webaccount"
 	"github.com/homeworldz/server/grid/internal/webtoken"
@@ -99,6 +101,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The public statistics endpoint counts from the same stores the grid's
+	// daily CSV row does, so the login page and the chart can never disagree
+	// about what a figure means.
+	events := eventlog.NewPostgresStore(db)
+	statistics, err := stats.NewCollector(stats.Sources{
+		Users:       identity.NewPostgresStore(db),
+		Provisioned: provisioning.NewPostgresStore(db),
+		Leases:      regions.NewPostgresStore(db),
+		Presence:    presence.NewPostgresStore(db),
+		Events:      events,
+	})
+	if err != nil {
+		logger.Error("configure grid statistics", "error", err)
+		os.Exit(1)
+	}
+
 	handler, err := api.New(api.Options{
 		Accounts:        webaccount.NewPostgresStore(db),
 		Regions:         provisioning.NewPostgresStore(db),
@@ -122,6 +140,8 @@ func main() {
 		Inventory:       inventory.NewPostgresStore(db),
 		TicketSigner:    ticketSigner,
 		ChannelURL:      channelURL(settings.WebsitePublicURL),
+		Stats:           statistics,
+		Events:          events,
 	})
 	if err != nil {
 		logger.Error("build website api", "error", err)

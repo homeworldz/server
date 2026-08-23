@@ -289,7 +289,17 @@ int main() {
         prepared_transit->position != std::array<float, 3>{128.0F, 64.0F, 30.0F} ||
         prepared_transit->look_at != std::array<float, 3>{1.0F, 0.0F, 0.0F} ||
         !prepared_transit->flying ||
-        transport->requests.back().body.find(R"("position":{"x":128.000000,"y":64.000000,"z":30.000000})") == std::string::npos)
+        transport->requests.back().body.find(R"("position":{"x":128.000000,"y":64.000000,"z":30.000000})") == std::string::npos ||
+        // A request that states no reason says nothing rather than guessing:
+        // the grid records it as an unattributed transit.
+        transport->requests.back().body.find(R"("kind")") != std::string::npos)
+        return 1;
+    // A stated reason is what lets the grid's event log tell a teleport from a
+    // border crossing; the two requests are otherwise identical.
+    auto teleport_request = transit_request;
+    teleport_request.kind = "teleport";
+    if (!client.prepare_avatar_transit(teleport_request) ||
+        transport->requests.back().body.find(R"("kind":"teleport")") == std::string::npos)
         return 1;
     const auto found_transit = client.find_avatar_transit(transit_request.id);
     if (!found_transit || found_transit->id != transit_request.id ||

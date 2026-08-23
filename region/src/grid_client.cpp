@@ -722,7 +722,9 @@ std::optional<AvatarTransit> Client::prepare_avatar_transit(const AvatarTransitR
                       ",\"position\":" + vector_json(request.position) +
                       ",\"lookAt\":" + vector_json(request.look_at) +
                       ",\"flying\":" + (request.flying ? "true" : "false") +
-                      ",\"lifetimeSeconds\":" + std::to_string(request.lifetime_seconds) + '}';
+                      ",\"lifetimeSeconds\":" + std::to_string(request.lifetime_seconds) +
+                      (request.kind.empty() ? std::string{} :
+                           ",\"kind\":" + api::json_string(request.kind)) + '}';
     const auto response = transport_->send("POST", "/api/v1/transits", body);
     return response.status_code == 200 ? avatar_transit_from_json(response.body) : std::nullopt;
 }

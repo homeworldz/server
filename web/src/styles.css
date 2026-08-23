@@ -800,3 +800,142 @@ button[data-variant="danger"] {
   color: var(--vitre-muted);
   font-size: 0.85rem;
 }
+
+/* The login page: one column on a phone (logo, form, statistics), three on a
+   desktop with the form in the middle. The form is first in the source at
+   every width, so tab order and a screen reader reach the reason for the page
+   before the decoration and the figures either side of it; the grid places it
+   where it belongs visually. */
+.login-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: clamp(1rem, 4vw, 2.5rem);
+  align-items: start;
+}
+
+.login-logo-column {
+  grid-row: 1;
+  display: flex;
+  justify-content: center;
+  padding-top: clamp(1.5rem, 5vw, 3rem);
+}
+
+.login-form-column {
+  grid-row: 2;
+  width: 100%;
+}
+
+.login-stats-column {
+  grid-row: 3;
+}
+
+.login-logo-column img {
+  width: min(20rem, 70vw);
+  height: auto;
+}
+
+@media (min-width: 64rem) {
+  .login-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(24rem, 30rem) minmax(0, 1fr);
+  }
+
+  .login-logo-column,
+  .login-form-column,
+  .login-stats-column {
+    grid-row: 1;
+  }
+
+  .login-logo-column {
+    grid-column: 1;
+    justify-content: flex-end;
+  }
+
+  .login-form-column {
+    grid-column: 2;
+  }
+
+  .login-stats-column {
+    grid-column: 3;
+    padding-top: clamp(1.5rem, 5vw, 3rem);
+  }
+
+  .login-logo-column img {
+    width: min(18rem, 100%);
+  }
+}
+
+/* The statistics column, shared by the login page and the statistics page. */
+.grid-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  padding: clamp(1.25rem, 4vw, 1.75rem);
+  border: 1px solid var(--vitre-border);
+  border-radius: var(--vitre-radius-lg, var(--vitre-radius));
+  background: var(--vitre-surface);
+  box-shadow: var(--vitre-shadow-sm);
+}
+
+.grid-stats h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.grid-stats-group h3 {
+  margin: 0 0 0.4rem;
+  color: var(--vitre-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.grid-stats-group dl {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.grid-stats-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.grid-stats-row dt {
+  color: var(--vitre-muted);
+  font-size: 0.9375rem;
+}
+
+.grid-stats-row dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.grid-stats-taken,
+.grid-stats-unavailable {
+  margin: 0;
+  color: var(--vitre-muted);
+  font-size: 0.8125rem;
+}
+
+.stats-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 34rem;
+  margin-inline: auto;
+  padding-block: clamp(1.5rem, 5vw, 3rem);
+}
+
+.stats-header h1 {
+  margin: 0 0 0.5rem;
+}
+
+.stats-header .lede {
+  margin: 0;
+  color: var(--vitre-muted);
+}

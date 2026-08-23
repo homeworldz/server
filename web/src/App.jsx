@@ -35,6 +35,7 @@ export function App(props) {
               </summary>
               <div class="mobile-nav-panel">
                 <A href="/" onClick={closeMobileNavigation}>Home</A>
+                <A href="/stats" onClick={closeMobileNavigation}>Statistics</A>
                 <Show
                   when={isAuthenticated()}
                   fallback={
@@ -60,6 +61,7 @@ export function App(props) {
           <div class="nav-controls">
             <div class="nav-links">
               <A href="/" end>Home</A>
+              <A href="/stats">Statistics</A>
               <Show
                 when={isAuthenticated()}
                 fallback={

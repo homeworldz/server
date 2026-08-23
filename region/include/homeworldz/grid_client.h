@@ -172,6 +172,10 @@ struct AvatarTransitRequest {
     std::array<float, 3> look_at{};
     bool flying{};
     int lifetime_seconds{30};
+    // Why the avatar is moving: "teleport" or "crossing". The grid's transit
+    // handling ignores it; its event log uses it to tell a journey somebody
+    // chose from a step over a border, which are otherwise the same request.
+    std::string kind;
 };
 
 struct AvatarTransit {

@@ -55,10 +55,16 @@ plus a manual pass over affected routes.
   `RequireAuth` gates `/account`, `RequireAdmin` gates `/admin/*`.
 - **`src/App.jsx`** — shared header and navigation. The link back to the
   marketing site is a plain `href`.
-- **`src/pages/`** — Login, Register, Verify, Account, and the Admin pages
-  (dashboard, users, user, regions, region, system).
+- **`src/pages/`** — Login, Register, Verify, Account, Stats, and the Admin
+  pages (dashboard, users, user, regions, region, system). `/stats` is public,
+  as is the statistics column beside the login form
+  (`src/components/GridStats.jsx`, [ADR 0039](../docs/adr/0039-grid-statistics-and-event-log.md));
+  both read `GET /v1/stats` with no token.
 - **`src/lib/api.js`** — the `/v1` fetch wrapper; `src/config.js` reads
-  `VITE_API_BASE_URL` and defaults to `https://api.homeworldz.com/v1`.
+  `VITE_API_BASE_URL` and defaults to `https://api.homeworldz.com/v1`, and
+  `VITE_GRID_BASE_URL` (defaulting to `https://grid.homeworldz.com`) for the
+  files the grid serves directly, such as `stats.csv`. For local development
+  against a local stack, put both in `web/.env.local`.
 - **`src/styles.css`** — moved whole from the marketing site; it still
   contains that site's roadmap/landing rules, which are inert here and can be
   trimmed as the two sites' styles diverge.

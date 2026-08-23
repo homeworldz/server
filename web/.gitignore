@@ -1,2 +1,6 @@
 node_modules/
 dist/
+
+# Local Vite overrides (e.g. pointing at a local API); never committed.
+.env.local
+.env.*.local

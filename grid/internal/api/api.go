@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/homeworldz/server/grid/internal/arrival"
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/identity"
 	"github.com/homeworldz/server/grid/internal/inventory"
 	"github.com/homeworldz/server/grid/internal/locations"
@@ -28,6 +29,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/presence"
 	"github.com/homeworldz/server/grid/internal/provisioning"
 	"github.com/homeworldz/server/grid/internal/regions"
+	"github.com/homeworldz/server/grid/internal/stats"
 	"github.com/homeworldz/server/grid/internal/webaccount"
 	"github.com/homeworldz/server/grid/internal/webtoken"
 )
@@ -141,6 +143,13 @@ type Options struct {
 	// Messages persists instant messages for store-and-forward delivery over
 	// the grid channel. Nil disables POST /v1/client/messages.
 	Messages messages.Store
+	// Stats collects the public grid statistics served at GET /v1/stats.
+	// Nil answers that route 503 rather than publishing zeros.
+	Stats *stats.Collector
+	// Events records registrations for those statistics (ADR 0039).
+	// Recording is best-effort: a registration that succeeded is never failed
+	// because its log row was not written.
+	Events eventlog.Recorder
 }
 
 // API is the website API handler.
@@ -167,6 +176,9 @@ type API struct {
 	channelURL      string
 	channels        *channelHub
 	messages        messages.Store
+	stats           *stats.Collector
+	statsCache      *statsCache
+	events          eventlog.Recorder
 }
 
 // New validates options and returns the composed website API handler.
@@ -215,6 +227,9 @@ func New(options Options) (http.Handler, error) {
 		channelURL:      options.ChannelURL,
 		channels:        newChannelHub(),
 		messages:        options.Messages,
+		stats:           options.Stats,
+		statsCache:      newStatsCache(),
+		events:          options.Events,
 	}
 
 	mux := http.NewServeMux()
@@ -222,6 +237,7 @@ func New(options Options) (http.Handler, error) {
 	// "/" catch-all below out-matches that fallback and turns them into 404s,
 	// so handlers keep the explicit method check the rest of the mux uses.
 	mux.HandleFunc("/v1/version", a.clientVersion)
+	mux.HandleFunc("/v1/stats", a.gridStats)
 	mux.HandleFunc("/v1/client/session", a.clientSession)
 	mux.HandleFunc("/v1/client/channel", a.clientChannel)
 	mux.HandleFunc("/v1/client/messages", a.clientMessages)

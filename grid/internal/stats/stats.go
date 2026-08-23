@@ -1,8 +1,11 @@
 // Package stats records a once-daily summary of the grid — how many user
-// accounts exist, how many regions are provisioned and enabled, and how much
-// land they cover in 256 m x 256 m standard-region equivalents — appended to
-// a plain CSV so the numbers can be charted over time, and serves that file
-// at /stats.csv (/stats is reserved for the human-facing page to come).
+// accounts exist and how many people used them, how many regions are
+// provisioned, running and enabled, how much land they cover in 256 m x 256 m
+// standard-region equivalents, and how long the grid has been up — appended to
+// a plain CSV so the numbers can be charted over time, and serves that file at
+// /stats.csv. The same figures are read live by the website API's public
+// /v1/stats endpoint; both come from Collector, so the page and the chart can
+// never disagree about what a column means.
 //
 // One row per day, taken at 06:00 US Eastern time. The recorder checks every
 // minute and writes the row the first time it finds one due, so a grid that
@@ -10,6 +13,13 @@
 // column keeps the actual time so a late row is visible as one. A failed
 // count skips the attempt entirely rather than recording zeros: a zero that
 // means "the database was unreachable" would chart as an exodus.
+//
+// Columns are only ever appended, never reordered or repurposed, so a chart
+// built against an older file keeps working. A file written by an older build
+// is upgraded in place the next time a row is due: its header becomes the
+// current one and its rows are padded with empty fields, which says "this
+// grid did not measure that yet" rather than the zero that would say it
+// measured nothing.
 package stats
 
 import (
@@ -19,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,41 +37,40 @@ import (
 	// database (Windows development machines); the embedded copy is the
 	// fallback, the system database wins where present.
 	_ "time/tzdata"
-
-	"github.com/homeworldz/server/grid/internal/provisioning"
 )
 
-const header = "datetime,users,regions,region_equivalents"
+// columns names each CSV field in order. The first four are the original
+// columns and keep their exact meaning: users is every account, regions is
+// enabled regions, region_equivalents is enabled land in standard regions.
+var columns = []string{
+	"datetime", "users", "regions", "region_equivalents",
+	"users_online", "active_30d", "active_60d",
+	"logins_24h", "logins_30d", "registrations_30d",
+	"teleports_24h", "crossings_24h",
+	"regions_online", "regions_undeployed", "uptime_seconds",
+}
+
+var header = strings.Join(columns, ",")
 
 // recordHour is the local hour after which the day's row is due.
 const recordHour = 6
 
-// UserCounter answers how many user accounts exist. Satisfied by the
-// identity store's Postgres implementation; narrow so tests need not build
-// the whole store.
-type UserCounter interface {
-	CountUsers(context.Context) (int, error)
-}
-
-// RegionLister is the slice of the provisioning store the recorder needs.
-type RegionLister interface {
-	List(context.Context) ([]provisioning.Region, error)
-}
-
 type Recorder struct {
-	path        string
-	users       UserCounter
-	provisioned RegionLister
-	logger      *slog.Logger
-	location    *time.Location
+	path      string
+	collector *Collector
+	logger    *slog.Logger
+	location  *time.Location
 	// now is replaceable by tests; everything time-dependent goes through it.
 	now func() time.Time
 	mu  sync.Mutex
 }
 
-func New(path string, users UserCounter, provisioned RegionLister, logger *slog.Logger) (*Recorder, error) {
+func New(path string, collector *Collector, logger *slog.Logger) (*Recorder, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("stats path is empty")
+	}
+	if collector == nil {
+		return nil, fmt.Errorf("stats collector is required")
 	}
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -69,7 +79,7 @@ func New(path string, users UserCounter, provisioned RegionLister, logger *slog.
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Recorder{path: path, users: users, provisioned: provisioned,
+	return &Recorder{path: path, collector: collector,
 		logger: logger, location: location, now: time.Now}, nil
 }
 
@@ -107,53 +117,55 @@ func (r *Recorder) RecordIfDue(ctx context.Context) error {
 	if last >= today {
 		return nil
 	}
-	users, err := r.users.CountUsers(ctx)
+	snapshot, err := r.collector.Collect(ctx)
 	if err != nil {
-		return fmt.Errorf("count users: %w", err)
-	}
-	regions, equivalents, err := r.countRegions(ctx)
-	if err != nil {
-		return fmt.Errorf("count regions: %w", err)
-	}
-	line := fmt.Sprintf("%s,%d,%d,%d", local.Format("060102-1504"), users, regions, equivalents)
-	if err := r.append(line); err != nil {
 		return err
 	}
-	r.logger.Info("grid stats recorded", "users", users,
-		"regions", regions, "regionEquivalents", equivalents)
+	if err := r.append(row(local, snapshot)); err != nil {
+		return err
+	}
+	r.logger.Info("grid stats recorded", "users", snapshot.Users,
+		"activeUsers30d", snapshot.ActiveUsers30d, "usersOnline", snapshot.UsersOnline,
+		"regions", snapshot.Regions, "regionsOnline", snapshot.RegionsOnline,
+		"regionEquivalents", snapshot.RegionEquivalents)
 	return nil
 }
 
-// countRegions counts enabled provisioned regions and their total land in
-// standard-region chunks: a provisioned size is already in 256 m units, so a
-// 4x2 rectangle is eight equivalents.
-func (r *Recorder) countRegions(ctx context.Context) (int, int, error) {
-	all, err := r.provisioned.List(ctx)
-	if err != nil {
-		return 0, 0, err
+// row renders a snapshot as one CSV line, stamped with the local wall-clock
+// time the row was taken at rather than the snapshot's UTC instant, so a late
+// row is visible as one in the operator's own time.
+func row(local time.Time, snapshot Snapshot) string {
+	uptime := ""
+	if snapshot.UptimeSeconds != nil {
+		uptime = strconv.FormatInt(*snapshot.UptimeSeconds, 10)
 	}
-	regions, equivalents := 0, 0
-	for _, region := range all {
-		if !region.Enabled {
-			continue
-		}
-		regions++
-		equivalents += region.SizeX * region.SizeY
+	fields := []string{
+		local.Format("060102-1504"),
+		strconv.Itoa(snapshot.Users),
+		strconv.Itoa(snapshot.Regions),
+		strconv.Itoa(snapshot.RegionEquivalents),
+		strconv.Itoa(snapshot.UsersOnline),
+		strconv.Itoa(snapshot.ActiveUsers30d),
+		strconv.Itoa(snapshot.ActiveUsers60d),
+		strconv.Itoa(snapshot.Logins24h),
+		strconv.Itoa(snapshot.Logins30d),
+		strconv.Itoa(snapshot.Registrations30d),
+		strconv.Itoa(snapshot.Teleports24h),
+		strconv.Itoa(snapshot.Crossings24h),
+		strconv.Itoa(snapshot.RegionsOnline),
+		strconv.Itoa(snapshot.RegionsUndeployed),
+		uptime,
 	}
-	return regions, equivalents, nil
+	return strings.Join(fields, ",")
 }
 
 // lastRecordedDay returns the YYMMDD of the newest row, or "" for none. The
 // file is small for decades (a line a day), so reading it whole is fine.
 func (r *Recorder) lastRecordedDay() (string, error) {
-	content, err := os.ReadFile(r.path)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
+	lines, err := r.lines()
 	if err != nil {
-		return "", fmt.Errorf("read stats file: %w", err)
+		return "", err
 	}
-	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
 	for index := len(lines) - 1; index >= 0; index-- {
 		line := strings.TrimSpace(lines[index])
 		if line == "" || strings.HasPrefix(line, "datetime") {
@@ -168,11 +180,30 @@ func (r *Recorder) lastRecordedDay() (string, error) {
 	return "", nil
 }
 
+// lines reads the file as trimmed lines, or none when it does not exist yet.
+func (r *Recorder) lines() ([]string, error) {
+	content, err := os.ReadFile(r.path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read stats file: %w", err)
+	}
+	trimmed := strings.TrimSpace(string(content))
+	if trimmed == "" {
+		return nil, nil
+	}
+	return strings.Split(trimmed, "\n"), nil
+}
+
 func (r *Recorder) append(line string) error {
 	if directory := filepath.Dir(r.path); directory != "." {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			return fmt.Errorf("create stats directory: %w", err)
 		}
+	}
+	if err := r.upgradeHeader(); err != nil {
+		return err
 	}
 	file, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -189,6 +220,47 @@ func (r *Recorder) append(line string) error {
 	}
 	if _, err := file.WriteString(content); err != nil {
 		return fmt.Errorf("append stats row: %w", err)
+	}
+	return nil
+}
+
+// upgradeHeader rewrites a file written by a build with fewer columns: the
+// header becomes the current one and every existing row is padded to the
+// current width with empty fields. Padding rather than zero-filling is the
+// point — nobody counted logins in those weeks, and a column of zeros would
+// claim somebody had and found none.
+//
+// Only an older prefix of the current columns is upgraded. A header that is
+// not one is a file this build does not understand, and appending to it would
+// produce a CSV whose columns mean two different things down its length.
+func (r *Recorder) upgradeHeader() error {
+	lines, err := r.lines()
+	if err != nil || len(lines) == 0 {
+		return err
+	}
+	existing := strings.TrimSpace(lines[0])
+	if existing == header {
+		return nil
+	}
+	if !strings.HasPrefix(existing, "datetime") {
+		return fmt.Errorf("stats file %s has no header row", r.path)
+	}
+	if !strings.HasPrefix(header, existing+",") {
+		return fmt.Errorf("stats file %s has unrecognized columns %q", r.path, existing)
+	}
+	width := len(strings.Split(existing, ","))
+	padding := strings.Repeat(",", len(columns)-width)
+	upgraded := make([]string, 0, len(lines))
+	upgraded = append(upgraded, header)
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		upgraded = append(upgraded, trimmed+padding)
+	}
+	if err := os.WriteFile(r.path, []byte(strings.Join(upgraded, "\n")+"\n"), 0o644); err != nil {
+		return fmt.Errorf("upgrade stats file columns: %w", err)
 	}
 	return nil
 }

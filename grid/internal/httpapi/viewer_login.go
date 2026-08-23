@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/homeworldz/server/grid/internal/arrival"
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/gestures"
 	"github.com/homeworldz/server/grid/internal/identity"
 	"github.com/homeworldz/server/grid/internal/inventory"
@@ -433,6 +434,13 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 			simPort = region.ViewerPort + facet
 		}
 	}
+	// The login is complete here and nowhere earlier: every failure above
+	// revoked the session, and a login that never reached a region is not one
+	// a person made. This is what the active-user figures count.
+	eventlog.Note(r.Context(), a.events, a.logger, eventlog.Event{
+		Kind: eventlog.KindLogin, UserID: session.UserID, RegionID: region.ID,
+		Detail: region.Name,
+	})
 	var activeGestures []gestures.Gesture
 	if a.gestures != nil {
 		if set, gestureErr := a.gestures.ListActive(r.Context(), session.UserID); gestureErr == nil {

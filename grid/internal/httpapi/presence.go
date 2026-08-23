@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/presence"
 )
 
@@ -57,6 +58,13 @@ func (a *API) presenceByUser(w http.ResponseWriter, r *http.Request) {
 		} else if err != nil {
 			writeJSON(w, http.StatusInternalServerError, Error{Code: "presence_store_error", Message: "presence cleanup failed"})
 		} else {
+			// A cleared presence is the grid's only account of an avatar
+			// leaving: the region clears it both when a viewer logs out and
+			// when a session is retired without one, and there is no other
+			// signal for either.
+			eventlog.Note(r.Context(), a.events, a.logger, eventlog.Event{
+				Kind: eventlog.KindLogout, UserID: userID,
+			})
 			w.WriteHeader(http.StatusNoContent)
 		}
 	default:

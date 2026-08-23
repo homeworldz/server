@@ -34,7 +34,7 @@ client.
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
 | 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="16" aria-label="Phase 6 progress: 16%">16%</progress> | 16% |
-| 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="23" aria-label="Phase 7 progress: 23%">23%</progress> | 23% |
+| 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="25" aria-label="Phase 7 progress: 25%">25%</progress> | 25% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="3" aria-label="Phase 8 progress: 3%">3%</progress> | 3% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="66" aria-label="Phase 9 progress: 66%">66%</progress> | 66% |
 | 10. Modern Client Support | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="8" aria-label="Phase 10 progress: 8%">8%</progress> | 8% |
@@ -393,6 +393,7 @@ run.
 
 ### Observability and administration
 
+- [x] Publish grid statistics ([ADR 0039](adr/0039-grid-statistics-and-event-log.md)): an event log of logins, logouts, registrations, teleports and crossings, thirty- and sixty-day active users, regions up against regions defined, uptime since the last grid start, a public JSON endpoint, the daily `stats.csv`, and a statistics page shown beside the login form.
 - [ ] Provide metrics, structured logs, traces, health detail, dashboards, and actionable alerts for grid and region owners.
 - [ ] Add command-line and authenticated web administration for users, regions, estates, assets, inventory repair, scripts, crossings, and moderation.
 - [ ] Make the economy an operator setting: enable or disable it per grid, keep texture uploads free, preserve a useful no-economy deployment mode, and provide the controls a running economy needs.

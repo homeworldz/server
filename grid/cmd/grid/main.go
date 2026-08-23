@@ -23,6 +23,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/attachments"
 	"github.com/homeworldz/server/grid/internal/config"
 	"github.com/homeworldz/server/grid/internal/estate"
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/gestures"
 	"github.com/homeworldz/server/grid/internal/httpapi"
 	"github.com/homeworldz/server/grid/internal/identity"
@@ -142,14 +143,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The daily stats recorder needs the concrete identity store (CountUsers
-	// is deliberately not on the Store interface) and a database to count in;
-	// without one there is nothing truthful to record, so no recorder runs
-	// and /stats stays unrouted.
+	// The event log records what happened for the statistics the grid
+	// publishes (ADR 0039). Without a database there is nowhere to record and
+	// nothing to count, so both it and the daily recorder stay absent rather
+	// than counting into the void.
+	var events *eventlog.PostgresStore
 	var statsRecorder *stats.Recorder
 	if db != nil {
-		statsRecorder, err = stats.New(settings.StatsPath,
-			identity.NewPostgresStore(db), provisionedStore, logger)
+		events = eventlog.NewPostgresStore(db)
+		// Uptime is measured from this row, which is why it is written before
+		// the server listens: an uptime that started when the first login
+		// arrived would flatter every restart.
+		if err := events.Record(context.Background(), eventlog.Event{
+			Kind: eventlog.KindGridStart, Detail: version,
+		}); err != nil {
+			logger.Error("record grid start", "error", err)
+		}
+		// The collector needs the concrete identity store (CountUsers is
+		// deliberately not on the Store interface).
+		collector, collectErr := stats.NewCollector(stats.Sources{
+			Users:       identity.NewPostgresStore(db),
+			Provisioned: provisionedStore,
+			Leases:      regions.NewPostgresStore(db),
+			Presence:    presence.NewPostgresStore(db),
+			Events:      events,
+		})
+		if collectErr != nil {
+			logger.Error("configure grid stats", "error", collectErr)
+			os.Exit(1)
+		}
+		statsRecorder, err = stats.New(settings.StatsPath, collector, logger)
 		if err != nil {
 			logger.Error("configure grid stats", "error", err)
 			os.Exit(1)
@@ -200,6 +223,7 @@ func main() {
 			Welcome:           welcome,
 			TicketVerifier:    ticketVerifier,
 			Stats:             statsHandler(statsRecorder),
+			Events:            eventRecorder(events),
 			WebsiteAPIURL:     settings.WebsitePublicURL,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -299,6 +323,17 @@ func statsHandler(recorder *stats.Recorder) http.Handler {
 		return nil
 	}
 	return recorder
+}
+
+// eventRecorder keeps a missing event store out of the API for the same
+// reason statsHandler keeps a missing recorder out of the mux: an interface
+// holding a nil pointer is not itself nil, and every best-effort Note would
+// call through it into a nil dereference.
+func eventRecorder(store *eventlog.PostgresStore) eventlog.Recorder {
+	if store == nil {
+		return nil
+	}
+	return store
 }
 
 func presenceStore(db *sql.DB) presence.Store {

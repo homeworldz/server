@@ -9338,7 +9338,8 @@ int main(int argc, char* argv[]) {
                                         std::array<float, 3>{1.0F, 0.0F, 0.0F};
                                     const homeworldz::grid::AvatarTransitRequest transit_request{
                                         transit_id, agent_id, session_id, registration->region_id(),
-                                        target->id, *target_position, look_direction, flying, 30};
+                                        target->id, *target_position, look_direction, flying, 30,
+                                        "teleport"};
                                     const auto transit = viewer_grid->prepare_avatar_transit(transit_request);
                                     prepared = transit && transit->state == "prepared";
                                     if (!prepared) throw std::runtime_error("grid rejected transit preparation");
@@ -14751,7 +14752,8 @@ int main(int argc, char* argv[]) {
                         const bool flying = avatar.controller.state().flying;
                         const homeworldz::grid::AvatarTransitRequest request{
                             transit_id, agent_id, session_id, registration->region_id(),
-                            crossing->destination.id, crossing->position, look_direction, flying, 30};
+                            crossing->destination.id, crossing->position, look_direction, flying, 30,
+                            "crossing"};
                         const auto transit = viewer_grid->prepare_avatar_transit(request);
                         prepared = transit && transit->state == "prepared";
                         if (!prepared)

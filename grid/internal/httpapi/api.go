@@ -19,6 +19,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/attachments"
 	"github.com/homeworldz/server/grid/internal/durability"
 	"github.com/homeworldz/server/grid/internal/estate"
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/gestures"
 	"github.com/homeworldz/server/grid/internal/identity"
 	"github.com/homeworldz/server/grid/internal/inventory"
@@ -78,6 +79,11 @@ type API struct {
 	estates        estate.Store
 	welcomePoints  []arrival.Point
 	ticketVerifier *webtoken.Signer
+	// events records what happened, for the statistics the grid publishes
+	// (docs/adr/0039-grid-statistics-and-event-log.md). Nil on a deployment
+	// without a database, where nothing is recorded and nothing pretends to
+	// have been.
+	events eventlog.Recorder
 }
 
 // regionExtents is a region's footprint in metres, one extent per axis; a
@@ -143,6 +149,10 @@ type Options struct {
 	// Stats serves the public daily-summary CSV at /stats.csv. Nil leaves
 	// the path unrouted.
 	Stats http.Handler
+	// Events records logins, logouts and transits for the grid statistics.
+	// Recording is best-effort at every call site: a login that succeeded is
+	// never failed because its log row was not written.
+	Events eventlog.Recorder
 	// WebsiteAPIURL is the public base of the browser-facing API ([website]
 	// public_url), named in the API catalog (RFC 9727). Empty omits that
 	// catalog entry rather than advertising a dead anchor.
@@ -168,7 +178,7 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 		taskTransfers: options.TaskTransfers, locations: options.Locations,
 		gestures: options.Gestures, attachments: options.Attachments, estates: options.Estates,
 		welcomePoints: options.Welcome, ticketVerifier: options.TicketVerifier,
-		welcomeText: options.WelcomeMessage}
+		welcomeText: options.WelcomeMessage, events: options.Events}
 	if a.outfitHTTP == nil {
 		a.outfitHTTP = &http.Client{Timeout: 10 * time.Second}
 	}

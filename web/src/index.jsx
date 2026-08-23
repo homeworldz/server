@@ -8,6 +8,7 @@ import "./styles.css";
 import { App } from "./App";
 import { AccountPage } from "./pages/AccountPage";
 import { LoginPage } from "./pages/LoginPage";
+import { StatsPage } from "./pages/StatsPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { VerifyPage } from "./pages/VerifyPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
@@ -57,6 +58,7 @@ render(
       <Route path="/register" component={RegisterPage} />
       <Route path="/verify" component={VerifyPage} />
       <Route path="/login" component={LoginPage} />
+      <Route path="/stats" component={StatsPage} />
       <Route path="/forgot" component={ForgotPasswordPage} />
       {/* The emailed link is {reset_url}/{token}, so the token is a path
           segment rather than a query parameter. */}

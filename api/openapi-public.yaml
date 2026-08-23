@@ -87,6 +87,50 @@ paths:
               schema: { $ref: "#/components/schemas/Version" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
         "429": { $ref: "#/components/responses/RateLimited" }
+  /stats:
+    get:
+      operationId: getGridStats
+      tags: [Discovery]
+      summary: Read the public grid statistics
+      description: |
+        The figures published on the login page and the statistics page: how
+        many accounts exist, how many people used one recently, how much land
+        the grid runs and how much of it is up, and how long the grid has been
+        running. Unauthenticated, because it is read by people who have no
+        account yet.
+
+        Every number is a count actually taken, never a placeholder. A figure
+        that cannot be counted fails the whole request rather than appearing
+        as a zero: a zero here reads as an exodus rather than as a database
+        that was unreachable. Fields that have no answer yet — `uptimeSeconds`
+        on a grid whose event log carries no start — are **absent** rather
+        than zero, for the same reason.
+
+        Readings are cached for up to 30 seconds, which is invisible against
+        windows measured in days.
+
+        The same figures are recorded once a day as a row of the grid's
+        `stats.csv`, from the same code, so the page and the chart cannot
+        disagree about what a column means.
+      responses:
+        "200":
+          description: One reading of the grid.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GridStats" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500":
+          description: A figure could not be counted; nothing is published.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: |
+            This deployment has no statistics sources configured, so it
+            publishes nothing rather than zeros.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /registrations:
     post:
       operationId: registerAvatar
@@ -1383,6 +1427,87 @@ components:
         field:
           type: string
           description: The offending request property, when one can be named.
+    GridStats:
+      type: object
+      description: |
+        One reading of the grid, taken at `capturedAt`. Counts described as
+        "24h", "30d" or "60d" are over a window trailing that instant.
+      required:
+        [capturedAt, users, usersOnline, activeUsers30d, activeUsers60d,
+         logins24h, logins30d, registrations30d, teleports24h, crossings24h,
+         regions, regionsOnline, regionsOffline, regionsUndeployed,
+         regionEquivalents]
+      properties:
+        capturedAt:
+          type: string
+          format: date-time
+          description: When the reading was taken, which may be up to 30 seconds ago.
+        users:
+          type: integer
+          description: Every account that exists.
+        usersOnline:
+          type: integer
+          description: Avatars in-world at the instant of the reading.
+        activeUsers30d:
+          type: integer
+          description: |
+            Distinct people who logged in during the last 30 days. Someone who
+            logged in forty times counts once.
+        activeUsers60d:
+          type: integer
+          description: Distinct people who logged in during the last 60 days.
+        logins24h:
+          type: integer
+          description: Logins in the last 24 hours — logins, not people.
+        logins30d:
+          type: integer
+          description: Logins in the last 30 days.
+        registrations30d:
+          type: integer
+          description: Accounts created in the last 30 days.
+        teleports24h:
+          type: integer
+          description: Teleports in the last 24 hours.
+        crossings24h:
+          type: integer
+          description: |
+            Region border crossings in the last 24 hours. Counted apart from
+            teleports because a crossing is not a journey anyone chose to
+            make, and a busy border would otherwise read as heavy teleport
+            traffic. Regions older than the field that states which is which
+            report neither.
+        regions:
+          type: integer
+          description: Enabled regions, running or not — the grid's advertised land.
+        regionsOnline:
+          type: integer
+          description: Enabled regions holding a live lease.
+        regionsOffline:
+          type: integer
+          description: Enabled regions with no live lease.
+        regionsUndeployed:
+          type: integer
+          description: |
+            Defined but disabled regions. Counted in neither `regions` nor
+            `regionEquivalents`, and advertised nowhere.
+        regionEquivalents:
+          type: integer
+          description: |
+            Enabled land in 256 m x 256 m standard regions, so a 4x2
+            rectangle counts as eight.
+        gridStartedAt:
+          type: string
+          format: date-time
+          description: |
+            The most recent recorded grid start. Absent on a grid that has not
+            restarted since its event log was added.
+        uptimeSeconds:
+          type: integer
+          format: int64
+          description: |
+            Seconds since `gridStartedAt`. Absent when no start is recorded,
+            and absent rather than negative when a clock adjustment puts the
+            recorded start ahead of the reading.
     Privileges:
       type: string
       description: |

@@ -96,6 +96,12 @@ export function consumePasswordReset(token, password) {
   });
 }
 
+// The public grid statistics, read by the login and statistics pages. No
+// token: the login page shows them to people who have no account yet.
+export function getGridStats() {
+  return request("/stats");
+}
+
 export function createToken(userid, password) {
   return request("/tokens", {
     method: "POST",

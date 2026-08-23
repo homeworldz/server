@@ -238,6 +238,12 @@ type PrepareTransitRequest struct {
 	LookAt              transit.Vector3 `json:"lookAt"`
 	Flying              bool            `json:"flying"`
 	LifetimeSeconds     int             `json:"lifetimeSeconds"`
+	// Kind is why the avatar is moving: "teleport" or "crossing". It changes
+	// nothing about the transit itself and exists so the event log can tell
+	// a journey somebody chose from a step over a border. A region that does
+	// not send it (any binary older than this field) has its transit recorded
+	// as an unattributed one rather than guessed at.
+	Kind string `json:"kind,omitempty"`
 }
 
 type TransitActionRequest struct {

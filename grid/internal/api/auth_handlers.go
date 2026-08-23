@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/homeworldz/server/grid/internal/eventlog"
 	"github.com/homeworldz/server/grid/internal/mailer"
 	"github.com/homeworldz/server/grid/internal/webaccount"
 )
@@ -44,6 +45,9 @@ func (a *API) registrations(w http.ResponseWriter, r *http.Request) {
 		a.internalError(w, r, "register account", err)
 		return
 	}
+	eventlog.Note(r.Context(), a.events, a.logger, eventlog.Event{
+		Kind: eventlog.KindRegistration, UserID: account.ID,
+	})
 	a.sendVerificationEmail(r.Context(), account.Userid, request.Email, code)
 	w.Header().Set("Location", "/v1/account")
 	writeJSON(w, http.StatusCreated, RegistrationPending{Userid: account.Userid, DisplayName: account.DisplayName})

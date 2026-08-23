@@ -3,6 +3,8 @@ import { A, useNavigate } from "@solidjs/router";
 import { ApiError, createToken } from "../lib/api";
 import { login } from "../lib/auth";
 import { PasswordField } from "../components/PasswordField";
+import { GridStats } from "../components/GridStats";
+import homeworldzLogo from "../assets/brand/homeworldz.svg";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -34,55 +36,69 @@ export function LoginPage() {
     }
   };
 
+  // Three columns on a desktop - logo, form, statistics - collapsing to one
+  // on anything narrower. The form is the middle column at every width and is
+  // first in the source, so a keyboard or a screen reader reaches it before
+  // the decoration and the figures either side of it.
   return (
-    <section class="auth-page" aria-labelledby="login-title">
-      <form class="auth-card" onSubmit={submit} novalidate>
-        <h1 id="login-title">Login</h1>
+    <div class="login-layout">
+      <section class="auth-page login-form-column" aria-labelledby="login-title">
+        <form class="auth-card" onSubmit={submit} novalidate>
+          <h1 id="login-title">Login</h1>
 
-        <div class="field">
-          <label for="userid">Login ID</label>
-          <input
-            id="userid"
-            name="userid"
-            type="text"
-            autocomplete="username"
-            value={userid()}
-            onInput={(event) => setUserid(event.currentTarget.value)}
-            required
-          />
-        </div>
+          <div class="field">
+            <label for="userid">Login ID</label>
+            <input
+              id="userid"
+              name="userid"
+              type="text"
+              autocomplete="username"
+              value={userid()}
+              onInput={(event) => setUserid(event.currentTarget.value)}
+              required
+            />
+          </div>
 
-        <div class="field">
-          <label for="password">Password</label>
-          <PasswordField
-            id="password"
-            name="password"
-            autocomplete="current-password"
-            value={password()}
-            onInput={(event) => setPassword(event.currentTarget.value)}
-            required
-          />
-        </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <PasswordField
+              id="password"
+              name="password"
+              autocomplete="current-password"
+              value={password()}
+              onInput={(event) => setPassword(event.currentTarget.value)}
+              required
+            />
+          </div>
 
-        <Show when={error()}>
-          <p class="form-error" role="alert">
-            {error()}
+          <Show when={error()}>
+            <p class="form-error" role="alert">
+              {error()}
+            </p>
+          </Show>
+
+          <div class="auth-actions">
+            <button type="submit" disabled={submitting()}>
+              {submitting() ? "Logging in…" : "Login"}
+            </button>
+          </div>
+
+          <p class="auth-alt">
+            <A href="/forgot">Forgot your password?</A>
           </p>
-        </Show>
+          <p class="auth-alt">
+            Need an avatar? <A href="/register">Register</A>.
+          </p>
+        </form>
+      </section>
 
-        <div class="auth-actions">
-          <button type="submit" disabled={submitting()}>
-            {submitting() ? "Logging in…" : "Login"}
-          </button>
-        </div>
+      <div class="login-logo-column" aria-hidden="true">
+        <img src={homeworldzLogo} alt="" />
+      </div>
 
-        <p class="auth-alt">
-          <A href="/forgot">Forgot your password?</A>
-        </p>
-        <p class="auth-alt">
-          Need an avatar? <A href="/register">Register</A>.
-        </p>
-      </form>
-    </section>
+      <div class="login-stats-column">
+        <GridStats />
+      </div>
+    </div>
   );
 }
