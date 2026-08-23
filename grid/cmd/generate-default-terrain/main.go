@@ -28,7 +28,7 @@ func main() {
 	}
 
 	// Rectangular working surfaces for the macro regions of ADR 0036: flat at
-	// 22 m, falling to zero over the outer 8 m. The two "join" variants keep
+	// 22 m, falling to zero over the outer 12 m. The two "join" variants keep
 	// one half-edge flat where a neighbour abuts, so the shared border is
 	// ground you walk rather than a trough you swim. The spans are in local
 	// samples and follow from the pair's one-tile offset: Nova at (900,900)
@@ -38,7 +38,16 @@ func main() {
 		wide    = 512
 		tall    = 256
 		plateau = 22.0
-		ramp    = 8.0
+		// The ramp must stay WALKABLE. 22 m over 8 m is 2.75 rise/run, which is
+		// 70 degrees, against the region's 65-degree maxSlopeDegrees — so Jolt
+		// reported OnSteepGround, gravity applied, and an avatar slid to the
+		// bottom at x=0 and fell out of the world, oscillating between ground
+		// level and tens of kilometres down (found live 2026-08-23, twice, and
+		// flight could not escape it). 22 over 12 is 61.4 degrees, which clears
+		// the limit with margin for the quantization the startup alignment
+		// check already tolerates. Any change here wants that arithmetic
+		// redone: plateau / ramp must stay under tan(65) = 2.14.
+		ramp = 12.0
 	)
 	rectangles := []struct {
 		name   string
