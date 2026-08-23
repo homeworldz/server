@@ -29,10 +29,10 @@ const dryRun = args.includes("--dry-run");
 
 const CONTENT_TYPES = new Map(Object.entries({
   wasm: "application/wasm",
-  js: "text/javascript; charset=utf-8",
-  html: "text/html; charset=utf-8",
-  json: "application/json; charset=utf-8",
-  css: "text/css; charset=utf-8",
+  js: "text/javascript",
+  html: "text/html",
+  json: "application/json",
+  css: "text/css",
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -45,6 +45,23 @@ const CONTENT_TYPES = new Map(Object.entries({
 const typeFor = (key) =>
   CONTENT_TYPES.get(key.slice(key.lastIndexOf(".") + 1).toLowerCase()) ??
   "application/octet-stream";
+// This runs through a shell because it has to: Windows will not spawn
+// npx.cmd directly (Node refuses .cmd without a shell), and a shell re-splits
+// whatever it is handed. Unquoted, a value containing a space or a semicolon
+// becomes two arguments — wrangler reported `Unknown argument: charset=utf-8`
+// on exactly that, and any path with a space would break identically.
+//
+// The command is assembled as one already-quoted string rather than passed as
+// an args array with shell:true, which Node deprecates (DEP0190) for this very
+// reason: with shell:true the args are concatenated, not escaped. Content types
+// here also carry no "; charset=", since the Worker sets the outgoing type
+// authoritatively and the stored one is only a fallback — so the awkward value
+// never reaches a command line at all.
+const quote = (value) =>
+  process.platform === "win32"
+    ? `"${value}"`
+    : `'${String(value).replace(/'/g, "'\''")}'`;
+
 const MiB = (bytes) => (bytes / 1024 / 1024).toFixed(1) + " MiB";
 
 if (!existsSync(source)) {
@@ -87,12 +104,14 @@ for (const file of files) {
     continue;
   }
 
-  const result = spawnSync(
-    "npx",
-    ["--yes", "wrangler", "r2", "object", "put", `${bucket}/${key}`,
-     `--file=${file}`, `--content-type=${type}`, "--remote"],
-    { stdio: ["ignore", "inherit", "inherit"], shell: process.platform === "win32" },
-  );
+  const command = [
+    "npx", "--yes", "wrangler", "r2", "object", "put", quote(`${bucket}/${key}`),
+    quote(`--file=${file}`), quote(`--content-type=${type}`), "--remote",
+  ].join(" ");
+  const result = spawnSync(command, {
+    stdio: ["ignore", "inherit", "inherit"],
+    shell: true,
+  });
   if (result.error || result.status !== 0) {
     console.error(`[publish-client-web] FAILED on ${key}`);
     if (result.error) console.error(`[publish-client-web] ${result.error.message}`);
