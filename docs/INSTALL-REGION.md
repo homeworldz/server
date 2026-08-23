@@ -237,6 +237,20 @@ confirm registration at the assigned coordinates before inviting viewers.
 | `region.terrain_raise_limit` / `region.terrain_lower_limit` | Not INI settings. How far an edit may move the ground from the region's original height, above and below, set from the viewer's Region/Estate → Terrain tab and persisted per region. The region announced 100 and −100 in `RegionInfo` and enforced neither until 2026-08-04, so both fields read as settings while being decoration. Measured against the region's baseline rather than the current height, so repeated edits cannot walk past them | `100` / `-100` |
 | `region.welcome_message` | Optional region-specific line sent privately to each avatar as it enters, including on border crossings — set it only when a region has something worth repeating every entry ("You are in Sandbox, the build area"). The arrival greeting proper is `[grid] welcome_message` on the grid, delivered once per login. `{region}` and `{user}` resolve to the region name and display name | *(none — silent)* |
 
+| `region.release_notes_url` | Where the viewer's ServerReleaseNotes capability redirects. Answered as a 302 rather than a body | `https://homeworldz.com/roadmaps/server` |
+| `region.child_agents` | Set to `off` to stop this region announcing itself to neighbouring viewers and holding standing child circuits ([ADR 0038](adr/0038-cross-region-child-agents.md)). Any other value leaves it on. Until 2026-08-23 the code read this as a bare `child_agents`, which the parser can never produce — the switch was unreachable and writing it in an ini killed the region at startup | `on` |
+
+Every setting in this table is accepted by the region config parser, and an
+unrecognised key is a **fatal** startup error rather than a warning. Six of
+the rows above were readable in code and refused by the parser until
+2026-08-23, so following this guide produced a region that would not start.
+There is now a test asserting each one parses.
+
+`region.name`, `region.grid_x` and `region.grid_y` are accepted and
+**ignored**: a region takes its name and coordinates from the grid's
+registration reply. Existing configs set them, so they remain accepted rather
+than becoming a startup failure.
+
 Bind addresses must be IPv4 addresses. Invalid numeric values fall back to
 their defaults.
 

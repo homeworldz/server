@@ -44,6 +44,31 @@ service_token = secret
         settings.at("grid.public_url") != "https://grid.example" ||
         settings.at("grid.service_token") != "secret")
         return 1;
+    // Every setting docs/INSTALL-REGION.md documents, and the ADR 0038 kill
+    // switch, must PARSE. Each of these was live in the code and fatal in an
+    // ini until 2026-08-23, so an operator following the install guide got a
+    // region that refused to start.
+    constexpr std::string_view documented = R"ini(
+[region]
+welcome_message = You are in Sandbox, the build area
+smooth_strength_percent = 50
+walkable_slope_degrees = 65
+water_height = 20
+release_notes_url = https://homeworldz.com/roadmaps/server
+child_agents = off
+)ini";
+    const auto extras = homeworldz::config::parse_region_ini(documented);
+    if (extras.size() != 6 ||
+        extras.at("region.welcome_message") != "You are in Sandbox, the build area" ||
+        extras.at("region.smooth_strength_percent") != "50" ||
+        extras.at("region.walkable_slope_degrees") != "65" ||
+        extras.at("region.water_height") != "20" ||
+        extras.at("region.release_notes_url") != "https://homeworldz.com/roadmaps/server" ||
+        // Read as region.child_agents, not a bare child_agents: the settings
+        // map is keyed section.key, so the bare form the code used could never
+        // match anything the parser produced and the switch was unreachable.
+        extras.at("region.child_agents") != "off")
+        return 1;
     try {
         static_cast<void>(homeworldz::config::parse_region_ini("[region]\nunknown = value\n"));
         return 1;

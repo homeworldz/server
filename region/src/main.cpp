@@ -4377,7 +4377,7 @@ int main(int argc, char* argv[]) {
     // the circuit behind it, so the region just left stopped answering pings and
     // the viewer dropped it after ~100 seconds with no way back. The departure
     // path now demotes instead (see departed_avatars), and the pair is whole.
-    const bool child_agents_enabled = configured_value("child_agents", "on") != "off";
+    const bool child_agents_enabled = configured_value("region.child_agents", "on") != "off";
     const auto offer_one_child_agent = [&]() {
         if (!child_agents_enabled) return false;
         if (service_token.empty() || !registration || region_neighbors.empty()) return false;

@@ -15,12 +15,27 @@ std::string trim(std::string_view value) {
     return std::string(value.substr(first, last - first + 1));
 }
 
+// Every setting the region reads must appear here, because an unrecognised key
+// is a FATAL startup error rather than a warning. That makes this list part of
+// the contract, not a convenience: six settings were live in the code and
+// documented in docs/INSTALL-REGION.md while being fatal in an ini, because
+// adding the read and adding the name are two steps and only the first is
+// obvious. If you add a configured_value/configured_int/configured_bool read,
+// add the name here in the same change.
+//
+// region.name, region.grid_x and region.grid_y are accepted and deliberately
+// ignored: the region's name and coordinates come from the grid's registration
+// reply, not from the ini. They stay accepted because real configs set them and
+// refusing them now would kill regions that start today.
 const std::unordered_set<std::string> setting_names{
     "region.name", "region.grid_x", "region.grid_y", "region.public_endpoint",
     "region.http_port", "region.viewer_port", "region.bind_address",
     "region.viewer_bind_address", "region.data_path", "region.asset_path",
     "region.terrain_path", "region.lease_seconds", "region.session_port",
-    "region.session_public_url", "region.connection_timeout_seconds", "grid.url",
+    "region.session_public_url", "region.connection_timeout_seconds",
+    "region.welcome_message", "region.smooth_strength_percent",
+    "region.walkable_slope_degrees", "region.water_height",
+    "region.release_notes_url", "region.child_agents", "grid.url",
     "grid.public_url", "grid.service_token"};
 
 } // namespace
