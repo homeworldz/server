@@ -79,6 +79,43 @@ bool matches_schema(const std::string& response, const std::string& schema) {
 int main() {
     bool passed = true;
 
+    // CORS on the browser-facing session routes only. The client is a browser
+    // on another origin; Firestorm is not a browser and /caps/ needs none of
+    // this.
+    passed &= homeworldz::http::is_browser_session_path("/session/assets/abc");
+    passed &= homeworldz::http::is_browser_session_path("/session/terrain");
+    passed &= !homeworldz::http::is_browser_session_path("/caps/texture/abc");
+    passed &= !homeworldz::http::is_browser_session_path("/ready");
+    passed &= !homeworldz::http::is_browser_session_path("/sessionish");
+
+    auto asset = homeworldz::http::response_for_content(
+        "GET /session/assets/abc HTTP/1.1\r\n\r\n", 200, "model/gltf+json", "{}");
+    homeworldz::http::add_cors_headers(asset, false);
+    passed &= contains(asset.content, "Access-Control-Allow-Origin: *");
+    // Named or the browser hides them, and the client's revalidation and
+    // ranged heightmap reads break against a region answering correctly.
+    passed &= contains(asset.content, "Access-Control-Expose-Headers: ETag");
+    passed &= contains(asset.content, "Content-Range");
+    // A non-preflight reply must not advertise methods or request headers.
+    passed &= asset.content.find("Access-Control-Allow-Methods") == std::string::npos;
+    passed &= asset.content.find("Access-Control-Max-Age") == std::string::npos;
+    // Never, with Allow-Origin *: these routes carry an explicit bearer
+    // ticket, never a cookie, and Allow-Credentials with * is invalid anyway.
+    passed &= asset.content.find("Access-Control-Allow-Credentials") == std::string::npos;
+
+    auto preflight = homeworldz::http::response_for_content(
+        "OPTIONS /session/assets/abc HTTP/1.1\r\n\r\n", 204, "text/plain", {});
+    homeworldz::http::add_cors_headers(preflight, true);
+    passed &= preflight.status_code == 204;
+    // Authorization, If-None-Match and Range are all outside the CORS
+    // safelist, so a browser sends none of them until a preflight allows it.
+    passed &= contains(preflight.content, "Access-Control-Allow-Headers: Authorization");
+    passed &= contains(preflight.content, "If-None-Match");
+    passed &= contains(preflight.content, "Range");
+    passed &= contains(preflight.content, "Access-Control-Allow-Methods: GET, HEAD, POST, OPTIONS");
+    passed &= contains(preflight.content, "Access-Control-Max-Age: 86400");
+    passed &= preflight.content.find("Access-Control-Allow-Credentials") == std::string::npos;
+
     passed &= homeworldz::api::to_json(homeworldz::api::Status{"line\nbreak"}) ==
               R"({"status":"line\nbreak"})";
     passed &= homeworldz::api::to_json(homeworldz::api::Version{

@@ -179,6 +179,27 @@ void add_header(Response& response, std::string_view name, std::string_view valu
                             std::string(name) + ": " + std::string(value) + crlf);
 }
 
+bool is_browser_session_path(std::string_view path) {
+    return path.starts_with("/session/");
+}
+
+void add_cors_headers(Response& response, bool preflight) {
+    add_header(response, "Access-Control-Allow-Origin", "*");
+    // Without these three named, a browser hides them from JavaScript, and the
+    // client's ETag revalidation and ranged heightmap reads fail against a
+    // region that is answering correctly.
+    add_header(response, "Access-Control-Expose-Headers",
+               "ETag, Accept-Ranges, Content-Range, Content-Type, Cache-Control");
+    if (!preflight) return;
+    // POST is here for the session upload routes; Authorization, If-None-Match
+    // and Range are all outside the CORS safelist, so a browser will not send
+    // any of them until a preflight says it may.
+    add_header(response, "Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
+    add_header(response, "Access-Control-Allow-Headers",
+               "Authorization, Content-Type, If-None-Match, Range");
+    add_header(response, "Access-Control-Max-Age", "86400");
+}
+
 Response response_for_range(std::string_view request, std::string_view content_type,
                             std::string_view full_body, std::size_t offset, std::size_t length) {
     std::string method;

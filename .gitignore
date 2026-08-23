@@ -19,3 +19,6 @@ grid/homeworldz-grid
 grid/homeworldz-grid.exe
 
 .DS_Store
+
+# Wrangler local state for the client app Worker.
+.wrangler/

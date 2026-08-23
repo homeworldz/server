@@ -37,5 +37,30 @@ Response response_for_range(std::string_view request, std::string_view content_t
 // constructor. Does nothing to a malformed response rather than corrupting it.
 void add_header(Response& response, std::string_view name, std::string_view value);
 
+// True for the region's browser-facing session routes (/session/...). The
+// Homeworldz client runs in a browser served from another origin, so these —
+// and only these — need CORS. Viewer capabilities under /caps/ are spoken by
+// Firestorm, which is not a browser and enforces no same-origin policy.
+bool is_browser_session_path(std::string_view path);
+
+// Cross-origin headers for a browser-facing session route.
+//
+// Allow-Origin is `*` and there is deliberately NO Allow-Credentials: these
+// routes authenticate with an explicit `Authorization: Bearer <region ticket>`
+// header and never a cookie, so a hostile page holds no ambient credential and
+// `*` grants nothing a plain server-side fetch could not already do. That is
+// also why no origin allowlist is configured here — there is nothing for one
+// to protect, and a per-region list would have to be configured on regions the
+// operator may not control (ADR 0028).
+//
+// Expose-Headers is load-bearing rather than decorative: ETag, Accept-Ranges
+// and Content-Range are invisible to JavaScript unless named, so without it a
+// client's revalidation and partial-heightmap fetches fail while the region
+// answers perfectly — a defect that looks client-side from every angle. When
+// `preflight`, the allowed methods and request headers are named too, which a
+// browser demands before it will send Authorization, If-None-Match or Range at
+// all.
+void add_cors_headers(Response& response, bool preflight);
+
 } // namespace homeworldz::http
 

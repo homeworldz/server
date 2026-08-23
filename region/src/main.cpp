@@ -7787,6 +7787,23 @@ int main(int argc, char* argv[]) {
                         }
                     }
                     if (!response_deferred) {
+                        // Cross-origin headers for the browser-facing session
+                        // routes (ADR 0030's client runs in a browser on
+                        // another origin, so without these every asset and
+                        // terrain fetch it makes is blocked before the region
+                        // ever sees it). An OPTIONS preflight is answered here
+                        // rather than in the chain above, which keys on path
+                        // and would refuse the method: a browser sends one
+                        // before any request carrying Authorization, and a
+                        // refusal there stops the real request being sent at
+                        // all.
+                        if (homeworldz::http::is_browser_session_path(response.path)) {
+                            const bool preflight = response.method == "OPTIONS";
+                            if (preflight)
+                                response = homeworldz::http::response_for_content(
+                                    request, 204, "text/plain", {});
+                            homeworldz::http::add_cors_headers(response, preflight);
+                        }
                         static_cast<void>(send_all(client, response.content));
                         finish_http_response(client);
                         std::cout << "{\"level\":\"info\",\"message\":\"http request\",\"requestId\":"
