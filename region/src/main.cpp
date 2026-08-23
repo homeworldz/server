@@ -3369,6 +3369,44 @@ int main(int argc, char* argv[]) {
             if (!remove_attachment_linkset(root_id, when, spare).empty()) ++removed;
         return removed;
     };
+    // Persist where an avatar now is, so a later start=last returns there.
+    //
+    // Called at every point the avatar's whereabouts genuinely change hands —
+    // a region crossing, a facet crossing, a teleport — and at logout
+    // (operator, 2026-08-23). Recording on ARRIVAL rather than only on
+    // departure is what makes a crash survivable: the old code wrote only on a
+    // clean logout and on session-avatar retirement, so a viewer that dropped,
+    // timed out, or was replaced by a duplicate login returned to wherever it
+    // last logged out politely, silently losing everything since. A crash now
+    // costs at most the movement since the last crossing or teleport.
+    //
+    // `reason` is logged because these writes are otherwise invisible, and the
+    // question "which path last wrote this row" took a database query and two
+    // sessions' worth of guessing to answer once already.
+    //
+    // This is a synchronous grid call, on the request-handling path rather than
+    // the physics tick, beside the update_presence and attachment calls that
+    // already live there. Crossings and teleports both already make several.
+    const auto record_last_location = [&](std::string_view user_id,
+                                          const homeworldz::viewer::AvatarController& controller,
+                                          std::string_view reason) {
+        if (!viewer_grid || !registration || user_id.empty()) return;
+        const auto& state = controller.state();
+        const bool recorded = viewer_grid->update_last_location(
+            user_id, registration->region_id(),
+            {static_cast<float>(state.position.x), static_cast<float>(state.position.y),
+             static_cast<float>(state.position.z)},
+            state.rotation, state.flying);
+        // Logged on success as well as failure. A silent write is exactly what
+        // made "which path last wrote this row" cost a database query and two
+        // sessions of guessing, and a crossing already logs several lines.
+        std::cout << "{\"level\":" << (recorded ? "\"info\"" : "\"warn\"")
+                  << ",\"message\":" << (recorded ? "\"last location recorded\""
+                                                 : "\"last location not recorded\"")
+                  << ",\"reason\":" << homeworldz::api::json_string(reason)
+                  << ",\"position\":[" << state.position.x << ',' << state.position.y << ','
+                  << state.position.z << "]}" << std::endl;
+    };
     // retire_session_avatar removes an embodied session's avatar: kill to
     // viewers and other sessions, physics teardown, map erasure. The session
     // itself stays open (back to observer) unless the socket already closed.
@@ -9052,6 +9090,9 @@ int main(int argc, char* argv[]) {
                                                      static_cast<float>(position.z)},
                                                     look_direction, flags}), true, now, true))
                                             static_cast<void>(send_udp(viewer_server, endpoint, *local));
+                                        record_last_location(
+                                            avatar->second.user_id, avatar->second.controller,
+                                            "local teleport");
                                         std::cout << "{\"level\":\"info\",\"message\":\"avatar local teleport completed\","
                                                      "\"position\":[" << position.x << ',' << position.y << ','
                                                   << position.z << "]}" << std::endl;
@@ -11233,6 +11274,10 @@ int main(int argc, char* argv[]) {
                                 }
                                 if (viewer_grid && registration)
                                     static_cast<void>(viewer_grid->update_presence(name, registration->region_id()));
+                                // Arrived from somewhere else: a crossing, a
+                                // teleport, or a login. Recorded now so a drop
+                                // from here returns here.
+                                record_last_location(name, avatars.at(endpoint).controller, "arrival");
                                 restore_attachments(name, entity, now);
                             } else {
                                 // An avatar that already lives here is
@@ -11245,6 +11290,12 @@ int main(int argc, char* argv[]) {
                                     static_cast<float>(current.x - facet_origin_x(arrival_facet)),
                                     static_cast<float>(current.y - facet_origin_y(arrival_facet)),
                                     static_cast<float>(current.z)};
+                                // A facet crossing keeps the region id and
+                                // changes the position, which is exactly the
+                                // part start=last needs to be current.
+                                record_last_location(avatars.at(endpoint).user_id,
+                                                     avatars.at(endpoint).controller,
+                                                     "facet crossing");
                                 // To the viewer this facet is a new region, and
                                 // its avatar object there is new: without its
                                 // appearance re-sent it rezzes as a cloud until
