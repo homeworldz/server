@@ -2887,6 +2887,9 @@ int main(int argc, char* argv[]) {
     // never arrives must not silently relocate a later session.
     struct PendingLoginSpawn {
         homeworldz::scene::Vector3 position;
+        // Present for home and last, which restore a stored facing; absent for
+        // a named position, which carries none and gets a deterministic one.
+        std::optional<std::array<double, 3>> look_at;
         std::chrono::steady_clock::time_point expires_at;
     };
     std::unordered_map<std::string, PendingLoginSpawn> pending_login_spawns;
@@ -6728,10 +6731,18 @@ int main(int argc, char* argv[]) {
                                         "invalid_position",
                                         "position must be inside the region extent"}));
                             } else {
+                                auto requested_look = json_vector3_field(body, "lookAt");
+                                // A degenerate look-at is no facing at all, and
+                                // aiming an avatar at nothing is worse than
+                                // falling back to the constant.
+                                if (requested_look &&
+                                    std::hypot((*requested_look)[0], (*requested_look)[1]) < 0.001)
+                                    requested_look.reset();
                                 pending_login_spawns.insert_or_assign(
                                     user_id,
                                     PendingLoginSpawn{
                                         {(*requested)[0], (*requested)[1], (*requested)[2]},
+                                        requested_look,
                                         std::chrono::steady_clock::now() + std::chrono::seconds(60)});
                                 std::cout << "{\"level\":\"info\",\"message\":\"login spawn accepted\""
                                              ",\"position\":[" << (*requested)[0] << ','
@@ -11329,10 +11340,12 @@ int main(int argc, char* argv[]) {
                                 // the avatar's leftover entity, which is only
                                 // where it happened to be last.
                                 std::optional<homeworldz::scene::Vector3> login_spawn;
+                                std::optional<std::array<double, 3>> login_look;
                                 if (const auto requested = pending_login_spawns.find(name);
                                     requested != pending_login_spawns.end()) {
                                     if (requested->second.expires_at >= now) {
                                         auto placed = requested->second.position;
+                                        login_look = requested->second.look_at;
                                         // Same rule as a teleport: never below
                                         // the terrain. A heightfield collides
                                         // only from above, so a sunken spawn
@@ -11388,8 +11401,11 @@ int main(int argc, char* argv[]) {
                                         // Restoring "last" or "home" keeps the
                                         // stored facing, because there the
                                         // facing IS part of what was asked for.
-                                        constexpr double login_look_x = 0.0;
-                                        constexpr double login_look_y = 1.0;
+                                        // Home and last send the stored facing
+                                        // and it is restored; a named position
+                                        // sends none and gets the constant.
+                                        const auto login_look_x = login_look ? (*login_look)[0] : 0.0;
+                                        const auto login_look_y = login_look ? (*login_look)[1] : 1.0;
                                         const auto yaw = std::atan2(login_look_y, login_look_x);
                                         const std::array<float, 3> rotation{
                                             0.0F, 0.0F, static_cast<float>(std::sin(yaw * 0.5))};

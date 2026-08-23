@@ -22,6 +22,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/gestures"
 	"github.com/homeworldz/server/grid/internal/identity"
 	"github.com/homeworldz/server/grid/internal/inventory"
+	"github.com/homeworldz/server/grid/internal/locations"
 	"github.com/homeworldz/server/grid/internal/provisioning"
 	"github.com/homeworldz/server/grid/internal/regions"
 )
@@ -232,19 +233,30 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	}
 	preferredRegionID := ""
 	var storedPosition *[3]float32
+	var storedLookAt *[3]float32
 	if a.locations != nil {
-		if strings.EqualFold(start, "home") {
-			if location, locationErr := a.locations.GetHome(r.Context(), session.UserID); locationErr == nil {
-				preferredRegionID = location.RegionID
-				position := location.Position
-				storedPosition = &position
-			}
-		} else if location, locationErr := a.locations.Get(r.Context(), session.UserID); locationErr == nil {
+		remember := func(location locations.Location) {
 			preferredRegionID = location.RegionID
 			position := location.Position
 			storedPosition = &position
+			// Kept so home and last can restore the facing too, not just the
+			// region (operator, 2026-08-23). A degenerate look-at is dropped
+			// rather than sent, so the region falls back to its own constant
+			// instead of aiming the avatar at nothing.
+			if math.Hypot(float64(location.LookAt[0]), float64(location.LookAt[1])) >= 0.001 {
+				look := location.LookAt
+				storedLookAt = &look
+			}
+		}
+		if strings.EqualFold(start, "home") {
+			if location, locationErr := a.locations.GetHome(r.Context(), session.UserID); locationErr == nil {
+				remember(location)
+			}
+		} else if location, locationErr := a.locations.Get(r.Context(), session.UserID); locationErr == nil {
+			remember(location)
 		}
 	}
+
 	region, requestedFacet, err := resolveDestination(r.Context(), a.regions, a.provisioned, start, preferredRegionID, a.welcomePoints)
 	if err != nil {
 		_ = a.identity.RevokeSession(r.Context(), session.ID)
@@ -340,7 +352,7 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 				requested.position[1] + float64((originY-provisioned.MapY)*256),
 				requested.position[2],
 			}
-			if a.postLoginSpawn(r.Context(), region.PublicEndpoint, session.UserID, macro) {
+			if a.postLoginSpawn(r.Context(), region.PublicEndpoint, session.UserID, macro, nil) {
 				requestedPosition = &macro
 				// A login that named coordinates named a place and nothing
 				// else, so the facing is decided rather than inherited — the
@@ -351,6 +363,33 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 				// Restoring "last" or "home" keeps the stored facing, which
 				// there is part of what was asked for.
 				lookAt = "[r0,r1,r0]"
+			}
+		}
+	}
+
+	// Home and last restore the full position and the facing, not just the
+	// region (operator, 2026-08-23). Until now they picked a region and the
+	// region placed the avatar wherever its own leftover scene entity happened
+	// to sit — so asking for Home could land you somewhere you had never set,
+	// which is how a slope-trapped entity kept recapturing its owner.
+	//
+	// Only when the resolved region IS the stored one: a login diverted to the
+	// welcome list must not be handed coordinates from somewhere else, which
+	// would place the avatar by numbers that mean nothing there.
+	if requestedPosition == nil && storedPosition != nil && preferredRegionID == region.ID {
+		stored := [3]float64{
+			float64(storedPosition[0]), float64(storedPosition[1]), float64(storedPosition[2]),
+		}
+		var look *[3]float64
+		if storedLookAt != nil {
+			look = &[3]float64{
+				float64(storedLookAt[0]), float64(storedLookAt[1]), float64(storedLookAt[2]),
+			}
+		}
+		if a.postLoginSpawn(r.Context(), region.PublicEndpoint, session.UserID, stored, look) {
+			requestedPosition = &stored
+			if look != nil {
+				lookAt = fmt.Sprintf("[r%.9g,r%.9g,r%.9g]", (*look)[0], (*look)[1], (*look)[2])
 			}
 		}
 	}
@@ -482,24 +521,32 @@ type regionStartState struct {
 	LookAt   *[3]float64 `json:"lookAt"`
 }
 
-// postLoginSpawn tells the region where a login asked to appear. The region
-// holds it one-shot for the CompleteAgentMovement that follows.
+// postLoginSpawn tells the region where a login asked to appear, and optionally
+// which way to face. The region holds it one-shot for the CompleteAgentMovement
+// that follows, and raises it to ground level if it is below the terrain.
+//
+// A named position (uri:Region&x&y&z) sends no look-at, because it names a place
+// and nothing else, and the region applies a deterministic facing. Home and last
+// send theirs, because a stored facing is part of what was asked for.
 //
 // This exists because start-state runs the other way: it asks the region where
-// the avatar WOULD spawn, so the grid can pick the facet, and there was no way
-// to say where it SHOULD. Reusing an avatar transit was the tempting
-// alternative — the region's arrival path already honours a transit's position,
-// look-at and flying for free — but avatar_transits requires a source region
-// that differs from the destination, and a login has no source at all. That
-// CHECK is what makes a transit mean "an avatar is moving from A to B"
-// (ADR 0025), so a login gets its own channel rather than weakening it.
-func (a *API) postLoginSpawn(ctx context.Context, endpoint, userID string, position [3]float64) bool {
+// the avatar WOULD spawn so the grid can pick the facet, and there was no way to
+// say where it SHOULD. Reusing an avatar transit was the tempting alternative,
+// since the region's arrival path already honours a transit's position, look-at
+// and flying for free — but avatar_transits requires a source region that
+// differs from the destination, and a login has no source at all. That CHECK is
+// what makes a transit mean "an avatar is moving from A to B" (ADR 0025), so a
+// login gets its own channel rather than weakening one.
+func (a *API) postLoginSpawn(ctx context.Context, endpoint, userID string,
+	position [3]float64, lookAt *[3]float64) bool {
 	if a.serviceToken == "" {
 		return false
 	}
-	body, err := json.Marshal(struct {
-		Position [3]float64 `json:"position"`
-	}{Position: position})
+	document := struct {
+		Position [3]float64  `json:"position"`
+		LookAt   *[3]float64 `json:"lookAt,omitempty"`
+	}{Position: position, LookAt: lookAt}
+	body, err := json.Marshal(document)
 	if err != nil {
 		return false
 	}
