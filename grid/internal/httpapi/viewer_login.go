@@ -317,18 +317,41 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	// A refusal is not fatal: the login proceeds and the avatar appears at its
 	// persisted spot, which is the behaviour that existed before this and is
 	// better than failing a sign-in over a position.
+	// The coordinates a login screen names are local to the region the viewer
+	// named — and when that name is a facet, the facet IS the whole region to
+	// the viewer (ADR 0036). So "Nova 2/4/4/25" means 4m into Nova 2, which is
+	// macro (260,4) in Nova, not (4,4). Passed through unrebased it lands in a
+	// different facet: the same mistake the transit arrival path documents and
+	// rebases for, which I read and did not apply (found live 2026-08-23).
+	//
+	// The named facet therefore decides the facet, rather than being recomputed
+	// from an unrebased position — recomputing gave facet 0 for every request.
 	var requestedPosition *[3]float64
-	if requested, ok := parseRequestedStart(start); ok && requested.position != nil {
-		if a.postLoginSpawn(r.Context(), region.PublicEndpoint, session.UserID, *requested.position) {
-			requestedPosition = requested.position
-			// A login that named coordinates named a place and nothing else, so
-			// the facing is decided rather than inherited — the same request
-			// must not land two ways depending on where the avatar last looked
-			// (operator, 2026-08-23). This is Halcyon's constant for the same
-			// case, and the region applies the matching body rotation, so the
-			// camera and the avatar agree. Restoring "last" or "home" keeps the
-			// stored facing, which there is part of what was asked for.
-			lookAt = "[r0,r1,r0]"
+	requestedFacetSpawn := 0
+	if requestedFacet > 0 {
+		requestedFacetSpawn = requestedFacet
+	}
+	if requested, ok := parseRequestedStart(start); ok && requested.position != nil && a.provisioned != nil {
+		if provisioned, provisionErr := a.provisioned.Get(r.Context(), region.ID); provisionErr == nil &&
+			requestedFacetSpawn < provisioned.FacetCount() {
+			originX, originY := provisioned.FacetOrigin(requestedFacetSpawn)
+			macro := [3]float64{
+				requested.position[0] + float64((originX-provisioned.MapX)*256),
+				requested.position[1] + float64((originY-provisioned.MapY)*256),
+				requested.position[2],
+			}
+			if a.postLoginSpawn(r.Context(), region.PublicEndpoint, session.UserID, macro) {
+				requestedPosition = &macro
+				// A login that named coordinates named a place and nothing
+				// else, so the facing is decided rather than inherited — the
+				// same request must not land two ways depending on where the
+				// avatar last looked (operator, 2026-08-23). This is Halcyon's
+				// constant for the same case, and the region applies the
+				// matching body rotation, so camera and avatar agree.
+				// Restoring "last" or "home" keeps the stored facing, which
+				// there is part of what was asked for.
+				lookAt = "[r0,r1,r0]"
+			}
 		}
 	}
 
