@@ -9179,8 +9179,25 @@ int main(int argc, char* argv[]) {
                                         : "Destination position is unavailable");
                                 } else {
                                     const auto flying = avatar->second.controller.state().flying;
-                                    avatar->second.controller.set_ground_height(
-                                        collision_ground_height(arrival));
+                                    // A teleport always places the avatar above
+                                    // ground (operator, 2026-08-23). The extent
+                                    // check above bounds x and y and never
+                                    // bounded z, so a viewer asking for a z
+                                    // below the terrain was obeyed — and a
+                                    // heightfield only collides from above, so
+                                    // once under it nothing recovers you: no
+                                    // fall lands, and the avatar drops forever.
+                                    // Reached live by teleporting while already
+                                    // falling, where the viewer sent its own
+                                    // sunken z as the destination.
+                                    const auto arrival_ground = collision_ground_height(arrival);
+                                    if (!(arrival.z >= arrival_ground)) {
+                                        std::cout << "{\"level\":\"info\",\"message\":\"teleport raised to ground\""
+                                                     ",\"requested\":" << arrival.z << ",\"ground\":"
+                                                  << arrival_ground << "}" << std::endl;
+                                        arrival.z = arrival_ground;
+                                    }
+                                    avatar->second.controller.set_ground_height(arrival_ground);
                                     avatar->second.controller.teleport(arrival, flying);
                                     if (physics_world && avatar->second.physics_character != 0) {
                                         if (auto state = physics_world->character_state(
@@ -11314,8 +11331,16 @@ int main(int argc, char* argv[]) {
                                 std::optional<homeworldz::scene::Vector3> login_spawn;
                                 if (const auto requested = pending_login_spawns.find(name);
                                     requested != pending_login_spawns.end()) {
-                                    if (requested->second.expires_at >= now)
-                                        login_spawn = requested->second.position;
+                                    if (requested->second.expires_at >= now) {
+                                        auto placed = requested->second.position;
+                                        // Same rule as a teleport: never below
+                                        // the terrain. A heightfield collides
+                                        // only from above, so a sunken spawn
+                                        // falls forever with nothing to land on.
+                                        const auto ground = collision_ground_height(placed);
+                                        if (!(placed.z >= ground)) placed.z = ground;
+                                        login_spawn = placed;
+                                    }
                                     // Consumed either way: one login, one use.
                                     // A stale entry left behind would relocate
                                     // some later session instead.
