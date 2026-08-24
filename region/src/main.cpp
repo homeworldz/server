@@ -1846,11 +1846,13 @@ int main(int argc, char* argv[]) {
                           << assets.size() << "}" << std::endl;
                 // Nothing is written through to the vault here, and that is
                 // the rule rather than an omission: the vault holds what
-                // inventory references, and a region's own assets stay in the
-                // region that holds them (operator, 2026-08-24). Inventory
-                // gets them at the moment an item is created — a take, a
-                // return, an upload — which is where vault_asset_closure runs
-                // and where the central asset id starts to mean something.
+                // belongs to a *user* — what their inventory references, and
+                // their avatar's bakes, which travel with them the same way —
+                // while a region's own assets stay in the region that holds
+                // them (operator, 2026-08-24). Inventory gets them at the
+                // moment an item is created: a take, a return, an upload,
+                // which is where vault_asset_closure runs and where the
+                // central asset id starts to mean something.
                 //
                 // What stood here wrote every asset this region held, on every
                 // start, forever: welcome spent 145 seconds of a 165 second
@@ -7577,8 +7579,17 @@ int main(int argc, char* argv[]) {
                                     const bool registered = !viewer_grid || (viewer_grid->register_asset(
                                         metadata.viewer_id, metadata.creator_id, metadata.sha256,
                                         metadata.size, region_public_endpoint, true) &&
-                                        // Write-through (ADR 0026): the commit's
-                                        // fetch-back and this thread cannot meet.
+                                        // Vaulted although no inventory item
+                                        // names it, and that is not an
+                                        // exception to the rule but the rule
+                                        // read properly: a bake belongs to the
+                                        // avatar, not to this region, and it
+                                        // travels with them exactly as their
+                                        // inventory does (operator,
+                                        // 2026-08-24). The region that baked
+                                        // it is an accident of where they were
+                                        // standing, and the next region they
+                                        // enter needs it.
                                         viewer_grid->store_vault_asset(metadata.viewer_id, content));
                                     response = registered
                                         ? homeworldz::http::response_for_content(
