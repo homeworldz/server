@@ -195,8 +195,18 @@ func (a *API) resolveClientDestination(w http.ResponseWriter, r *http.Request,
 			return failed(http.StatusBadRequest, "invalid_start",
 				`start must be "last", "home", or Region/x/y/z`)
 		}
+		position := &[3]float64{float64(point.X), float64(point.Y), float64(point.Z)}
 		destination, err := arrival.ResolveNamed(r.Context(), a.leases, point.Region)
 		if errors.Is(err, arrival.ErrNoDestination) {
+			// Not a region name. It may still be the name of a facet, which is
+			// a whole region to whoever asked — and is what a border crossing
+			// asks for whenever the region beyond the line is a rectangle.
+			if facetDestination, facet, ok := a.resolveFacetNamed(r.Context(), point.Region); ok {
+				if defined, found := a.definedRegion(r.Context(), facetDestination.Region.ID); found {
+					position = rebaseFacetPosition(defined, facet, position)
+				}
+				return facetDestination, position, true
+			}
 			return failed(http.StatusNotFound, "destination_unavailable",
 				"the requested region is not online")
 		}
@@ -204,7 +214,6 @@ func (a *API) resolveClientDestination(w http.ResponseWriter, r *http.Request,
 			return failed(http.StatusServiceUnavailable, "destination_unavailable",
 				"no online region can accept this session")
 		}
-		position := &[3]float64{float64(point.X), float64(point.Y), float64(point.Z)}
 		return destination, position, true
 	}
 }
