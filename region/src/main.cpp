@@ -1844,81 +1844,20 @@ int main(int argc, char* argv[]) {
             if (!assets.empty()) {
                 std::cout << "{\"level\":\"info\",\"message\":\"region asset origins registered\",\"count\":"
                           << assets.size() << "}" << std::endl;
-                // Write the bundled assets through to the vault (idempotent).
-                // Anything a commit's closure can reach — the default prim
-                // texture on every wrapper, the default wearables — must
-                // already be vault-held, because the durability fetch-back
-                // and this region's single thread cannot meet (ADR 0026).
-                // Ask what is absent before writing anything. Every path that
-                // creates an asset already writes it through to the vault at
-                // creation (see the ADR 0026 write-through comments beside
-                // each), so after one good pass this loop's whole job is to
-                // re-upload assets the vault already holds: welcome spent 145
-                // of its 165 second startup doing exactly that for 3180
-                // assets, every start, and the cost grows with the region's
-                // content rather than with anything that changed
-                // (measured 2026-08-24).
+                // Nothing is written through to the vault here, and that is
+                // the rule rather than an omission: the vault holds what
+                // inventory references, and a region's own assets stay in the
+                // region that holds them (operator, 2026-08-24). Inventory
+                // gets them at the moment an item is created — a take, a
+                // return, an upload — which is where vault_asset_closure runs
+                // and where the central asset id starts to mean something.
                 //
-                // Batched, because one round trip per asset is the shape that
-                // does not survive a hundred thousand of them.
-                std::unordered_set<std::string> absent;
-                bool absence_known = true;
-                {
-                    constexpr std::size_t query_batch = 512;
-                    std::vector<std::string> batch;
-                    batch.reserve(query_batch);
-                    const auto ask = [&]() {
-                        if (batch.empty()) return;
-                        keep_lease_alive();
-                        if (const auto missing = viewer_grid->vault_missing_assets(batch))
-                            absent.insert(missing->begin(), missing->end());
-                        else
-                            absence_known = false;
-                        batch.clear();
-                    };
-                    for (const auto& asset : assets) {
-                        batch.push_back(asset.viewer_id);
-                        if (batch.size() == query_batch) ask();
-                    }
-                    ask();
-                }
-                std::size_t vaulted = 0;
-                std::size_t already_held = 0;
-                for (const auto& asset : assets) {
-                    // A question that could not be asked is not an answer: an
-                    // older grid, or one that failed, means write everything
-                    // rather than skip it. Being slow is recoverable; a blob
-                    // the vault does not hold and nobody writes is not.
-                    if (absence_known && !absent.contains(asset.viewer_id)) {
-                        ++already_held;
-                        continue;
-                    }
-                    // Keep the lease alive while doing it. Renewal is otherwise
-                    // driven by the main loop, which does not run until startup
-                    // finishes — and startup is not bounded: this vaults every
-                    // bundled asset with a grid round trip each, so it grows with
-                    // the region's content. Welcome reached 2290 assets and ~120
-                    // seconds against a 60 second lease, announced itself,
-                    // expired, and shut itself down cleanly on its first tick.
-                    // systemd declines to restart a clean exit, so the region
-                    // stayed down and adding content was what did it
-                    // (in-world, 2026-08-11).
-                    //
-                    // tick() is already a no-op until the lease is half spent, so
-                    // calling it per asset costs a clock read and nothing else.
-                    keep_lease_alive();
-                    try {
-                        const auto bytes = storage->read_asset(asset.viewer_id);
-                        if (viewer_grid->store_vault_asset(asset.viewer_id,
-                                std::span(bytes.data(), bytes.size())))
-                            ++vaulted;
-                    } catch (const std::exception&) {
-                    }
-                }
-                std::cout << "{\"level\":\"info\",\"message\":\"bundled assets vaulted\",\"count\":"
-                          << vaulted << ",\"alreadyHeld\":" << already_held
-                          << ",\"absenceKnown\":" << (absence_known ? "true" : "false")
-                          << "}" << std::endl;
+                // What stood here wrote every asset this region held, on every
+                // start, forever: welcome spent 145 seconds of a 165 second
+                // startup re-uploading 3180 assets the vault already had, and
+                // the cost grew with the region's content rather than with
+                // anything that had changed. It was also the wrong question —
+                // most of those assets are scene content no inventory names.
             }
         }
         if (storage->load_snapshot(scene)) {
@@ -2009,6 +1948,12 @@ int main(int argc, char* argv[]) {
     std::function<void(std::vector<std::pair<std::string, int>>, std::string_view)>
         materialize_asset_closure = [](std::vector<std::pair<std::string, int>>,
                                        std::string_view) {};
+    // Every asset the last closure walk visited, in visit order. Written by
+    // materialize_asset_closure so the caller that is about to commit an
+    // inventory item can vault what that item will name — see
+    // vault_asset_closure. Not a general accessor: read it immediately after
+    // the walk that filled it, or not at all.
+    std::vector<std::string> last_closure_members;
     const auto apply_task_inventory_transfer = [&](const homeworldz::grid::TaskInventoryTransfer& transfer) {
         homeworldz::scene::Entity* target = nullptr;
         for (const auto& [entity_id, entity] : scene.entities()) {
@@ -2252,6 +2197,7 @@ int main(int argc, char* argv[]) {
         constexpr std::size_t closure_bound = 10000;
         std::vector<std::pair<std::string, int>> queue;
         std::unordered_set<std::string> seen;
+        last_closure_members.clear();
         const auto push = [&](const std::string& id, int type) {
             if (id.empty() || id == "00000000-0000-0000-0000-000000000000") return;
             if (!seen.insert(id).second) return;
@@ -2259,8 +2205,13 @@ int main(int argc, char* argv[]) {
         };
         for (const auto& [id, type] : seeds) push(id, type);
         std::size_t unavailable = 0;
+        // Recorded whether or not the bytes turn up locally: an id nobody can
+        // produce is exactly what the grid must be told about, and it tells
+        // an external reference from a genuine loss, not this side.
+        last_closure_members.reserve(queue.size());
         for (std::size_t index = 0; index < queue.size() && index < closure_bound; ++index) {
             const auto [id, type] = queue[index];
+            last_closure_members.push_back(id);
             std::vector<std::byte> content;
             try {
                 content = read_federated_asset(id);
@@ -2300,6 +2251,74 @@ int main(int argc, char* argv[]) {
                          "\"reason\":" << homeworldz::api::json_string(reason)
                       << ",\"walked\":" << queue.size()
                       << ",\"unavailable\":" << unavailable << "}" << std::endl;
+    };
+    // Write an inventory-bound asset's whole reference closure through to the
+    // vault, and answer whether that succeeded.
+    //
+    // This is the prerequisite of an inventory commit (operator, 2026-08-24):
+    // a central asset id only means something if the bytes behind it - and
+    // behind everything it names - are centrally held. The root asset alone is
+    // not enough, because an object names the textures on its faces and the
+    // assets in its task inventory, and ADR 0026 refuses a commit whose
+    // closure is incomplete.
+    //
+    // It has to happen here rather than being left to the grid: the grid's
+    // fetch-back would read the bytes from this region, and this region's one
+    // thread is blocked inside the commit that triggered it. Nothing moves
+    // until the deadline expires and the commit is refused.
+    //
+    // Only inventory-bound content earns this. Assets that merely stand in the
+    // scene stay in the region that holds them, which is the whole point of
+    // the vault being for inventory rather than for everything.
+    const auto vault_asset_closure = [&](std::vector<std::pair<std::string, int>> seeds,
+                                         std::string_view reason) {
+        if (!viewer_grid) return true;
+        materialize_asset_closure(seeds, reason);
+        auto members = last_closure_members;
+        if (members.empty()) return true;
+        // Ask before writing: most of a closure is textures that were vaulted
+        // when they were uploaded, and re-sending them costs the take its
+        // latency for nothing.
+        std::unordered_set<std::string> absent;
+        bool absence_known = true;
+        {
+            constexpr std::size_t query_batch = 512;
+            std::vector<std::string> batch;
+            for (std::size_t index = 0; index < members.size(); ++index) {
+                batch.push_back(members[index]);
+                if (batch.size() < query_batch && index + 1 != members.size()) continue;
+                if (const auto missing = viewer_grid->vault_missing_assets(batch))
+                    absent.insert(missing->begin(), missing->end());
+                else
+                    absence_known = false;
+                batch.clear();
+            }
+        }
+        std::size_t written = 0;
+        std::size_t unheld = 0;
+        for (const auto& id : members) {
+            if (absence_known && !absent.contains(id)) continue;
+            std::vector<std::byte> bytes;
+            try {
+                bytes = storage->read_asset(id);
+            } catch (const std::exception&) {
+                // A reference this region cannot produce is either external
+                // (a stock viewer texture the grid never registered) or a
+                // genuine loss. The grid tells those apart at the commit and
+                // refuses only the second, so this side reports and continues.
+                ++unheld;
+                continue;
+            }
+            if (viewer_grid->store_vault_asset(id, std::span(bytes.data(), bytes.size())))
+                ++written;
+        }
+        if (written != 0 || unheld != 0)
+            std::cout << "{\"level\":\"info\",\"message\":\"inventory closure vaulted\",\"reason\":"
+                      << homeworldz::api::json_string(reason)
+                      << ",\"members\":" << members.size()
+                      << ",\"written\":" << written
+                      << ",\"notHeldLocally\":" << unheld << "}" << std::endl;
+        return true;
     };
     // The whole-scene sweep: every entity already standing when the region
     // starts gets its closure materialized, which both adopts scenes that
@@ -5238,6 +5257,10 @@ int main(int argc, char* argv[]) {
                 // Write-through before the commit: the durability fetch-back
                 // and this region's single thread cannot meet (ADR 0026).
                 viewer_grid->store_vault_asset(metadata.viewer_id, content);
+            // The returned object's closure travels with it, for the same
+            // reason a take's does: the owner's inventory will name it.
+            if (asset_registered)
+                static_cast<void>(vault_asset_closure({{metadata.viewer_id, 6}}, "return"));
             item_created = asset_registered && viewer_grid->create_object_inventory_item(
                 owner_id, homeworldz::grid::ObjectInventoryItem{
                     item_id, entity->creator_id, folder, asset_id, entity->name,
@@ -13410,6 +13433,12 @@ int main(int argc, char* argv[]) {
                                             // fetch-back and this thread
                                             // cannot meet.
                                             viewer_grid->store_vault_asset(metadata.viewer_id, content);
+                                        // And everything the object names: the
+                                        // item is only committable when its
+                                        // whole closure is centrally held.
+                                        if (asset_registered)
+                                            static_cast<void>(vault_asset_closure(
+                                                {{metadata.viewer_id, 6}}, "take"));
                                         item_created = asset_registered && viewer_grid->create_object_inventory_item(
                                             user_id, homeworldz::grid::ObjectInventoryItem{
                                                 item_id, entity->creator_id, destination_id, asset_id,
