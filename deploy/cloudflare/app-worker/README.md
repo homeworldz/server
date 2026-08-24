@@ -135,11 +135,28 @@ moment that stops being cheap to fix. `dry-run` prints the bindings without
 uploading, `deployments` lists what is live, `tail` streams its logs.
 
 **Do not add an `[env.production]` block** to satisfy a house rule about
-passing `--env=production`. A named environment makes wrangler deploy a
-*differently named* Worker — `homeworldz-client-app-production` — which would
-not own the `my.homeworldz.com/app/*` route, leaving the old one serving while
-the new one sits idle. This config has one environment and its route is the
-production route.
+passing `--env=production`. The top level already *is* the production
+configuration: it carries the production route, `wrangler deploy` with no flag
+deploys exactly it, and with no named environments defined wrangler warns about
+nothing.
+
+Two things go wrong if one is added anyway, and the second is the expensive one.
+A named environment deploys a *differently named* Worker
+(`homeworldz-client-app-production`) unless `name` is overridden — that part is
+fixable. What is not worth fixing is that **`vars` and `r2_buckets` are not
+inherited by environments.** Measured 2026-08-24 with `--dry-run --env
+production` against an `env.production` holding only a name override:
+
+```
+"vars" exists at the top level, but not on "env.production" … not inherited
+"r2_buckets" exists at the top level, but not on "env.production" … not inherited
+No bindings found.
+```
+
+Deploying that ships a Worker with no bucket and no configuration — every
+request to `/app` fails, and the config file looks correct while it happens.
+Keeping every var and binding duplicated across two blocks is a drift hazard
+bought for a command-line flag.
 
 Verify a deploy by fetching the document rather than by reading the output:
 
