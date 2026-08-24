@@ -510,13 +510,17 @@ bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id)
 // calls, so activation is the destination's authority to exist, and a staged
 // object the source never activated expires having been created nowhere.
 // Establish a child agent at a neighbour (ADR 0038) and return its answer
-// verbatim, for the caller to parse (parse_child_agent_acceptance). Empty means
+// verbatim, for the caller to parse (parse_child_agent_acceptance). status, when
+// given, receives the neighbour's HTTP status (0 when the request never got an
+// answer), which is the difference between a neighbour that is still starting
+// and one that is refusing the credential. Empty means
 // it refused, and the caller must not announce that neighbour to the viewer: one
 // announced without a seed that answers stalls it.
 //
 // The body is returned rather than the seed because the answer also names which
 // facet to announce, and only the destination knows its own layout.
-std::string establish_child_agent(Transport& destination, std::string_view document);
+std::string establish_child_agent(Transport& destination, std::string_view document,
+                                  int* status = nullptr);
 
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document);

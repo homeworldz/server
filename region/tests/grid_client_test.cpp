@@ -1,4 +1,5 @@
 #include "homeworldz/grid_client.h"
+#include "homeworldz/region_transit.h"
 
 #include <chrono>
 #include <memory>
@@ -701,6 +702,22 @@ int main() {
             writes->requests.back().body.find(R"("worn":true)") == std::string::npos) return 1;
         if (!write_client.set_attachment_worn(worn_user, "11111111-1111-4111-8111-111111111111", 0, false) ||
             writes->requests.back().body.find(R"("worn":false)") == std::string::npos) return 1;
+    }
+    {
+        // A refused child agent has to say which refusal it was: a neighbour
+        // that is still starting answers nothing (0), one whose service token
+        // differs answers 401, and they used to be the same log line.
+        auto refuser = std::make_shared<CannedTransport>(
+            401, R"({"code":"unauthorized","message":"a valid grid service token is required"})");
+        int status = 0;
+        if (!homeworldz::grid::establish_child_agent(*refuser, "{}", &status).empty()) return 1;
+        if (status != 401) return 1;
+        auto accepter = std::make_shared<CannedTransport>(200, R"({"seed":"http://x/caps/seed/s/0"})");
+        status = 0;
+        const auto accepted = homeworldz::grid::establish_child_agent(*accepter, "{}", &status);
+        if (status != 200 ||
+            homeworldz::region::parse_child_agent_acceptance(accepted) !=
+                "http://x/caps/seed/s/0") return 1;
     }
     {
         // The lease clock, which is what keeps a region alive through a grid

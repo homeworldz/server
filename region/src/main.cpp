@@ -4471,6 +4471,19 @@ int main(int argc, char* argv[]) {
     // session_facet_seeds does this for facets of this region, and says the
     // same thing: the seed already on file is the viewer's truth.
     std::unordered_map<std::string, std::string> announced_child_seeds;
+    // When a refused offer may be tried again, by the same key.
+    //
+    // A refusal used to be remembered exactly like a success, so one failure
+    // denied that session a child agent on that neighbour for the whole
+    // session. The failure that matters is timing: a content-heavy region
+    // takes minutes to start (welcome vaults 3180 asset origins), and a
+    // neighbour still starting refuses everything. On the cloud grid, where
+    // regions are up long before anyone logs in, 94 offers were established
+    // and none refused — which is exactly why this went unseen there and bit
+    // a local pair started alongside its client.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        child_agent_retry_at;
+    constexpr auto child_agent_retry_interval = std::chrono::seconds(30);
     auto next_child_agent_offer = std::chrono::steady_clock::time_point{};
     auto next_child_agent_sweep = std::chrono::steady_clock::time_point{};
     // On unless a region's ini says `child_agents = off`, which exists because
@@ -4510,6 +4523,10 @@ int main(int argc, char* argv[]) {
                 const auto pair_key = live.session_id + '|' + neighbor.id + '|' +
                     std::to_string(neighbor.grid_x) + ',' + std::to_string(neighbor.grid_y);
                 if (offered_child_agents.contains(pair_key)) continue;
+                if (const auto waiting = child_agent_retry_at.find(pair_key);
+                    waiting != child_agent_retry_at.end() &&
+                    std::chrono::steady_clock::now() < waiting->second)
+                    continue;
                 homeworldz::region::ChildAgent child;
                 child.agent_id = homeworldz::viewer::format_uuid(*agent);
                 child.session_id = live.session_id;
@@ -4540,28 +4557,49 @@ int main(int argc, char* argv[]) {
                 child.cof_version = dressed->second.serial;
                 child.appearance_version = dressed->second.appearance_version;
                 std::string seed;
+                // Zero until the neighbour answers, and zero is itself an
+                // answer: nothing was refused, nothing was reached.
+                int established_status = 0;
                 try {
                     auto transport = homeworldz::grid::socket_transport(
                         neighbor.public_endpoint, service_token);
                     if (transport)
                         seed = homeworldz::region::parse_child_agent_acceptance(
                             homeworldz::grid::establish_child_agent(*transport,
-                                homeworldz::region::encode_child_agent_request(child)));
+                                homeworldz::region::encode_child_agent_request(child),
+                                &established_status));
                 } catch (const std::exception& error) {
                     std::cerr << "{\"level\":\"warning\",\"message\":\"child agent not established\""
                                  ",\"neighborId\":" << homeworldz::api::json_string(neighbor.id)
                               << ",\"error\":" << homeworldz::api::json_string(error.what())
                               << "}" << std::endl;
                 }
-                // Remembered either way: retrying every pass against a neighbour
-                // that is refusing is a busy loop against its HTTP server.
-                offered_child_agents.insert(pair_key);
                 if (seed.empty()) {
+                    // Not remembered as done — tried again after a pause. The
+                    // pause is what keeps this off a busy loop against a
+                    // neighbour that is genuinely refusing; the retry is what
+                    // stops a neighbour that was merely slow to start from
+                    // costing this session its child agent for good.
+                    child_agent_retry_at[pair_key] =
+                        std::chrono::steady_clock::now() + child_agent_retry_interval;
+                    // The status is the whole diagnosis and used to be absent:
+                    // 0 is a neighbour that could not be reached, 401 a service
+                    // token that does not match, 409 a home region that is this
+                    // one, 400 a request it could not read. They are different
+                    // problems and read identically without this.
                     std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
                                  "child agent refused\",\"neighborId\":"
-                              << homeworldz::api::json_string(neighbor.id) << "}" << std::endl;
+                              << homeworldz::api::json_string(neighbor.id)
+                              << ",\"endpoint\":"
+                              << homeworldz::api::json_string(neighbor.public_endpoint)
+                              << ",\"status\":" << established_status
+                              << ",\"retrySeconds\":" << child_agent_retry_interval.count()
+                              << "}" << std::endl;
                     return true;
                 }
+                // Established: this pair is done for the life of the session.
+                offered_child_agents.insert(pair_key);
+                child_agent_retry_at.erase(pair_key);
                 // The neighbour record IS the facet: the grid resolves a
                 // neighbour to the square facet that borders this one, with its
                 // own corner, extent and viewer port (see the /neighbors reply —
@@ -15689,6 +15727,9 @@ int main(int argc, char* argv[]) {
                 return true;
             };
             std::erase_if(offered_child_agents, session_is_gone);
+            std::erase_if(child_agent_retry_at, [&](const auto& entry) {
+                return session_is_gone(entry.first);
+            });
             std::erase_if(announced_child_seeds, [&](const auto& entry) {
                 return session_is_gone(entry.first);
             });

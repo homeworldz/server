@@ -1252,9 +1252,11 @@ bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id)
         "/prepare-arrival", {}).status_code == 200;
 }
 
-std::string establish_child_agent(Transport& destination, std::string_view document) {
+std::string establish_child_agent(Transport& destination, std::string_view document,
+                                  int* status) {
     const auto response = destination.send(
         "POST", "/api/v1/child-agents", std::string(document));
+    if (status) *status = response.status_code;
     if (response.status_code != 200) return {};
     return response.body;
 }
