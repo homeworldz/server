@@ -456,7 +456,12 @@ std::string encode_child_agent_request(const ChildAgent& agent) {
         ",\"worn\":" + worn + appearance + "}";
 }
 
-std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
+std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
+                                                   std::string* reason) {
+    const auto refuse = [&](const char* because) {
+        if (reason) *reason = because;
+        return std::optional<ChildAgent>{};
+    };
     ChildAgent agent;
     agent.agent_id = json_string_field(document, "agentId");
     agent.session_id = json_string_field(document, "sessionId");
@@ -464,32 +469,36 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
     const auto circuit_code = json_number_field(document, "circuitCode");
     const auto position = json_number_array<3>(document, "position");
     auto worn = json_worn_array(document, "worn");
-    if (agent.agent_id.empty() || agent.session_id.empty() ||
-        agent.home_region_id.empty() || !circuit_code || !position || !worn)
-        return std::nullopt;
+    if (agent.agent_id.empty() || agent.session_id.empty() || agent.home_region_id.empty())
+        return refuse("identity");
+    // Absent or unreadable, not zero: zero is a real answer, see below.
+    if (!circuit_code) return refuse("circuit_code");
+    if (!position) return refuse("position");
+    if (!worn) return refuse("worn");
     agent.worn = std::move(*worn);
     // The appearance is optional as a whole and indivisible within itself. One
     // half of it is not a smaller appearance, it is a broken one, and it would
     // reach a viewer as an avatar wearing part of itself.
     const auto texture_entry = json_string_field(document, "textureEntry");
     const auto visual_params = json_string_field(document, "visualParams");
-    if (texture_entry.empty() != visual_params.empty()) return std::nullopt;
+    if (texture_entry.empty() != visual_params.empty()) return refuse("appearance_half");
     if (!texture_entry.empty()) {
         const auto entry = llsd::decode_base64(texture_entry);
         const auto params = llsd::decode_base64(visual_params);
         const auto cof_version = json_number_field(document, "cofVersion");
         const auto appearance_version = json_number_field(document, "appearanceVersion");
-        if (!entry || !params || entry->empty() || params->empty() ||
-            !cof_version || !appearance_version)
-            return std::nullopt;
+        if (!entry || !params || entry->empty() || params->empty())
+            return refuse("appearance_unreadable");
+        if (!cof_version || !appearance_version) return refuse("appearance_versions");
         // The bounds encode_avatar_appearance itself enforces. Refused here
         // rather than there, where the only outcome available is an empty
         // message that nobody can trace back to this.
-        if (entry->size() > 65535 || params->size() > 255) return std::nullopt;
+        if (entry->size() > 65535 || params->size() > 255) return refuse("appearance_oversized");
         if (*cof_version < 0.0 ||
             *cof_version > static_cast<double>((std::numeric_limits<std::uint32_t>::max)()))
-            return std::nullopt;
-        if (*appearance_version < 0.0 || *appearance_version > 1.0) return std::nullopt;
+            return refuse("cof_version");
+        if (*appearance_version < 0.0 || *appearance_version > 1.0)
+            return refuse("appearance_version");
         agent.texture_entry = *entry;
         agent.visual_params.reserve(params->size());
         for (const auto value : *params)
@@ -497,13 +506,20 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document) {
         agent.cof_version = static_cast<std::uint32_t>(*cof_version);
         agent.appearance_version = static_cast<std::uint8_t>(*appearance_version);
     }
-    // A circuit code of zero is not a circuit, and it is what an absent field
-    // and a malformed one both look like once they are numbers.
-    if (*circuit_code <= 0.0 ||
+    // Zero means "this avatar has no viewer circuit", which is what every
+    // avatar on the client session transport has: circuit_code is an LLUDP
+    // concept and those sessions never acquire one. It was refused here as
+    // malformed, on the reasoning that an absent field becomes zero once it is
+    // a number — but an absent field is already refused above, as unreadable
+    // rather than as zero. So the check cost nothing against a viewer and
+    // rejected every offer a client-only region ever made: two such regions
+    // refused each other's child agents 400 in both directions, always,
+    // reported 2026-08-24 and reproduced from the client's own logs.
+    if (*circuit_code < 0.0 ||
         *circuit_code > static_cast<double>((std::numeric_limits<std::uint32_t>::max)()))
-        return std::nullopt;
+        return refuse("circuit_code_range");
     for (const auto value : *position)
-        if (!std::isfinite(value)) return std::nullopt;
+        if (!std::isfinite(value)) return refuse("position_not_finite");
     agent.circuit_code = static_cast<std::uint32_t>(*circuit_code);
     agent.position = {
         static_cast<float>((*position)[0]),

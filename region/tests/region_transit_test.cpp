@@ -1,6 +1,7 @@
 #include "homeworldz/region_transit.h"
 
 #include <chrono>
+#include <string>
 #include <vector>
 
 int main() {
@@ -237,10 +238,25 @@ int main() {
     const auto no_circuit = std::string(
         "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
         ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
+        ",\"homeRegionId\":\"") + std::string(destination) +
+        "\",\"position\":[1.0,2.0,3.0],\"worn\":[]}";
+    std::string refusal;
+    if (homeworldz::region::parse_child_agent_request(no_circuit, &refusal)) return 1;
+    if (refusal != "circuit_code") return 1;
+    if (homeworldz::region::parse_child_agent_request("{}", &refusal)) return 1;
+    if (refusal != "identity") return 1;
+    // A circuit code of zero is not malformed: it is what every avatar on the
+    // client session transport has, since a circuit is an LLUDP concept. This
+    // was refused as malformed, so two client-only regions refused each other's
+    // child agents 400 in both directions, always (2026-08-24).
+    const auto session_avatar = std::string(
+        "{\"agentId\":\"33333333-3333-4333-8333-333333333333\""
+        ",\"sessionId\":\"44444444-4444-4444-8444-444444444444\""
         ",\"circuitCode\":0,\"homeRegionId\":\"") + std::string(destination) +
-        "\",\"position\":[1.0,2.0,3.0]}";
-    if (homeworldz::region::parse_child_agent_request(no_circuit)) return 1;
-    if (homeworldz::region::parse_child_agent_request("{}")) return 1;
+        "\",\"position\":[1.0,2.0,3.0],\"worn\":[]}";
+    const auto without_circuit = homeworldz::region::parse_child_agent_request(session_avatar);
+    if (!without_circuit || without_circuit->circuit_code != 0 ||
+        without_circuit->agent_id != "33333333-3333-4333-8333-333333333333") return 1;
     // Wearing nothing is an answer; a worn set that cannot be read is not, and
     // must not arrive as a short one. Half a worn set dresses the avatar in some
     // of its clothes and looks like a success.

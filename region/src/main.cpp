@@ -6489,6 +6489,9 @@ int main(int argc, char* argv[]) {
                     // this need two phases precisely because they do take
                     // something away.
                     if (response.path == "/api/v1/child-agents") {
+                        // Declared here rather than in the else-if below: an
+                        // if-statement takes one init-statement, not two.
+                        std::string refusal;
                         const auto authorization =
                             homeworldz::http::request_header_value(request, "Authorization");
                         if (response.method != "POST") {
@@ -6508,13 +6511,20 @@ int main(int argc, char* argv[]) {
                                 homeworldz::api::to_json(homeworldz::api::Error{
                                     "region_unregistered",
                                     "the region is not registered with a grid"}));
-                        } else if (const auto requested = homeworldz::region::parse_child_agent_request(
-                                       http_request_body(request)); !requested) {
+                        } else if (const auto requested =
+                                       homeworldz::region::parse_child_agent_request(
+                                           http_request_body(request), &refusal); !requested) {
+                            // Said out loud on this side too. The offering
+                            // region only ever sees "400", and which of the ten
+                            // things was wrong is knowable only here.
+                            std::cerr << "{\"level\":\"warning\",\"message\":\"child agent "
+                                         "refused, request not readable\",\"reason\":"
+                                      << homeworldz::api::json_string(refusal) << "}" << std::endl;
                             response = homeworldz::http::response_for_content(
                                 request, 400, "application/json",
                                 homeworldz::api::to_json(homeworldz::api::Error{
                                     "child_agent_malformed",
-                                    "the child agent could not be read"}));
+                                    "the child agent could not be read: " + refusal}));
                         } else if (requested->home_region_id == registration->region_id()) {
                             // Its avatar is said to be here, so it is not a
                             // visitor from anywhere — accepting this would put

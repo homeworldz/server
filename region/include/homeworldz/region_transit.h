@@ -189,7 +189,11 @@ struct ChildAgent {
 // is sent: the seed belongs to the region that will serve it, and a source that
 // could name it could name a capability path on a region it does not run.
 std::string encode_child_agent_request(const ChildAgent& agent);
-std::optional<ChildAgent> parse_child_agent_request(std::string_view document);
+// reason, when given, receives a short token naming the first thing that was
+// wrong — the difference between a request this build cannot read and one it
+// will not accept, which the caller cannot otherwise tell apart or report.
+std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
+                                                   std::string* reason = nullptr);
 
 // The seed the destination minted, or empty when it answered without one, which
 // a source must treat as a refusal: announcing a neighbour whose seed does not
