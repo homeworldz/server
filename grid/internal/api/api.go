@@ -99,6 +99,10 @@ type InventoryStore interface {
 // satisfied by *presence.PostgresStore.
 type PresenceStore interface {
 	List(ctx context.Context) ([]presence.Presence, error)
+	// Get answers whether this user is in-world right now, which is how
+	// client world entry tells a login from a region crossing; both arrive at
+	// the same endpoint. Absent presence is ErrNotFound, not an error.
+	Get(ctx context.Context, userID string) (presence.Presence, error)
 }
 
 // Options configures New.

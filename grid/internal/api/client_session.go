@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/homeworldz/server/grid/internal/arrival"
+	"github.com/homeworldz/server/grid/internal/eventlog"
+	"github.com/homeworldz/server/grid/internal/presence"
+	"github.com/homeworldz/server/grid/internal/regions"
 )
 
 // World entry for the Homeworldz client (docs/CLIENT2.md, "Arrival on the grid
@@ -122,6 +125,8 @@ func (a *API) clientSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.noteClientLogin(r, account.ID, destination.Region)
+
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, ClientSession{
 		Session: ClientSessionInfo{ID: session.ID, ExpiresAt: session.ExpiresAt},
@@ -135,6 +140,48 @@ func (a *API) clientSession(w http.ResponseWriter, r *http.Request) {
 		},
 		Ticket:       ClientTicket{Token: ticket, ExpiresAt: ticketExpiry},
 		Capabilities: capabilitiesOf(destination.Region.SessionEndpoint),
+	})
+}
+
+// noteClientLogin records a login for a client that has just entered the
+// world, and records nothing for one that is merely moving.
+//
+// The viewer has a login endpoint distinct from everything it does afterwards,
+// so its login event is unambiguous. The client does not: POST
+// /v1/client/session is world entry and it is also what a region crossing
+// calls, because the manifest is re-resolved per region. Recording every call
+// would make crossings look like logins and inflate both the login counts and,
+// on a busy day of border-hopping, nothing else — the active-user figures are
+// COUNT(DISTINCT user_id) and would survive. The login counts would not.
+//
+// Presence is the discriminator: a crossing is made by somebody already
+// in-world. It is not exact, and the inexactness runs one way each side:
+//
+//   - Presence goes stale after 90 seconds without a region refreshing it. A
+//     crossing out of a region that stopped refreshing that long ago counts as
+//     a login. That region has bigger problems.
+//   - A client that reconnects within 90 seconds of dropping — a reload, a
+//     flaky network — is still present and its return is not counted. That is
+//     arguably the right answer anyway: it never left.
+//
+// Best-effort, like every other event: a login that happened is never failed
+// because its row was not written.
+func (a *API) noteClientLogin(r *http.Request, userID string, region regions.Region) {
+	if a.events == nil || a.presence == nil {
+		return
+	}
+	if _, err := a.presence.Get(r.Context(), userID); err == nil {
+		return // already in-world: this is a crossing
+	} else if !errors.Is(err, presence.ErrNotFound) {
+		// Presence is unreadable, so whether this is a login is unknown. Not
+		// recording is the conservative answer: an undercount is a gap, an
+		// overcount is a wrong number that reads as real.
+		a.logger.Warn("client login not recorded", "error", err, "user", userID)
+		return
+	}
+	eventlog.Note(r.Context(), a.events, a.logger, eventlog.Event{
+		Kind: eventlog.KindLogin, UserID: userID, RegionID: region.ID,
+		Detail: region.Name,
 	})
 }
 

@@ -60,6 +60,17 @@ The kinds recorded now: `login`, `logout`, `registration`, `teleport`,
 - **`login`** — viewer login, at the point where the login has resolved to a
   region. Every failure before that revokes the session, and a login that never
   reached a region is not one a person made.
+
+  Client world entry records the same kind, and needs a discriminator the
+  viewer path does not: `POST /v1/client/session` is world entry *and* is what
+  every region crossing calls, because the capability manifest is re-resolved
+  per region. Presence is that discriminator — a crossing is made by somebody
+  already in-world. It is not exact. Presence goes stale after 90 seconds, so a
+  crossing out of a region that stopped refreshing for that long counts as a
+  login; and a client that reconnects within 90 seconds of dropping is still
+  present and is not counted, which is arguably right since it never left.
+  Presence unreadable records nothing: an undercount is a gap somebody can look
+  for, an overcount is a wrong number that reads as real.
 - **`logout`** — the region clearing presence. That call is the grid's only
   account of an avatar leaving, and the region makes it both for a viewer that
   logged out and for a session that was retired without one.
