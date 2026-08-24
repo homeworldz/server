@@ -1,0 +1,4 @@
+node_modules/
+
+# Wrangler keeps per-project state (build cache, dev server data) here.
+.wrangler/

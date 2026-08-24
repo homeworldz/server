@@ -115,3 +115,34 @@ Three things worth knowing before changing any of it:
 script the way a browser runs it, including the cases that fail quietly: an
 expired session, a session with no expiry, an unreadable store. It exits
 non-zero on the first failure.
+
+## Deploying
+
+**This Worker does not deploy on push.** The management site does — it is a
+git-connected Pages project — and the resemblance is the trap. Measured
+2026-08-24: `wrangler deployments list` reported the live version as
+`Source: Upload`, a push carrying Worker changes left the served document
+unchanged, and only `wrangler deploy` moved it.
+
+```
+pnpm --dir deploy/cloudflare/app-worker install   # once
+pnpm --dir deploy/cloudflare/app-worker deploy
+```
+
+`deploy` runs the page-configuration checks first, because the part of this
+Worker that can break quietly is the script it injects, and a deploy is the
+moment that stops being cheap to fix. `dry-run` prints the bindings without
+uploading, `deployments` lists what is live, `tail` streams its logs.
+
+**Do not add an `[env.production]` block** to satisfy a house rule about
+passing `--env=production`. A named environment makes wrangler deploy a
+*differently named* Worker — `homeworldz-client-app-production` — which would
+not own the `my.homeworldz.com/app/*` route, leaving the old one serving while
+the new one sits idle. This config has one environment and its route is the
+production route.
+
+Verify a deploy by fetching the document rather than by reading the output:
+
+```
+curl -s https://my.homeworldz.com/app/ | grep -o 'var config = {[^}]*}'
+```

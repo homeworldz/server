@@ -1,0 +1,19 @@
+{
+  "name": "homeworldz-client-app-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Serves the Homeworldz client at my.homeworldz.com/app/* from R2, and injects the page configuration it reads.",
+  "scripts": {
+    "check": "node check-page-config.mjs",
+    "deploy": "pnpm run check && wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run",
+    "dev": "wrangler dev",
+    "deployments": "wrangler deployments list",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.125.0"
+  },
+  "packageManager": "pnpm@10.13.1"
+}
