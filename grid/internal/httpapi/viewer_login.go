@@ -290,39 +290,14 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 		_ = a.identity.RevokeSession(r.Context(), session.ID)
 		return nil, "unavailable", "The grid could not assign the viewer circuit."
 	}
-	folders := inventory.SystemFolders(session.UserID)
-	if a.inventory != nil {
-		folders, err = a.inventory.EnsureSystemFolders(r.Context(), session.UserID)
-		if err != nil {
-			_ = a.identity.RevokeSession(r.Context(), session.ID)
-			return nil, "unavailable", "The grid could not prepare the viewer inventory."
-		}
-		existingItems, err := a.inventory.ListItems(r.Context(), session.UserID)
-		if err != nil {
-			_ = a.identity.RevokeSession(r.Context(), session.ID)
-			return nil, "unavailable", "The grid could not inspect the viewer inventory."
-		}
-		defaultWearables := inventory.DefaultWearables(session.UserID)
-		if !inventory.DefaultOutfitInitialized(session.UserID, existingItems) {
-			for _, item := range defaultWearables {
-				if _, err := a.inventory.EnsureItem(r.Context(), item); err != nil {
-					_ = a.identity.RevokeSession(r.Context(), session.ID)
-					return nil, "unavailable", "The grid could not prepare the default outfit."
-				}
-			}
-		} else if inventory.DefaultOutfitNeedsRepair(session.UserID, existingItems) {
-			for index := 1; index < len(defaultWearables); index += 2 {
-				if _, err := a.inventory.EnsureItem(r.Context(), defaultWearables[index]); err != nil {
-					_ = a.identity.RevokeSession(r.Context(), session.ID)
-					return nil, "unavailable", "The grid could not repair the default outfit."
-				}
-			}
-		}
-		folders, err = a.inventory.ListFolders(r.Context(), session.UserID)
-		if err != nil {
-			_ = a.identity.RevokeSession(r.Context(), session.ID)
-			return nil, "unavailable", "The grid could not refresh the viewer inventory."
-		}
+	// The same preparation client world entry does, and for the same reason:
+	// an avatar needs its folder skeleton and something to wear before it
+	// reaches a region. See inventory.Bootstrap.
+	folders, err := inventory.Bootstrap(r.Context(), a.inventory, session.UserID)
+	if err != nil {
+		a.logger.Error("prepare viewer inventory", "error", err, "user", session.UserID)
+		_ = a.identity.RevokeSession(r.Context(), session.ID)
+		return nil, "unavailable", "The grid could not prepare the viewer inventory."
 	}
 	lookAt := "[r1,r0,r0]"
 	var spawnPosition *[3]float64

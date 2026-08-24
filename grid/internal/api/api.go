@@ -93,6 +93,13 @@ type LocationStore interface {
 type InventoryStore interface {
 	ListFolders(ctx context.Context, userID string) ([]inventory.Folder, error)
 	ListItems(ctx context.Context, userID string) ([]inventory.Item, error)
+	// The two writes world entry needs: an avatar arriving in a region has to
+	// have its folder skeleton and something to wear, and this is where a
+	// client-only account gets them for the first time. Together with the two
+	// reads above this satisfies inventory.Bootstrapper, which is the whole
+	// point of that interface being narrow.
+	EnsureSystemFolders(ctx context.Context, userID string) ([]inventory.Folder, error)
+	EnsureItem(ctx context.Context, item inventory.Item) (bool, error)
 }
 
 // PresenceStore exposes active viewer presences for system status. It is

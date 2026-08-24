@@ -9,6 +9,7 @@ import (
 
 	"github.com/homeworldz/server/grid/internal/arrival"
 	"github.com/homeworldz/server/grid/internal/eventlog"
+	"github.com/homeworldz/server/grid/internal/inventory"
 	"github.com/homeworldz/server/grid/internal/presence"
 	"github.com/homeworldz/server/grid/internal/regions"
 )
@@ -102,6 +103,15 @@ func (a *API) clientSession(w http.ResponseWriter, r *http.Request) {
 	endpoint, err := url.Parse(destination.Region.PublicEndpoint)
 	if err != nil || endpoint.Hostname() == "" {
 		writeError(w, http.StatusServiceUnavailable, Error{Code: "destination_unavailable", Message: "the destination region endpoint is invalid"})
+		return
+	}
+
+	// Before the session exists, so a failure here leaves nothing behind. An
+	// account that has only ever used the client reaches a region with no
+	// folder skeleton and nothing to wear otherwise; viewer login has prepared
+	// this since inventory existed, and both now call the same code.
+	if _, err := inventory.Bootstrap(r.Context(), a.inventory, account.ID); err != nil {
+		a.internalError(w, r, "prepare client inventory", err)
 		return
 	}
 

@@ -18,6 +18,9 @@ const otherUserID = "bbbbbbbb-0000-4000-8000-000000000009"
 type memoryInventoryStore struct {
 	folders []inventory.Folder
 	items   []inventory.Item
+	// What world entry wrote, for the bootstrap tests.
+	ensuredFolders int
+	ensuredItems   []inventory.Item
 }
 
 func (s *memoryInventoryStore) ListFolders(_ context.Context, userID string) ([]inventory.Folder, error) {
@@ -38,6 +41,39 @@ func (s *memoryInventoryStore) ListItems(_ context.Context, userID string) ([]in
 		}
 	}
 	return owned, nil
+}
+
+// EnsureSystemFolders and EnsureItem are what world entry writes. Recorded
+// rather than stubbed: whether a client-only account gets its skeleton is a
+// thing a test needs to be able to ask, and the answer is these two lists.
+func (s *memoryInventoryStore) EnsureSystemFolders(_ context.Context, userID string) ([]inventory.Folder, error) {
+	for _, folder := range inventory.SystemFolders(userID) {
+		if !s.hasFolder(folder.ID) {
+			s.folders = append(s.folders, folder)
+			s.ensuredFolders++
+		}
+	}
+	return s.ListFolders(context.Background(), userID)
+}
+
+func (s *memoryInventoryStore) EnsureItem(_ context.Context, item inventory.Item) (bool, error) {
+	for _, existing := range s.items {
+		if existing.ID == item.ID {
+			return false, nil
+		}
+	}
+	s.items = append(s.items, item)
+	s.ensuredItems = append(s.ensuredItems, item)
+	return true, nil
+}
+
+func (s *memoryInventoryStore) hasFolder(id string) bool {
+	for _, folder := range s.folders {
+		if folder.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func newInventoryHarness(t *testing.T) *worldEntryHarness {
