@@ -9,6 +9,7 @@ import { App } from "./App";
 import { AccountPage } from "./pages/AccountPage";
 import { LoginPage } from "./pages/LoginPage";
 import { StatsPage } from "./pages/StatsPage";
+import { LogoutPage } from "./pages/LogoutPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { VerifyPage } from "./pages/VerifyPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
@@ -59,6 +60,10 @@ render(
       <Route path="/verify" component={VerifyPage} />
       <Route path="/login" component={LoginPage} />
       <Route path="/stats" component={StatsPage} />
+      {/* The one URL that signs out. The Homeworldz client navigates here
+          after it has left the world; see LogoutPage for why it does not
+          ask. */}
+      <Route path="/logout" component={LogoutPage} />
       <Route path="/forgot" component={ForgotPasswordPage} />
       {/* The emailed link is {reset_url}/{token}, so the token is a path
           segment rather than a query parameter. */}
