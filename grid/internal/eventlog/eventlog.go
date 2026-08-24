@@ -11,6 +11,13 @@
 // succeeded must not fail because a log row could not be written, and a
 // statistic is worth less than the thing it counts. What must not happen is a
 // silent miss, so a failed write is logged as an error.
+//
+// The store's own tests need a database and skip without one, so `go test
+// ./...` printing `ok` for this package means they did not run:
+//
+//	HOMEWORLDZ_TEST_DATABASE_URL=postgres://…/homeworldz go test ./internal/eventlog/
+//
+// Worth saying out loud because a skip and a pass are the same word here.
 package eventlog
 
 import (
@@ -80,7 +87,8 @@ type Counter interface {
 	// DistinctUsersSince counts the distinct users named by events of a kind
 	// at or after the instant given. Rows naming no user are ignored, so an
 	// account deleted since its login stops being counted as a person rather
-	// than becoming an anonymous one.
+	// than becoming an anonymous one — SQL gives that for free, see the
+	// implementation.
 	DistinctUsersSince(ctx context.Context, kind Kind, since time.Time) (int, error)
 	// LatestAt reports when an event of the kind last happened, or
 	// ErrNoEvent.
@@ -123,6 +131,12 @@ func (s *PostgresStore) CountSince(ctx context.Context, kind Kind, since time.Ti
 	return count, nil
 }
 
+// The `user_id IS NOT NULL` predicate is not what excludes deleted accounts
+// from the count — COUNT(DISTINCT …) ignores nulls on its own, and removing
+// the predicate changes no answer (checked, 2026-08-24, by removing it and
+// watching the test still pass). It is here to match the partial index
+// event_log_kind_user_occurred_at_idx, which is declared over the same
+// condition, and for nothing else.
 func (s *PostgresStore) DistinctUsersSince(ctx context.Context, kind Kind, since time.Time) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `
