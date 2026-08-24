@@ -44,6 +44,19 @@ var (
 	ErrAlreadyVerified = errors.New("account is already verified")
 	// ErrLastSuper indicates an attempt to demote the final super account.
 	ErrLastSuper = errors.New("the final super account cannot be demoted")
+	// ErrBanned indicates correct credentials for a banned account.
+	//
+	// Distinct from ErrInvalidCredentials on purpose. Banning bumped the
+	// account's authorization version, which invalidates the tokens it already
+	// held — and nothing then stopped it signing in again a second later,
+	// because authentication asked only for a password and a verified address
+	// (found by an audit, 2026-08-24). Ending sessions is not denying access.
+	//
+	// A banned person is told they are banned rather than told their password
+	// is wrong: they know they have been banned, the pretence only costs them
+	// a support ticket, and a wrong-password answer here would send an honest
+	// operator hunting a credential fault that does not exist.
+	ErrBanned = errors.New("account is banned")
 )
 
 // AccountState values for ManagedAccount.State.
@@ -455,11 +468,16 @@ func (s *PostgresStore) Authenticate(ctx context.Context, ident, password string
 	}
 	var passwordHash sql.NullString
 	var id string
+	var banned bool
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, password_hash FROM users
-		   WHERE username = $1 AND verified_at IS NOT NULL
+		`SELECT u.id, u.password_hash,
+		        EXISTS (SELECT 1 FROM account_bans b
+		                WHERE b.user_id = u.id
+		                  AND (b.expires_at IS NULL OR b.expires_at > now()))
+		   FROM users u
+		   WHERE u.username = $1 AND u.verified_at IS NOT NULL
 		   LIMIT 1`,
-		key).Scan(&id, &passwordHash)
+		key).Scan(&id, &passwordHash, &banned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrInvalidCredentials
 	}
@@ -468,6 +486,12 @@ func (s *PostgresStore) Authenticate(ctx context.Context, ident, password string
 	}
 	if !passwordHash.Valid || bcrypt.CompareHashAndPassword([]byte(passwordHash.String), []byte(password)) != nil {
 		return Account{}, ErrInvalidCredentials
+	}
+	// After the password, so a wrong password on a banned account still
+	// answers wrong-password and this cannot be used to discover who is
+	// banned without knowing their credentials.
+	if banned {
+		return Account{}, ErrBanned
 	}
 	return s.Get(ctx, id)
 }

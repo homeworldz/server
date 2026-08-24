@@ -19,6 +19,13 @@ import (
 var (
 	ErrConflict           = errors.New("username is already registered")
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	// ErrBanned is correct credentials for a banned account. Viewer login
+	// checked neither bans nor verification until 2026-08-24: banning an
+	// account ended the sessions it held and left it free to log straight back
+	// in from a viewer. The account_bans table is the website's, but the users
+	// table is shared and a ban is a fact about the account rather than about
+	// one way of reaching it.
+	ErrBanned = errors.New("account is banned")
 	ErrSessionNotFound    = errors.New("session not found")
 	ErrUserNotFound       = errors.New("user not found")
 )
@@ -243,8 +250,14 @@ func (s *PostgresStore) CreateSession(ctx context.Context, username, password st
 
 func (s *PostgresStore) CreateViewerSession(ctx context.Context, username, passwordHash string, duration time.Duration) (Session, error) {
 	var userID, expected string
-	err := s.db.QueryRowContext(ctx, "SELECT id, viewer_password_hash FROM users WHERE username = $1", username).
-		Scan(&userID, &expected)
+	var banned bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT u.id, u.viewer_password_hash,
+		       EXISTS (SELECT 1 FROM account_bans b
+		               WHERE b.user_id = u.id
+		                 AND (b.expires_at IS NULL OR b.expires_at > now()))
+		  FROM users u WHERE u.username = $1`, username).
+		Scan(&userID, &expected, &banned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrInvalidCredentials
 	}
@@ -254,6 +267,11 @@ func (s *PostgresStore) CreateViewerSession(ctx context.Context, username, passw
 	if expected == "" || len(expected) != len(passwordHash) ||
 		subtle.ConstantTimeCompare([]byte(expected), []byte(passwordHash)) != 1 {
 		return Session{}, ErrInvalidCredentials
+	}
+	// Checked after the password, so this cannot be used to learn who is
+	// banned without already holding their credentials.
+	if banned {
+		return Session{}, ErrBanned
 	}
 	return s.insertSession(ctx, userID, duration)
 }

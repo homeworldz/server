@@ -141,6 +141,15 @@ func (a *API) tokens(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, Error{Code: "invalid_credentials", Message: "the userid or password is incorrect"})
 		return
 	}
+	// A ban has to refuse the next sign-in, not only end the sessions the
+	// account already had. Bumping the authorization version does the second,
+	// and did it alone until this: a banned account could sign in again
+	// immediately and be handed a fresh token.
+	if errors.Is(err, webaccount.ErrBanned) {
+		writeError(w, http.StatusForbidden, Error{Code: "account_banned",
+			Message: "this account is suspended"})
+		return
+	}
 	if err != nil {
 		a.internalError(w, r, "authenticate", err)
 		return

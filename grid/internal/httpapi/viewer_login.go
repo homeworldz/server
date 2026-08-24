@@ -229,6 +229,14 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 	if errors.Is(err, identity.ErrInvalidCredentials) {
 		return nil, "key", "The username or password is incorrect."
 	}
+	// "presence" is the reason code a viewer renders as a plain message
+	// rather than as a credential problem, which is what this is: the
+	// credentials were right and the account is not allowed in. Told plainly,
+	// because the person knows they were banned and an incorrect-password
+	// answer would only send them to support with a false report.
+	if errors.Is(err, identity.ErrBanned) {
+		return nil, "presence", "This account is suspended."
+	}
 	if err != nil {
 		return nil, "unavailable", "The Homeworldz grid could not create a session."
 	}
