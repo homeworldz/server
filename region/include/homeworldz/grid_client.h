@@ -529,6 +529,11 @@ bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id)
 std::string establish_child_agent(Transport& destination, std::string_view document,
                                   int* status = nullptr);
 
+// Tell a neighbour that a session it holds as a child is finished. Best
+// effort: a neighbour that cannot be reached releases the child on its own
+// expiry, which is the behaviour this replaces rather than depends on.
+bool release_child_agent(Transport& destination, std::string_view session_id);
+
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document);
 bool activate_object_arrival(Transport& destination, std::string_view transit_id);

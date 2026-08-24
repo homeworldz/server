@@ -1,9 +1,12 @@
 #include "homeworldz/session_server.h"
 
+#include "homeworldz/api_models.h"
+
 #include <libwebsockets.h>
 
 #include <atomic>
 #include <cstring>
+#include <string>
 #include <deque>
 #include <iostream>
 #include <mutex>
@@ -125,11 +128,36 @@ struct Server::State {
     }
 };
 
+namespace {
+// The peer address, for connection logging. lws gives it per-connection and it
+// is the only handle on "which attempt was this" when a client retries.
+std::string peer_of(lws* wsi) {
+    char name[64] = {};
+    char address[64] = {};
+    lws_get_peer_addresses(wsi, lws_get_socket_fd(wsi), name, sizeof(name) - 1,
+                           address, sizeof(address) - 1);
+    std::string peer(address);
+    if (peer.empty()) peer = name;
+    return peer;
+}
+} // namespace
+
 int Server::State::callback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len) {
     auto* state = of(wsi);
     auto** slot = static_cast<Connection**>(user);
     switch (reason) {
     case LWS_CALLBACK_ESTABLISHED: {
+        // Logged because until now this server said nothing about its own
+        // connections — not on accept, not on close, not even for the ones
+        // that worked. A client reported a first connect closing with code 0
+        // and no close frame, and the region's silence was read (by me) as
+        // evidence the socket was never accepted. It was evidence of nothing:
+        // the same silence follows every successful connection. A listener
+        // that cannot say what happened to a connection cannot be diagnosed
+        // from either end.
+        std::cout << "{\"level\":\"info\",\"message\":\"session connection established\""
+                     ",\"peer\":" << homeworldz::api::json_string(peer_of(wsi))
+                  << ",\"open\":" << state->connections.size() + 1 << "}" << std::endl;
         *slot = new Connection(SessionCore(state->options.region_name, state->options.validator,
                                     state->options.terrain_width,
                                     state->options.terrain_height,
@@ -142,6 +170,15 @@ int Server::State::callback(lws* wsi, lws_callback_reasons reason, void* user, v
         return 0;
     }
     case LWS_CALLBACK_CLOSED: {
+        // Whether it ever authenticated is the discriminator: a connection
+        // that closes before the ticket arrives is one that never became a
+        // session, which is exactly the shape being chased.
+        const bool was_established = slot && *slot && (*slot)->core.established();
+        std::cout << "{\"level\":\"info\",\"message\":\"session connection closed\""
+                     ",\"peer\":" << homeworldz::api::json_string(peer_of(wsi))
+                  << ",\"authenticated\":" << (was_established ? "true" : "false")
+                  << ",\"open\":" << (state->connections.empty() ? 0 : state->connections.size() - 1)
+                  << "}" << std::endl;
         if (slot && *slot) {
             if ((*slot)->core.established()) {
                 state->established.fetch_sub(1);

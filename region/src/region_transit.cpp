@@ -558,6 +558,17 @@ const ChildAgent& ChildAgentRegistry::establish(
     return entry.agent;
 }
 
+bool ChildAgentRegistry::renew(std::string_view session_id,
+                               std::chrono::steady_clock::time_point now,
+                               std::chrono::seconds lifetime) {
+    if (session_id.empty()) return false;
+    purge(now);
+    const auto found = entries_.find(std::string(session_id));
+    if (found == entries_.end()) return false;
+    found->second.expires_at = now + lifetime;
+    return true;
+}
+
 const ChildAgent* ChildAgentRegistry::find(
     std::string_view session_id, std::chrono::steady_clock::time_point now) {
     if (session_id.empty()) return nullptr;

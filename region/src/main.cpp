@@ -1530,6 +1530,11 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<homeworldz::grid::Client> estate_client;
     std::unique_ptr<homeworldz::grid::ViewerSessionCache> viewer_sessions;
     std::vector<homeworldz::grid::RegionNeighbor> region_neighbors;
+    // Tell the neighbours holding this session as a child that it is finished.
+    // Declared here because a session can end well before the child
+    // bookkeeping below is in scope; assigned there, and a no-op until then.
+    std::function<void(const std::string&)> release_child_agents_for =
+        [](const std::string&) {};
     // The world map is grid-wide, so it cannot be built from the neighbor
     // list. Cached rather than fetched per request: a viewer panning the map
     // asks repeatedly, while the answer changes only when a region is placed
@@ -3723,6 +3728,9 @@ int main(int argc, char* argv[]) {
         record_last_location(found->second.user_id, found->second.controller, "session retire");
         if (viewer_grid)
             static_cast<void>(viewer_grid->clear_presence(found->second.user_id));
+        // The neighbours were told this session existed; they are owed the
+        // other half of that.
+        release_child_agents_for(found->second.session_id);
         session_draw_distances.erase(found->second.session_id);
         sent_dynamic_transforms.erase(participant_key);
         session_avatar_interest.erase(participant_key);
@@ -4681,6 +4689,42 @@ int main(int argc, char* argv[]) {
     // session_facet_seeds does this for facets of this region, and says the
     // same thing: the seed already on file is the viewer's truth.
     std::unordered_map<std::string, std::string> announced_child_seeds;
+    // Only the home region knows a session ended: a neighbour cannot tell a
+    // session that stopped existing from one that is merely quiet, and since
+    // a child is now renewed by its own traffic, "quiet" no longer expires it
+    // promptly. Best effort by design — a neighbour that cannot be reached
+    // falls back to expiry, which is what this replaces rather than relies on.
+    release_child_agents_for = [&](const std::string& session_id) {
+        if (session_id.empty() || service_token.empty()) return;
+        const auto prefix = session_id + '|';
+        std::unordered_set<std::string> told;
+        for (const auto& [pair_key, seed] : announced_child_seeds) {
+            static_cast<void>(seed);
+            if (!pair_key.starts_with(prefix)) continue;
+            const auto first = pair_key.find('|');
+            const auto second = pair_key.find('|', first + 1);
+            if (second == std::string::npos) continue;
+            const auto neighbor_id = pair_key.substr(first + 1, second - first - 1);
+            for (const auto& neighbor : region_neighbors) {
+                if (neighbor.id != neighbor_id || neighbor.public_endpoint.empty()) continue;
+                // One call per neighbouring process: a rectangle presents as
+                // several facets, and they share one child registry.
+                if (!told.insert(neighbor.public_endpoint).second) break;
+                try {
+                    if (auto transport = homeworldz::grid::socket_transport(
+                            neighbor.public_endpoint, service_token))
+                        static_cast<void>(homeworldz::grid::release_child_agent(
+                            *transport, session_id));
+                } catch (const std::exception&) {
+                }
+                break;
+            }
+        }
+        if (!told.empty())
+            std::cout << "{\"level\":\"info\",\"message\":\"child agents released\",\"session\":"
+                      << homeworldz::api::json_string(session_id)
+                      << ",\"neighbors\":" << told.size() << "}" << std::endl;
+    };
     // When a refused offer may be tried again, by the same key.
     //
     // A refusal used to be remembered exactly like a success, so one failure
@@ -6718,6 +6762,37 @@ int main(int argc, char* argv[]) {
                     // left only a child that will expire. The transits beside
                     // this need two phases precisely because they do take
                     // something away.
+                    // A neighbour saying a session it announced to us is
+                    // finished. Without this a child is released only by its
+                    // own expiry, which stopped being a bound the moment the
+                    // renewal above was added: a session that ends is not
+                    // heard from again, but neither is one that is merely
+                    // quiet, and only its home region can tell the two apart.
+                    constexpr std::string_view child_release_prefix = "/api/v1/child-agents/";
+                    if (response.path.starts_with(child_release_prefix)) {
+                        const auto authorization =
+                            homeworldz::http::request_header_value(request, "Authorization");
+                        const auto released = response.path.substr(child_release_prefix.size());
+                        if (response.method != "DELETE") {
+                            response = homeworldz::http::response_for_content(
+                                request, 405, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "method_not_allowed", "child agent release requires DELETE"}));
+                        } else if (service_token.empty() ||
+                                   authorization != "Bearer " + service_token) {
+                            response = homeworldz::http::response_for_content(
+                                request, 401, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "unauthorized", "a valid grid service token is required"}));
+                        } else {
+                            // Idempotent: releasing a child that already
+                            // expired, or was promoted by a crossing, is the
+                            // same outcome the caller wanted.
+                            child_agents.remove(released);
+                            response = homeworldz::http::response_for_content(
+                                request, 204, "application/json", {});
+                        }
+                    }
                     if (response.path == "/api/v1/child-agents") {
                         // Declared here rather than in the else-if below: an
                         // if-statement takes one init-statement, not two.
@@ -7043,6 +7118,14 @@ int main(int argc, char* argv[]) {
                     const auto capability_visit_id = seed ?
                         homeworldz::caps::capability_visit(response.path, "/caps/seed/") :
                         homeworldz::caps::capability_visit(response.path, "/caps/event/");
+                    // Any capability request from a session this region holds
+                    // as a child is that child saying it is still here. Renewed
+                    // before authorization rather than inside it, so the
+                    // keepalive does not depend on which rung answers or on the
+                    // request succeeding at all.
+                    if (!session_id.empty())
+                        static_cast<void>(child_agents.renew(
+                            session_id, std::chrono::steady_clock::now()));
                     const auto viewer_asset = homeworldz::caps::viewer_asset_request(response.path);
                     // A texture is a texture whichever capability asked for it,
                     // and texture_fetch is the single place that decides so —
@@ -9833,6 +9916,7 @@ int main(int argc, char* argv[]) {
                                     record_last_location(user_id, live->second.controller, "logout");
                                 static_cast<void>(viewer_grid->clear_presence(user_id));
                                 static_cast<void>(viewer_grid->revoke_viewer_session(session_id));
+                                release_child_agents_for(session_id);
                             }
                             if (viewer_sessions) viewer_sessions->invalidate(session_id);
                             clear_viewer_endpoint(endpoint, session_id);

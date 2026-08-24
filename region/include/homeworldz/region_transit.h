@@ -207,6 +207,11 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
 std::string encode_child_agent_acceptance(std::string_view seed);
 std::string parse_child_agent_acceptance(std::string_view document);
 
+// How long a child agent survives without being heard from. Long enough that a
+// quiet neighbour is not dropped, short enough that a session which ended stops
+// being counted within minutes.
+inline constexpr std::chrono::seconds default_child_lifetime{300};
+
 class ChildAgentRegistry {
 public:
     // Establish, or refresh what is already there, and return the child as this
@@ -220,7 +225,19 @@ public:
     // source cannot tell the difference and does not need to.
     const ChildAgent& establish(ChildAgent agent,
                                 std::chrono::steady_clock::time_point now,
-                                std::chrono::seconds lifetime = std::chrono::seconds(300));
+                                std::chrono::seconds lifetime = default_child_lifetime);
+    // The session was heard from, so its child lives on. Answers whether there
+    // was one to renew.
+    //
+    // This is what keeps a standing child alive. Without it the entry expired
+    // on a fixed clock while the viewer still held the circuit it authorizes:
+    // event polls to the neighbour began answering 404 about six minutes after
+    // login, and Firestorm cancels a poll coroutine permanently on 404, so the
+    // neighbour went dark with no way back short of a crossing (seen live,
+    // 2026-08-22). The viewer's own traffic is the proof it is still there;
+    // nothing else needs to send anything.
+    bool renew(std::string_view session_id, std::chrono::steady_clock::time_point now,
+               std::chrono::seconds lifetime = default_child_lifetime);
     const ChildAgent* find(std::string_view session_id,
                            std::chrono::steady_clock::time_point now);
     // The crossing arrived: this session is not a child here any more. Returns

@@ -343,6 +343,41 @@ int main() {
     // The answer carries the seed and only the seed. Which facet of a neighbour
     // borders you is the grid's answer, not the destination's — two authorities
     // for one fact is what pointed a viewer at the wrong half of a neighbour.
+    {
+        // The child lifecycle: renewed by its session's own traffic, released
+        // when its home region says the session is done, and expiring only
+        // when neither happens.
+        using namespace std::chrono_literals;
+        homeworldz::region::ChildAgentRegistry registry;
+        homeworldz::region::ChildAgent visitor;
+        visitor.agent_id = "33333333-3333-4333-8333-333333333333";
+        visitor.session_id = "44444444-4444-4444-8444-444444444444";
+        visitor.home_region_id = std::string(destination);
+        const auto start = std::chrono::steady_clock::time_point{};
+        registry.establish(visitor, start, 300s);
+
+        // Four minutes on, a capability request renews it; five minutes after
+        // *that* it is still there. Without renewal the entry would have gone
+        // at start + 300s, which is what killed a viewer's standing circuit to
+        // a neighbour while it was still holding it.
+        if (!registry.renew(visitor.session_id, start + 240s, 300s)) return 1;
+        if (registry.find(visitor.session_id, start + 480s) == nullptr) return 1;
+        // A session nobody has heard from does still expire.
+        if (registry.find(visitor.session_id, start + 600s) != nullptr) return 1;
+
+        // Release ends it at once, and is idempotent: releasing what is gone,
+        // or what a crossing already promoted, is the outcome the caller
+        // wanted either way.
+        registry.establish(visitor, start, 300s);
+        if (registry.find(visitor.session_id, start + 10s) == nullptr) return 1;
+        registry.remove(visitor.session_id);
+        if (registry.find(visitor.session_id, start + 10s) != nullptr) return 1;
+        registry.remove(visitor.session_id);
+        registry.remove("");
+        // Renewing what is not there says so rather than creating it.
+        if (registry.renew(visitor.session_id, start + 10s, 300s)) return 1;
+        if (registry.size(start + 10s) != 0) return 1;
+    }
     if (homeworldz::region::parse_child_agent_acceptance(
             homeworldz::region::encode_child_agent_acceptance("/caps/seed/abc")) !=
         "/caps/seed/abc") return 1;
