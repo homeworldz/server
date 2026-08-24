@@ -94,7 +94,12 @@ type Registry struct {
 type Store interface {
 	// Authenticate answers "which region is this", not "may it run": a
 	// disabled region still authenticates, so that it can release its lease.
-	Authenticate(context.Context, string, string) (Region, bool)
+	//
+	// Three outcomes, not two: authenticated, refused, and "could not tell".
+	// A non-nil error means the store could not answer, and a caller must not
+	// report that as a refusal — a region told its key is invalid gives up
+	// permanently, which is not what a momentary database outage deserves.
+	Authenticate(context.Context, string, string) (Region, bool, error)
 	List(context.Context) ([]Region, error)
 	Get(context.Context, string) (Region, error)
 	Create(context.Context, Region) (Region, error)
@@ -157,9 +162,11 @@ func Load(path string) (*Registry, error) {
 	return &Registry{path: path, byID: items}, nil
 }
 
-func (r *Registry) Authenticate(_ context.Context, id, accessKey string) (Region, bool) {
+// The file-backed registry is read from memory and cannot fail, so its error
+// is always nil; the signature matches the store it stands in for.
+func (r *Registry) Authenticate(_ context.Context, id, accessKey string) (Region, bool, error) {
 	if r == nil {
-		return Region{}, false
+		return Region{}, false, nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -175,9 +182,9 @@ func (r *Registry) Authenticate(_ context.Context, id, accessKey string) (Region
 	// Identity only; `enabled` is the caller's question. See the note on
 	// PostgresStore.Authenticate.
 	if !found || subtle.ConstantTimeCompare([]byte(region.AccessKey), []byte(accessKey)) != 1 {
-		return Region{}, false
+		return Region{}, false, nil
 	}
-	return region, true
+	return region, true, nil
 }
 
 func (r *Registry) List(_ context.Context) ([]Region, error) {

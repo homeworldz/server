@@ -21,14 +21,14 @@ func TestLoadAndAuthenticate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	region, ok := registry.Authenticate(context.Background(), "22222222-2222-4222-8222-222222222222", "sandbox-key")
+	region, ok, _ := registry.Authenticate(context.Background(), "22222222-2222-4222-8222-222222222222", "sandbox-key")
 	if !ok || region.Name != "Sandbox" || region.MapX != 1001 {
 		t.Fatalf("unexpected provisioned region: %#v, %v", region, ok)
 	}
-	if _, ok := registry.Authenticate(context.Background(), region.ID, "wrong"); ok {
+	if _, ok, _ := registry.Authenticate(context.Background(), region.ID, "wrong"); ok {
 		t.Fatal("wrong access key authenticated")
 	}
-	byName, ok := registry.Authenticate(context.Background(), "sandbox", "sandbox-key")
+	byName, ok, _ := registry.Authenticate(context.Background(), "sandbox", "sandbox-key")
 	if !ok || byName.ID != region.ID {
 		t.Fatalf("case-insensitive name authentication = %#v, %v", byName, ok)
 	}
@@ -57,11 +57,11 @@ func TestManagementMutationsPersistAtomically(t *testing.T) {
 	// A disabled region still proves who it is: identity and permission are
 	// separate questions, and the one thing it must still be allowed to do —
 	// release its lease — needs the first without the second.
-	disabled, ok := registry.Authenticate(context.Background(), id, "initial-key")
+	disabled, ok, _ := registry.Authenticate(context.Background(), id, "initial-key")
 	if !ok || disabled.Enabled {
 		t.Fatalf("disabled region should authenticate as disabled: %#v, %v", disabled, ok)
 	}
-	if _, ok := registry.Authenticate(context.Background(), id, "wrong-key"); ok {
+	if _, ok, _ := registry.Authenticate(context.Background(), id, "wrong-key"); ok {
 		t.Fatal("a wrong key authenticated")
 	}
 	if _, err := registry.RotateAccessKey(context.Background(), id, "rotated-key"); err != nil {
@@ -71,10 +71,10 @@ func TestManagementMutationsPersistAtomically(t *testing.T) {
 	if _, err := registry.Update(context.Background(), id, Update{Enabled: &enabled}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := registry.Authenticate(context.Background(), id, "initial-key"); ok {
+	if _, ok, _ := registry.Authenticate(context.Background(), id, "initial-key"); ok {
 		t.Fatal("old access key authenticated after rotation")
 	}
-	if _, ok := registry.Authenticate(context.Background(), id, "rotated-key"); !ok {
+	if _, ok, _ := registry.Authenticate(context.Background(), id, "rotated-key"); !ok {
 		t.Fatal("rotated access key did not authenticate")
 	}
 
@@ -86,7 +86,7 @@ func TestManagementMutationsPersistAtomically(t *testing.T) {
 	if err != nil || retained.Name != name || retained.MapX != x || !retained.Enabled {
 		t.Fatalf("reloaded = %#v, %v", retained, err)
 	}
-	if _, ok := reloaded.Authenticate(context.Background(), id, "rotated-key"); !ok {
+	if _, ok, _ := reloaded.Authenticate(context.Background(), id, "rotated-key"); !ok {
 		t.Fatal("persisted rotated key did not authenticate")
 	}
 	if err := reloaded.Delete(context.Background(), id); err != nil {

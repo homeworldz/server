@@ -49,11 +49,25 @@ func (s *PostgresStore) Import(ctx context.Context, items []Region) error {
 // the two together meant a disabled region could not deregister, so its
 // coordinates stayed occupied by a region that was not allowed to run
 // (2026-08-21).
-func (s *PostgresStore) Authenticate(ctx context.Context, id, accessKey string) (Region, bool) {
+// The error is separate from the verdict, and that separation is the whole
+// point. It used to return `err == nil`, which made "the database is
+// unreachable" indistinguishable from "that key is wrong" — so when Postgres
+// restarted for five seconds on 2026-08-21, the two regions whose lease
+// renewal landed in the window were told their access key was invalid, shut
+// down as instructed, and stayed down for three days.
+func (s *PostgresStore) Authenticate(ctx context.Context, id, accessKey string) (Region, bool, error) {
 	hash := sha256.Sum256([]byte(accessKey))
 	region, err := s.get(ctx, `(id::text = $1 OR lower(name) = lower($1))
 		AND access_key_hash = $2`, id, hash[:])
-	return region, err == nil
+	// No row is the answer "no", not a failure: it is a wrong id or a wrong
+	// key, and the two are deliberately not distinguished from each other.
+	if errors.Is(err, ErrNotFound) {
+		return Region{}, false, nil
+	}
+	if err != nil {
+		return Region{}, false, err
+	}
+	return region, true, nil
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Region, error) {

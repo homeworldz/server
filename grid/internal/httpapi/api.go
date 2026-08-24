@@ -182,6 +182,12 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 	if a.outfitHTTP == nil {
 		a.outfitHTTP = &http.Client{Timeout: 10 * time.Second}
 	}
+	// A handler that logs must not have to check first: a nil *slog.Logger
+	// panics on use, which turns a diagnostic into an outage on the one path
+	// that was already going wrong.
+	if a.logger == nil {
+		a.logger = slog.Default()
+	}
 	if a.publicURL == "" {
 		a.publicURL = "http://127.0.0.1:42000"
 	}
@@ -310,7 +316,19 @@ func (a *API) provisionedRegionRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scheme, accessKey, found := strings.Cut(r.Header.Get("Authorization"), " ")
-	provisioned, authenticated := a.provisioned.Authenticate(r.Context(), parts[0], accessKey)
+	provisioned, authenticated, err := a.provisioned.Authenticate(r.Context(), parts[0], accessKey)
+	// A store that could not answer is not a refusal, and saying so is not
+	// pedantry: a region told its key is invalid deregisters and exits, and
+	// exits cleanly, so systemd never restarts it. Five seconds of Postgres
+	// restarting cost two regions three days of downtime on 2026-08-21. This
+	// answer is retryable and says how long to wait.
+	if err != nil {
+		a.logger.Error("authenticate region", "region", parts[0], "error", err)
+		w.Header().Set("Retry-After", "5")
+		writeJSON(w, http.StatusServiceUnavailable, Error{Code: "region_registry_unavailable",
+			Message: "the region registry cannot be reached; the credential was not checked"})
+		return
+	}
 	if !found || !strings.EqualFold(scheme, "Bearer") || !authenticated {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthorized_region", Message: "the region UUID or access key is invalid"})

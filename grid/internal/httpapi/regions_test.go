@@ -480,7 +480,7 @@ func TestProvisionedRegionManagementLifecycle(t *testing.T) {
 	// The rotated key identifies the region even while it is disabled, and the
 	// runtime endpoint is what enforces the difference: it may deregister and
 	// nothing else.
-	if _, ok := registry.Authenticate(context.Background(), id, rotated.AccessKey); !ok {
+	if _, ok, _ := registry.Authenticate(context.Background(), id, rotated.AccessKey); !ok {
 		t.Fatal("disabled region should still authenticate with its rotated key")
 	}
 

@@ -118,6 +118,21 @@ private:
     std::string body_;
 };
 
+// Answers whatever it is told to, so one lifecycle can be walked through a
+// grid that fails and then recovers.
+class SwitchableTransport final : public homeworldz::grid::Transport {
+public:
+    homeworldz::grid::HttpResponse send(std::string_view method, std::string_view path,
+                                        std::string_view body) override {
+        requests.push_back({std::string(method), std::string(path), std::string(body)});
+        return {status, response_body};
+    }
+
+    int status{200};
+    std::string response_body{"{}"};
+    std::vector<Request> requests;
+};
+
 // Answers every request the way the grid refuses a protocol mismatch, so the
 // refusal message's path to the log can be proven.
 class RefusingTransport final : public homeworldz::grid::Transport {
@@ -686,6 +701,50 @@ int main() {
             writes->requests.back().body.find(R"("worn":true)") == std::string::npos) return 1;
         if (!write_client.set_attachment_worn(worn_user, "11111111-1111-4111-8111-111111111111", 0, false) ||
             writes->requests.back().body.find(R"("worn":false)") == std::string::npos) return 1;
+    }
+    {
+        // The lease clock, which is what keeps a region alive through a grid
+        // that is briefly unreachable. A single failed renewal used to be
+        // fatal, so five seconds of the grid's database restarting shut two
+        // regions down for three days (2026-08-21).
+        using homeworldz::grid::LeaseState;
+        const std::string region = "22222222-2222-4222-8222-222222222222";
+        auto flaky = std::make_shared<SwitchableTransport>();
+        homeworldz::grid::Client flaky_client(flaky);
+        // 60-second lease: renewal due at 30, the lease itself gone at 60.
+        homeworldz::grid::RegionSettings lease_settings{
+            {}, 0, 0, "http://localhost:42011", 42012, 60};
+        homeworldz::grid::RegistrationLifecycle lease(flaky_client, lease_settings, region);
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        if (!lease.start(t0)) return 1;
+
+        flaky->status = 503;
+        flaky->response_body = R"({"code":"region_registry_unavailable","message":"the region registry cannot be reached; the credential was not checked"})";
+        if (lease.renew(t0 + std::chrono::seconds(30)) != LeaseState::Retrying) return 1;
+        if (lease.last_error().empty()) return 1;
+        // Between attempts nothing is asked: a retry waits its interval.
+        const auto asked = flaky->requests.size();
+        if (lease.renew(t0 + std::chrono::seconds(32)) != LeaseState::Held ||
+            flaky->requests.size() != asked) return 1;
+        if (lease.renew(t0 + std::chrono::seconds(35)) != LeaseState::Retrying) return 1;
+        // A grid that comes back puts the region back on the normal clock.
+        flaky->status = 200;
+        flaky->response_body = "{}";
+        if (lease.renew(t0 + std::chrono::seconds(40)) != LeaseState::Held ||
+            !lease.last_error().empty()) return 1;
+        // Renewed at 40, so the next renewal is due at 70 and the lease runs
+        // to 100. Retrying stops being honest once that term is up.
+        flaky->status = 500;
+        if (lease.renew(t0 + std::chrono::seconds(70)) != LeaseState::Retrying) return 1;
+        if (lease.renew(t0 + std::chrono::seconds(101)) != LeaseState::Lost) return 1;
+
+        // A refusal is different in kind: the grid looked and said no, and no
+        // amount of lease left makes that worth retrying.
+        homeworldz::grid::RegistrationLifecycle refused(flaky_client, lease_settings, region);
+        if (!refused.start(t0)) return 1;
+        flaky->status = 401;
+        flaky->response_body = R"({"code":"unauthorized_region","message":"the region UUID or access key is invalid"})";
+        if (refused.renew(t0 + std::chrono::seconds(30)) != LeaseState::Lost) return 1;
     }
     return 0;
 }

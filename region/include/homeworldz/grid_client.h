@@ -377,8 +377,11 @@ public:
                                             int role, bool present);
     bool renew_lease(std::string_view region_id, int lease_seconds);
     bool deregister(std::string_view region_id);
+	// status, when given, receives the grid's HTTP status (0 when the request
+	// never got an answer). The caller needs it to tell "your key is invalid",
+	// which is final, from "the grid could not answer", which is not.
 	bool renew_provisioned_lease(std::string_view region_id, int lease_seconds,
-	                             std::string* refusal = nullptr);
+	                             std::string* refusal = nullptr, int* status = nullptr);
 	bool deregister_provisioned(std::string_view region_id);
     std::optional<ViewerSession> validate_viewer_session(std::string_view session_id);
     std::optional<AvatarTransit> prepare_avatar_transit(const AvatarTransitRequest& request);
@@ -539,12 +542,31 @@ private:
     std::unordered_map<std::string, Entry> entries_;
 };
 
+// What one pass of the lease clock concluded.
+//
+// Retrying is the state that has to exist. A renewal used to be a single
+// attempt whose failure was fatal, so five seconds of the grid's database
+// restarting told two regions their access key was invalid and they shut
+// themselves down for three days (2026-08-21). The lease we already hold is
+// good for its full term, and renewal starts at half term, so a failure
+// leaves half a lease in which to try again.
+enum class LeaseState {
+    Held,     // Nothing to do, or renewed.
+    Retrying, // A renewal failed and the lease we hold is still valid.
+    Lost,     // The grid refused us, or the lease ran out while retrying.
+};
+
 class RegistrationLifecycle {
 public:
     RegistrationLifecycle(Client client, RegionSettings settings,
                           std::string registered_region_id = {});
     bool start(std::chrono::steady_clock::time_point now);
-    bool tick(std::chrono::steady_clock::time_point now);
+    // renew is the full answer; tick is the same call for callers that only
+    // need to know whether the region may keep running.
+    LeaseState renew(std::chrono::steady_clock::time_point now);
+    bool tick(std::chrono::steady_clock::time_point now) {
+        return renew(now) != LeaseState::Lost;
+    }
     void stop();
     const std::string& region_id() const { return region_id_; }
     // The grid's message from the most recent failed renewal, empty otherwise.
@@ -555,6 +577,8 @@ private:
     RegionSettings settings_;
     std::string region_id_;
     std::chrono::steady_clock::time_point renew_at_{};
+    // When the lease actually runs out, as opposed to when renewal is due.
+    std::chrono::steady_clock::time_point lease_expires_at_{};
 	bool already_registered_{};
     std::string last_error_;
 };

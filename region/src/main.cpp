@@ -114,6 +114,10 @@ static bool socket_would_block() {
 
 namespace {
 std::atomic_bool running{true};
+// What this process exits with. Zero is "asked to stop"; anything the region
+// could not carry on through sets this, because systemd's Restart=on-failure
+// reads a clean exit as a job finished and leaves the region down.
+int exit_code = 0;
 // Applied to every accepted HTTP connection. It bounds a single blocking recv
 // or send, not a whole transfer, so a live mesh upload keeps its time while a
 // silent peer is dropped rather than stalling the region's only loop.
@@ -15506,6 +15510,7 @@ int main(int argc, char* argv[]) {
             } catch (const std::exception& error) {
                 std::cerr << "{\"level\":\"error\",\"message\":\"save scene snapshot failed\",\"error\":"
                           << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+                exit_code = 1;
                 running = false;
             }
         }
@@ -15632,13 +15637,33 @@ int main(int argc, char* argv[]) {
                           << homeworldz::api::json_string(avatar.user_id) << "}" << std::endl;
             }
         }
-        if (registration && !registration->tick(now)) {
-            std::cerr << "{\"level\":\"error\",\"message\":\"region lease renewal failed\"";
-            if (!registration->last_error().empty())
-                std::cerr << ",\"reason\":"
-                          << homeworldz::api::json_string(registration->last_error());
-            std::cerr << '}' << std::endl;
-            running = false;
+        if (registration) {
+            switch (registration->renew(now)) {
+            case homeworldz::grid::LeaseState::Held:
+                break;
+            case homeworldz::grid::LeaseState::Retrying:
+                // Not fatal, and said out loud anyway: the lease is still
+                // valid, and a run of these is the shape of a grid outage.
+                std::cerr << "{\"level\":\"warning\",\"message\":\"region lease renewal failed, "
+                             "retrying while the lease holds\"";
+                if (!registration->last_error().empty())
+                    std::cerr << ",\"reason\":"
+                              << homeworldz::api::json_string(registration->last_error());
+                std::cerr << '}' << std::endl;
+                break;
+            case homeworldz::grid::LeaseState::Lost:
+                std::cerr << "{\"level\":\"error\",\"message\":\"region lease lost\"";
+                if (!registration->last_error().empty())
+                    std::cerr << ",\"reason\":"
+                              << homeworldz::api::json_string(registration->last_error());
+                std::cerr << '}' << std::endl;
+                // Non-zero, so systemd restarts this rather than treating a
+                // lost lease as a job well done. A clean exit here is what
+                // kept two regions down for three days (2026-08-21).
+                exit_code = 1;
+                running = false;
+                break;
+            }
         }
         if (viewer_grid && now >= next_neighbor_refresh)
             static_cast<void>(refresh_region_neighbors(false));
@@ -15715,5 +15740,5 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
     WSACleanup();
 #endif
-    return 0;
+    return exit_code;
 }

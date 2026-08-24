@@ -925,11 +925,12 @@ bool Client::deregister(std::string_view region_id) {
 }
 
 bool Client::renew_provisioned_lease(std::string_view region_id, int lease_seconds,
-                                     std::string* refusal) {
+                                     std::string* refusal, int* status) {
     const auto body = "{\"leaseSeconds\":" + std::to_string(lease_seconds) +
                       ",\"regionProtocol\":" + std::to_string(region_protocol) + '}';
     const auto response = transport_->send(
         "PUT", "/api/v1/region-runtime/" + std::string(region_id) + "/lease", body);
+    if (status) *status = response.status_code;
     if (response.status_code == 200) return true;
     if (refusal) *refusal = json_field(response.body, "message");
     return false;
@@ -1547,18 +1548,40 @@ bool RegistrationLifecycle::start(std::chrono::steady_clock::time_point now) {
     if (!already_registered_) region_id_ = client_.register_region(settings_);
     if (region_id_.empty()) return false;
     renew_at_ = now + std::chrono::seconds(settings_.lease_seconds / 2);
+    lease_expires_at_ = now + std::chrono::seconds(settings_.lease_seconds);
     return true;
 }
 
-bool RegistrationLifecycle::tick(std::chrono::steady_clock::time_point now) {
-    if (region_id_.empty() || now < renew_at_) return !region_id_.empty();
+namespace {
+// How long to wait before trying a failed renewal again. Short, because the
+// window to recover in is half a lease and the outage being ridden out is
+// usually seconds long.
+constexpr std::chrono::seconds lease_retry_interval{5};
+} // namespace
+
+LeaseState RegistrationLifecycle::renew(std::chrono::steady_clock::time_point now) {
+    if (region_id_.empty()) return LeaseState::Lost;
+    if (now < renew_at_) return LeaseState::Held;
     last_error_.clear();
+    int status = 0;
     const auto renewed = already_registered_ ?
-        client_.renew_provisioned_lease(region_id_, settings_.lease_seconds, &last_error_) :
+        client_.renew_provisioned_lease(region_id_, settings_.lease_seconds, &last_error_, &status) :
         client_.renew_lease(region_id_, settings_.lease_seconds);
-    if (!renewed) return false;
-    renew_at_ = now + std::chrono::seconds(settings_.lease_seconds / 2);
-    return true;
+    if (renewed) {
+        renew_at_ = now + std::chrono::seconds(settings_.lease_seconds / 2);
+        lease_expires_at_ = now + std::chrono::seconds(settings_.lease_seconds);
+        return LeaseState::Held;
+    }
+    // A grid that says the credential is wrong means it, and no amount of
+    // retrying will change its mind. Everything else — an unreachable grid, a
+    // 5xx, a database restarting behind it — is a reason to try again while
+    // the lease already held is still valid.
+    if (status == 401 || status == 403) return LeaseState::Lost;
+    if (now < lease_expires_at_) {
+        renew_at_ = now + lease_retry_interval;
+        return LeaseState::Retrying;
+    }
+    return LeaseState::Lost;
 }
 
 void RegistrationLifecycle::stop() {
