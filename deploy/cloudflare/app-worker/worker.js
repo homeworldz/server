@@ -87,6 +87,65 @@ function etagMatches(header, httpEtag) {
   return header.split(",").some((candidate) => bare(candidate) === target);
 }
 
+// The configuration the client reads before its engine starts, as
+// `window.HOMEWORLDZ` (the contract is documented in the client repository at
+// frontends/godot/project/page_config.gd).
+//
+// It is injected here because there is no other page. The export's own
+// index.html comes out of R2 unchanged, this Worker is what serves it, and the
+// client deliberately reads a page global rather than reaching into the site's
+// storage itself — the token is the site's to hand over.
+//
+// The static half comes from this Worker's vars; the token half cannot. It
+// lives in the browser under localStorage["homeworldz.auth"] on this origin,
+// which a Worker cannot see, so what is injected is a small script that reads
+// it in the browser. Same origin is what makes that possible and is the whole
+// reason there is no sign-in handoff to build.
+//
+// Absent means absent, deliberately: a key this Worker has no value for is not
+// written at all, because the client reports what it was not given rather than
+// guessing. signOutUrl in particular has no default — pointed at an ordinary
+// page it would navigate away and leave the token in place, which reads as a
+// sign-out and is not one.
+export function pageConfigScript(env) {
+  const configured = {
+    apiOrigin: env.API_ORIGIN,
+    signInUrl: env.SIGN_IN_URL,
+    signOutUrl: env.SIGN_OUT_URL,
+    siteUrl: env.SITE_URL,
+    start: env.START_LOCATION,
+  };
+  const settings = {};
+  for (const [name, value] of Object.entries(configured))
+    if (typeof value === "string" && value !== "") settings[name] = value;
+
+  // The token is read at load, in the browser, from the key the account site
+  // writes. Both halves or neither: the client refuses a token whose expiry is
+  // zero rather than treating it as permanent, so a token that cannot be given
+  // a real expiry is not handed over at all.
+  return `<script>
+(function () {
+  var config = ${JSON.stringify(settings)};
+  try {
+    var stored = window.localStorage.getItem("homeworldz.auth");
+    if (stored) {
+      var session = JSON.parse(stored);
+      var expiresAt = Math.floor(Date.parse(session && session.expiresAt) / 1000);
+      if (session && session.accessToken && isFinite(expiresAt) && expiresAt > Date.now() / 1000) {
+        config.accountToken = session.accessToken;
+        config.accountTokenExpiresAt = expiresAt;
+      }
+    }
+  } catch (error) {
+    // A blocked or unreadable store is a page with no token, which is a state
+    // the client already handles by sending the person to sign in. Throwing
+    // here would instead stop the engine from starting at all.
+  }
+  window.HOMEWORLDZ = config;
+})();
+</script>`;
+}
+
 const notFound = () => new Response("not found", { status: 404 });
 
 export default {
@@ -111,8 +170,14 @@ export default {
       // precondition passed OR failed, which made the two cases
       // indistinguishable here and produced a 500 on every revalidation
       // (found live, 2026-08-22). head() says exactly what is being asked.
+      // The entry document is rewritten below, so its bytes are not the bytes
+      // R2 holds and its ETag does not describe what is served. A 304 here
+      // would hand back a cached copy carrying the configuration this Worker
+      // injected the last time its vars were different.
+      const isDocument = key.endsWith("index.html");
+
       const ifNoneMatch = request.headers.get("if-none-match");
-      if (ifNoneMatch) {
+      if (ifNoneMatch && !isDocument) {
         const metadata = await env.CLIENT_BUCKET.head(key);
         if (metadata === null) return notFound();
         if (etagMatches(ifNoneMatch, metadata.httpEtag)) {
@@ -133,6 +198,26 @@ export default {
 
       const headers = baseHeaders(object, key, env);
       const body = request.method === "HEAD" ? null : object.body;
+
+      if (isDocument) {
+        // No validator and no caching for the document: it carries
+        // configuration that changes when this Worker's vars change, under a
+        // filename that does not. It is a few kilobytes; the 42 MiB engine
+        // beside it still caches and revalidates normally.
+        headers.delete("etag");
+        headers.set("cache-control", "no-store");
+        const document = new Response(body, { headers });
+        if (request.method === "HEAD") return document;
+        return new HTMLRewriter()
+          .on("head", {
+            element(element) {
+              // Prepended so it runs before the engine bootstrap, which is
+              // what "before the engine starts" in the contract means.
+              element.prepend(pageConfigScript(env), { html: true });
+            },
+          })
+          .transform(document);
+      }
 
       if (wantsRange && object.range && "offset" in object.range) {
         const start = object.range.offset ?? 0;

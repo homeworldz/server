@@ -78,3 +78,40 @@ template with unused modules disabled is the only thing that lowers it — the
 shipped engine contains `NavigationServer`, `OpenXR`, and `ufbx`, none of which
 this client needs — and it would also take the engine back under 25 MiB, making
 this Worker unnecessary.
+
+## The page configuration it injects
+
+The client takes its configuration from a `window.HOMEWORLDZ` object the
+surrounding page sets before the engine starts (the contract, with its
+reasoning, is in the client repository at
+`frontends/godot/project/page_config.gd`). There is no surrounding page here —
+the export's own `index.html` comes out of R2 — so this Worker injects it into
+the `<head>` of the entry document.
+
+The static half comes from this Worker's vars (`API_ORIGIN`, `SIGN_IN_URL`,
+`SIGN_OUT_URL`, `SITE_URL`, `START_LOCATION`). The token half cannot: it lives
+in the browser under `localStorage["homeworldz.auth"]` on this origin, which
+the edge cannot see, so what is injected is a small script that reads it
+*there*. Same origin is what makes that possible, and is the whole reason there
+is no sign-in handoff to build.
+
+Three things worth knowing before changing any of it:
+
+- **`API_ORIGIN` is not derivable from this page's origin.** The app is served
+  by the account site and the grid API answers elsewhere, so same-origin
+  arithmetic would aim every request at a host that does not speak the
+  protocol. It is the API's own origin with no path: `https://api.homeworldz.com`.
+- **A token is handed over with a real expiry or not at all.** The client
+  refuses an expiry of zero rather than reading it as "never expires", so a
+  stored session without a parseable `expiresAt`, or an expired one, yields no
+  token — not a token with a zero beside it.
+- **The entry document is served `no-store` with its ETag removed.** It carries
+  configuration that changes when these vars change, under a filename that does
+  not, so a validator describing R2's copy would hand back a cached document
+  holding the previous configuration. The 42 MiB engine beside it still caches
+  and revalidates normally.
+
+`node deploy/cloudflare/app-worker/check-page-config.mjs` exercises the injected
+script the way a browser runs it, including the cases that fail quietly: an
+expired session, a session with no expiry, an unreadable store. It exits
+non-zero on the first failure.

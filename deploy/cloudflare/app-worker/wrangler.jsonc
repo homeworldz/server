@@ -26,6 +26,30 @@
     // or a stale 42 MiB engine gets pinned in every browser that loaded it.
     "CACHE_IMMUTABLE": "false",
     // Set when the bucket holds more than this one export.
-    "KEY_PREFIX": ""
+    "KEY_PREFIX": "",
+
+    // The configuration handed to the client as window.HOMEWORLDZ, injected
+    // into the entry document (see pageConfigScript in worker.js). The token
+    // is NOT here and cannot be: it lives in the browser's storage on this
+    // origin, and the injected script reads it there.
+    //
+    // apiOrigin is the grid API's own origin and is not derivable from this
+    // page's origin — the app is served by the account site and the API
+    // answers elsewhere, so same-origin arithmetic would aim every request at
+    // a host that does not speak the protocol.
+    "API_ORIGIN": "https://api.homeworldz.com",
+    "SIGN_IN_URL": "/login",
+    // /logout is the only URL on the account site that actually signs out.
+    // An ordinary page would navigate away and leave the token in place,
+    // which reads as a sign-out and is not one, so this is set to a route
+    // that clears rather than to somewhere convenient.
+    "SIGN_OUT_URL": "/logout",
+    // Where "leave the app" goes. The client defaults to / on this origin;
+    // named here so the choice is visible rather than inherited.
+    "SITE_URL": "/",
+    // Where an arriving avatar goes when the page does not say otherwise.
+    // Empty means the page names nothing and the grid decides, which is the
+    // behaviour before this existed.
+    "START_LOCATION": ""
   }
 }
