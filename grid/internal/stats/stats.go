@@ -42,12 +42,18 @@ import (
 // columns names each CSV field in order. The first four are the original
 // columns and keep their exact meaning: users is every account, regions is
 // enabled regions, region_equivalents is enabled land in standard regions.
+//
+// A new column goes on the end and nowhere else. upgradeHeader rewrites an
+// older file only when its header is a prefix of this one, so inserting a
+// column in the middle would refuse every existing file rather than silently
+// mismatching them — which is the right failure, but still a failure.
 var columns = []string{
 	"datetime", "users", "regions", "region_equivalents",
 	"users_online", "active_30d", "active_60d",
 	"logins_24h", "logins_30d", "registrations_30d",
 	"teleports_24h", "crossings_24h",
 	"regions_online", "regions_undeployed", "uptime_seconds",
+	"land_square_metres",
 }
 
 var header = strings.Join(columns, ",")
@@ -155,6 +161,7 @@ func row(local time.Time, snapshot Snapshot) string {
 		strconv.Itoa(snapshot.RegionsOnline),
 		strconv.Itoa(snapshot.RegionsUndeployed),
 		uptime,
+		strconv.FormatInt(snapshot.LandSquareMetres, 10),
 	}
 	return strings.Join(fields, ",")
 }

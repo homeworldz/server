@@ -39,6 +39,12 @@ function groups(stats, detailed) {
     ["Regions up", `${formatCount(stats.regionsOnline)} of ${formatCount(stats.regions)}`],
     ["Land (256 m regions)", formatCount(stats.regionEquivalents)],
   ];
+  // The same land in square metres, for anyone who does not think in regions.
+  // Omitted rather than shown as a zero when the grid predates the field,
+  // which is what a browser holding this build sees during a deploy.
+  if (typeof stats.landSquareMetres === "number") {
+    land.push(["Land area", `${formatCount(stats.landSquareMetres)} m²`]);
+  }
   const activity = [
     ["Logins (24 hours)", formatCount(stats.logins24h)],
     ["Teleports (24 hours)", formatCount(stats.teleports24h)],

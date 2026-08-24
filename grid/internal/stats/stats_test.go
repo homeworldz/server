@@ -192,7 +192,7 @@ func TestRecordsOnceDailyAfterSix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := header + "\n260821-0600,7,3,11,2,5,5,12,12,3,40,900,2,1,\n"
+	want := header + "\n260821-0600,7,3,11,2,5,5,12,12,3,40,900,2,1,,720896\n"
 	if string(content) != want {
 		t.Fatalf("recorded %q, want %q", content, want)
 	}
@@ -211,7 +211,7 @@ func TestRecordsOnceDailyAfterSix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want += "260822-0915,7,3,11,2,5,5,12,12,3,40,900,2,1,\n"
+	want += "260822-0915,7,3,11,2,5,5,12,12,3,40,900,2,1,,720896\n"
 	if string(content) != want {
 		t.Fatalf("after two days %q, want %q", content, want)
 	}
@@ -316,9 +316,9 @@ func TestUpgradesAnOlderFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := header + "\n" +
-		"260819-0600,5,3,11,,,,,,,,,,,\n" +
-		"260820-0600,6,3,11,,,,,,,,,,,\n" +
-		"260821-0600,7,3,11,2,5,5,12,12,3,40,900,2,1,\n"
+		"260819-0600,5,3,11,,,,,,,,,,,,\n" +
+		"260820-0600,6,3,11,,,,,,,,,,,,\n" +
+		"260821-0600,7,3,11,2,5,5,12,12,3,40,900,2,1,,720896\n"
 	if string(content) != want {
 		t.Fatalf("upgraded file %q, want %q", content, want)
 	}
@@ -366,7 +366,7 @@ func TestServeStats(t *testing.T) {
 	response = httptest.NewRecorder()
 	recorder.ServeHTTP(response, httptest.NewRequest("GET", "/stats.csv", nil))
 	if response.Code != 200 ||
-		response.Body.String() != header+"\n260821-0745,7,3,11,2,5,5,12,12,3,40,900,2,1,\n" {
+		response.Body.String() != header+"\n260821-0745,7,3,11,2,5,5,12,12,3,40,900,2,1,,720896\n" {
 		t.Fatalf("stats response %d %q", response.Code, response.Body.String())
 	}
 

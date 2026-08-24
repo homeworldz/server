@@ -97,6 +97,12 @@ func TestGridStatsArePublic(t *testing.T) {
 		snapshot.RegionsUndeployed != 1 || snapshot.RegionEquivalents != 5 {
 		t.Fatalf("region figures: %+v", snapshot)
 	}
+	// Land in square metres is the same land in a unit somebody who has never
+	// heard of a region equivalent can compare: five standard regions of
+	// 256 m square. The disabled region is in neither figure.
+	if snapshot.LandSquareMetres != 5*65536 {
+		t.Fatalf("land = %d m2, want %d", snapshot.LandSquareMetres, 5*65536)
+	}
 	if snapshot.ActiveUsers30d != 4 || snapshot.ActiveUsers60d != 4 || snapshot.Logins24h != 9 {
 		t.Fatalf("event figures: %+v", snapshot)
 	}

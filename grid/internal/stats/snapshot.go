@@ -21,6 +21,11 @@ const (
 	recentWindow     = 24 * time.Hour
 )
 
+// standardRegionArea is a standard region in square metres: 256 m on a side.
+// Region sizes are already counted in standard regions, so this converts the
+// whole grid's land in one multiplication.
+const standardRegionArea = 256 * 256
+
 // UserCounter answers how many user accounts exist. Satisfied by the identity
 // store's Postgres implementation; narrow so tests need not build the whole
 // store.
@@ -119,6 +124,13 @@ type Snapshot struct {
 	// RegionEquivalents is enabled land in 256 m x 256 m standard regions, so
 	// a 4x2 rectangle is eight.
 	RegionEquivalents int `json:"regionEquivalents"`
+	// LandSquareMetres is that same land in square metres, which is the unit
+	// a person who has never heard of a region equivalent can compare against
+	// a map or another grid. Derived, not measured: a standard region is
+	// 256 m square, so it is exactly RegionEquivalents x 65536. Published
+	// because deriving it is only obvious once somebody has been told the
+	// region size, and a statistics page should not need a footnote.
+	LandSquareMetres int64 `json:"landSquareMetres"`
 	// GridStartedAt is the most recent recorded grid start and UptimeSeconds
 	// the interval since. Both are absent — not zero — on a grid whose log
 	// carries no start yet, which is any grid that has not restarted since
@@ -183,6 +195,7 @@ func (c *Collector) collectRegions(ctx context.Context, snapshot *Snapshot) erro
 			snapshot.RegionsOffline++
 		}
 	}
+	snapshot.LandSquareMetres = int64(snapshot.RegionEquivalents) * standardRegionArea
 	return nil
 }
 

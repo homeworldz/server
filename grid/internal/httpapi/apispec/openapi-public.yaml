@@ -1436,7 +1436,7 @@ components:
         [capturedAt, users, usersOnline, activeUsers30d, activeUsers60d,
          logins24h, logins30d, registrations30d, teleports24h, crossings24h,
          regions, regionsOnline, regionsOffline, regionsUndeployed,
-         regionEquivalents]
+         regionEquivalents, landSquareMetres]
       properties:
         capturedAt:
           type: string
@@ -1495,6 +1495,13 @@ components:
           description: |
             Enabled land in 256 m x 256 m standard regions, so a 4x2
             rectangle counts as eight.
+        landSquareMetres:
+          type: integer
+          format: int64
+          description: |
+            The same enabled land in square metres. Derived, not measured:
+            a standard region is 256 m square, so this is
+            `regionEquivalents` x 65536.
         gridStartedAt:
           type: string
           format: date-time
