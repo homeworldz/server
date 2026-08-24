@@ -9,7 +9,9 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <condition_variable>
 #include <deque>
+#include <mutex>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -706,6 +708,125 @@ void finish_http_response(socket_handle client) {
 #endif
 }
 
+// Serving asset bytes from a thread that is not the region's.
+//
+// The region is single-threaded on purpose, and everything that touches the
+// scene must stay that way. Asset bytes are the exception worth making: the
+// blob files are content-addressed and immutable, and the id mapping is one
+// read-only row, so nothing here can observe or disturb a tick.
+//
+// It is worth making because of a cycle this file has been describing in
+// comments for months. The grid checks an inventory commit by fetching the
+// asset from the region that holds it; when the commit came from this region,
+// this thread is inside it, waiting. Neither side moves until the grid client's
+// deadline expires and the commit is refused 409. Every "write it through
+// first" in this file is that cycle being avoided rather than broken. This
+// breaks it.
+//
+// Deliberately narrow: GET of the internal asset route, nothing else. The
+// replicate variant stays on the main thread because it *writes* what it
+// fetches.
+class AssetByteService {
+public:
+    AssetByteService(const std::filesystem::path& data_path, std::string service_token,
+                     unsigned threads)
+        : reader_(std::make_unique<homeworldz::storage::AssetReader>(data_path)),
+          service_token_(std::move(service_token)) {
+        for (unsigned index = 0; index < (std::max)(1u, threads); ++index)
+            workers_.emplace_back([this] { serve(); });
+    }
+
+    ~AssetByteService() { stop(); }
+
+    AssetByteService(const AssetByteService&) = delete;
+    AssetByteService& operator=(const AssetByteService&) = delete;
+
+    // Takes ownership of the socket and answers later. The caller must not
+    // touch it again.
+    void offer(socket_handle client, std::string request, std::string asset_id) {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            queue_.push_back(Job{client, std::move(request), std::move(asset_id)});
+        }
+        ready_.notify_one();
+    }
+
+    std::size_t depth() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return queue_.size();
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (stopping_) return;
+            stopping_ = true;
+        }
+        ready_.notify_all();
+        for (auto& worker : workers_)
+            if (worker.joinable()) worker.join();
+        workers_.clear();
+        // Whatever was still queued is answered by nobody, so it is closed
+        // rather than left for the peer to time out on.
+        std::lock_guard<std::mutex> guard(mutex_);
+        for (auto& job : queue_) close_socket(job.client);
+        queue_.clear();
+    }
+
+private:
+    struct Job {
+        socket_handle client;
+        std::string request;
+        std::string asset_id;
+    };
+
+    void serve() {
+        for (;;) {
+            Job job{};
+            {
+                std::unique_lock<std::mutex> guard(mutex_);
+                ready_.wait(guard, [this] { return stopping_ || !queue_.empty(); });
+                if (queue_.empty()) return;
+                job = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            answer(job);
+        }
+    }
+
+    void answer(const Job& job) {
+        const std::string_view request(job.request);
+        const auto authorization = homeworldz::http::request_header_value(request, "Authorization");
+        std::string response;
+        if (service_token_.empty() || authorization != "Bearer " + service_token_) {
+            response = homeworldz::http::response_for_content(
+                request, 401, "application/json",
+                homeworldz::api::to_json(homeworldz::api::Error{
+                    "unauthorized", "a valid grid service token is required"})).content;
+        } else if (const auto bytes = reader_->read(job.asset_id)) {
+            response = homeworldz::http::response_for_content(
+                request, 200, "application/octet-stream",
+                std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size())).content;
+        } else {
+            response = homeworldz::http::response_for_content(
+                request, 404, "application/json",
+                homeworldz::api::to_json(homeworldz::api::Error{
+                    "asset_not_found", "asset was not found"})).content;
+        }
+        static_cast<void>(send_all(job.client, response));
+        finish_http_response(job.client);
+        close_socket(job.client);
+    }
+
+    std::unique_ptr<homeworldz::storage::AssetReader> reader_;
+    std::string service_token_;
+    std::vector<std::thread> workers_;
+    std::deque<Job> queue_;
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    bool stopping_{};
+};
+
 struct InternalAssetRequest {
     std::string asset_id;
     bool replicate{};
@@ -1394,6 +1515,11 @@ int main(int argc, char* argv[]) {
                      "startup\",\"reason\":"
                   << homeworldz::api::json_string(registration->last_error()) << "}" << std::endl;
     };
+    // Answers the grid's asset fetches without the sim thread. Built once the
+    // data path and the service token are known; absent, those fetches queue
+    // behind whatever the region is doing, which is how an inventory commit
+    // deadlocks against its own durability check.
+    std::unique_ptr<AssetByteService> asset_bytes;
     std::unique_ptr<homeworldz::session::Server> session_server;
     std::unique_ptr<homeworldz::grid::Client> viewer_grid;
     // Declared beside viewer_grid because it is built in the same place, once
@@ -1748,6 +1874,24 @@ int main(int argc, char* argv[]) {
         // fuse.
         for (auto& [id, definition] : storage->load_render_materials())
             render_material_cache.emplace(id, std::move(definition));
+        // Two threads, which is enough: these answers are a row read and a file
+        // read, and the point is that one is never queued behind the sim rather
+        // than serving many at once. A reader that cannot open its own
+        // connection is reported and the region serves them the old way - on
+        // the main thread, deadlock and all - because refusing to start over an
+        // optimisation would be worse than the condition it optimises.
+        if (!service_token.empty()) {
+            try {
+                asset_bytes = std::make_unique<AssetByteService>(
+                    region_data_path, service_token, 2);
+                std::cout << "{\"level\":\"info\",\"message\":\"asset byte service started\","
+                             "\"threads\":2}" << std::endl;
+            } catch (const std::exception& error) {
+                std::cerr << "{\"level\":\"warning\",\"message\":\"asset byte service unavailable, "
+                             "asset fetches will share the region thread\",\"error\":"
+                          << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+            }
+        }
         if (const auto stored = storage->load_region_settings()) {
             region_settings = *stored;
             std::cout << "{\"level\":\"info\",\"message\":\"region settings loaded\""
@@ -1882,6 +2026,7 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& error) {
         std::cerr << "{\"level\":\"error\",\"message\":\"open region storage failed\",\"error\":"
                   << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+        if (asset_bytes) asset_bytes->stop();
         if (registration) registration->stop();
 #ifdef _WIN32
         WSACleanup();
@@ -5801,6 +5946,22 @@ int main(int argc, char* argv[]) {
                 if (dispatching) break;
             } else {
                 ++entry;
+            }
+        }
+        // A GET for asset bytes needs nothing this thread owns, so it leaves
+        // here and is answered elsewhere. Taken out of the dispatch rather than
+        // skipped inside it: everything after this point in the pass - viewer
+        // packets, physics, the lease - still has to happen.
+        if (asset_bytes && ready_client != invalid_socket && ready_request) {
+            const auto probe = homeworldz::http::response_for(*ready_request, region_version);
+            if (probe.method == "GET") {
+                if (const auto wanted = internal_asset_request(probe.path);
+                    wanted && !wanted->replicate) {
+                    set_socket_blocking_mode(ready_client, true);
+                    asset_bytes->offer(ready_client, std::move(*ready_request), wanted->asset_id);
+                    ready_client = invalid_socket;
+                    ready_request.reset();
+                }
             }
         }
         if (ready_client != invalid_socket) {
@@ -15877,6 +16038,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "{\"level\":\"error\",\"message\":\"final scene snapshot failed\",\"error\":"
                   << homeworldz::api::json_string(error.what()) << "}" << std::endl;
     }
+    // Stopped before the listening socket and the storage it reads: a
+    // worker answering a fetch while the region tears down would be
+    // writing to a socket the shutdown has closed and reading a database
+    // it has shut.
+    if (asset_bytes) asset_bytes->stop();
     if (registration) registration->stop();
     for (const auto& pending : pending_event_responses) close_socket(pending.client);
     for (const auto& pending : pending_upload_responses) close_socket(pending.client);

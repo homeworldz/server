@@ -455,6 +455,33 @@ int main() {
             if (layer_ids[3] != "dddddddd-0000-4000-8000-000000000004" ||
                 layer_low[0] != 30.0F || layer_high[3] != 63.25F) return 1;
         }
+        {
+            // The read-only view that serves asset bytes off the region's
+            // thread. It has to answer exactly what the region's own read
+            // answers, refuse what it cannot verify, and never write.
+            const std::array payload{std::byte{'v'}, std::byte{'a'}, std::byte{'u'},
+                                     std::byte{'l'}, std::byte{'t'}};
+            homeworldz::storage::RegionStorage writer(path);
+            const auto stored = writer.store_asset("eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+                                                   "cccccccc-cccc-4ccc-8ccc-cccccccccccc", payload);
+            homeworldz::storage::AssetReader reader(path);
+            const auto read_back = reader.read(stored.viewer_id);
+            if (!read_back || read_back->size() != payload.size() ||
+                !std::equal(read_back->begin(), read_back->end(), payload.begin())) return 1;
+            // An id this region does not hold is nothing, not an exception:
+            // the serving thread turns it into a 404 and must not be thrown
+            // through.
+            if (reader.read("ffffffff-2222-4222-8222-ffffffffffff")) return 1;
+            // Bytes that no longer match their name are not served. The blob
+            // is content-addressed, so a file that fails its own hash is
+            // corruption, and serving it would put it in somebody's inventory.
+            const auto blob = path / "assets" / stored.sha256.substr(0, 2) / stored.sha256.substr(2);
+            {
+                std::ofstream corrupt(blob, std::ios::binary | std::ios::trunc);
+                corrupt << "not the bytes this hash names";
+            }
+            if (reader.read(stored.viewer_id)) return 1;
+        }
         std::filesystem::remove_all(path);
         return 0;
     } catch (const std::exception& error) {

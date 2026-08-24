@@ -27,6 +27,37 @@ struct AssetMetadata {
     std::uint64_t size{};
 };
 
+// A read-only view of one region's asset store, safe to use from a thread that
+// is not the region's.
+//
+// It exists so serving asset bytes cannot be blocked by the region's own work.
+// The grid fetches an asset from the region that holds it, and when that fetch
+// is the durability check inside an inventory commit, the region's single
+// thread is already waiting on that very commit: neither side moves until the
+// grid client's deadline expires and the commit is refused. Bytes are the one
+// thing a region can hand out without consulting anything the sim thread owns —
+// the blob files are content-addressed and therefore immutable, and the id
+// mapping is a single-row read — so this takes its own read-only connection and
+// leaves the rest of the store alone.
+//
+// Read-only is enforced by the connection, not by convention: nothing reached
+// through here can write.
+class AssetReader {
+public:
+    explicit AssetReader(const std::filesystem::path& data_path);
+    ~AssetReader();
+    AssetReader(const AssetReader&) = delete;
+    AssetReader& operator=(const AssetReader&) = delete;
+
+    // The asset's verified bytes, or nothing when this region does not hold it
+    // or the blob fails its content hash. Safe to call concurrently.
+    std::optional<std::vector<std::byte>> read(std::string_view viewer_id) const;
+
+private:
+    std::filesystem::path data_path_;
+    sqlite3* database_{};
+};
+
 class RegionStorage {
 public:
     explicit RegionStorage(std::filesystem::path data_path);

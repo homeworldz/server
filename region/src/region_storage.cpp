@@ -1105,6 +1105,51 @@ std::size_t RegionStorage::import_asset_directory(const std::filesystem::path& d
     return imported;
 }
 
+AssetReader::AssetReader(const std::filesystem::path& data_path) : data_path_(data_path) {
+    const auto database_path = data_path_ / "region.db";
+    // READONLY so this cannot write whatever else is happening on the region's
+    // own connection; FULLMUTEX so several serving threads may share one
+    // reader. NOMUTEX would be faster and would make that sharing a data race.
+    if (sqlite3_open_v2(database_path.string().c_str(), &database_,
+                        SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK) {
+        const std::string message = database_ ? sqlite3_errmsg(database_) : "open failed";
+        sqlite3_close(database_);
+        database_ = nullptr;
+        throw std::runtime_error("open region asset reader: " + message);
+    }
+}
+
+AssetReader::~AssetReader() {
+    if (database_ != nullptr) sqlite3_close(database_);
+}
+
+std::optional<std::vector<std::byte>> AssetReader::read(std::string_view viewer_id) const {
+    if (database_ == nullptr) return std::nullopt;
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(database_, "SELECT sha256 FROM asset_mappings WHERE viewer_id = ?", -1,
+                           &statement, nullptr) != SQLITE_OK)
+        return std::nullopt;
+    sqlite3_bind_text(statement, 1, viewer_id.data(), static_cast<int>(viewer_id.size()),
+                      SQLITE_TRANSIENT);
+    std::string sha256;
+    if (sqlite3_step(statement) == SQLITE_ROW)
+        sha256 = reinterpret_cast<const char*>(sqlite3_column_text(statement, 0));
+    sqlite3_finalize(statement);
+    if (sha256.size() < 3) return std::nullopt;
+
+    const auto path = data_path_ / "assets" / sha256.substr(0, 2) / sha256.substr(2);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) return std::nullopt;
+    const auto length = static_cast<std::streamsize>(input.tellg());
+    input.seekg(0);
+    std::vector<std::byte> content(static_cast<std::size_t>(length));
+    input.read(reinterpret_cast<char*>(content.data()), length);
+    // The same verification the region's own read does. A reader that skipped
+    // it would be the one path by which unverified bytes leave this region.
+    if (crypto::sha256_hex(content) != sha256) return std::nullopt;
+    return content;
+}
+
 std::optional<AssetMetadata> RegionStorage::find_asset(std::string_view viewer_id) const {
     sqlite3_stmt* statement = nullptr;
     if (sqlite3_prepare_v2(database_, "SELECT viewer_id, creator_id, sha256, size FROM asset_mappings WHERE viewer_id = ?", -1,
