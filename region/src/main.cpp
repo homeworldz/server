@@ -3729,8 +3729,17 @@ int main(int argc, char* argv[]) {
         if (viewer_grid)
             static_cast<void>(viewer_grid->clear_presence(found->second.user_id));
         // The neighbours were told this session existed; they are owed the
-        // other half of that.
-        release_child_agents_for(found->second.session_id);
+        // other half of that — but only when it is actually over.
+        //
+        // A crossing comes through here too, and releasing then is worse than
+        // not releasing at all: the destination is holding this session as a
+        // child precisely so the arrival can promote it, and the DELETE lands
+        // while that is happening. Seen in-world within an hour of shipping
+        // the release (2026-08-24): the crossing signalled, Nova B answered
+        // 204 to a release for the session it was about to promote, and the
+        // arrival did not complete.
+        if (!found->second.handing_off)
+            release_child_agents_for(found->second.session_id);
         session_draw_distances.erase(found->second.session_id);
         sent_dynamic_transforms.erase(participant_key);
         session_avatar_interest.erase(participant_key);
@@ -15128,6 +15137,10 @@ int main(int argc, char* argv[]) {
                                   << ",\"destination\":"
                                   << homeworldz::api::json_string(crossing->destination.name)
                                   << "}" << std::endl;
+                        // Marked the way the viewer crossing path marks its
+                        // own: what follows is a handoff, not a session
+                        // ending, and the retire below has to tell them apart.
+                        avatar.handing_off = true;
                         crossing_session_avatars.push_back(endpoint);
                     }
                     continue;
