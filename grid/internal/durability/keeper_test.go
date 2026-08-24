@@ -94,6 +94,10 @@ func (v *stubVault) Ingest(_ context.Context, blobID string, content io.Reader) 
 		Checksum: registered.Checksum}, nil
 }
 
+// HeldAssets is not on the durability path; the keeper asks about one blob at
+// a time. Present so the double still satisfies the store.
+func (v *stubVault) HeldAssets(context.Context, []string) ([]string, error) { return nil, nil }
+
 func (v *stubVault) Held(_ context.Context, blobID string) (vault.Blob, error) {
 	if v.fails {
 		return vault.Blob{}, errors.New("vault index unreachable")

@@ -533,6 +533,61 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/vault/assets/missing:
+    parameters:
+      - $ref: "#/components/parameters/RequestId"
+    post:
+      operationId: vaultMissingAssets
+      summary: Ask which of these assets the vault does not hold
+      description: >
+        One round trip for many assets, so a region starting up can write
+        through only what is absent instead of re-uploading everything it
+        holds. Welcome spent 145 seconds of a 165 second startup writing 3180
+        assets the vault already had, on every start, and that cost grows with
+        the region's content rather than with anything that changed.
+
+
+        The answer names what is MISSING rather than what is held, because
+        missing is what the caller acts on and "write it again" is the safe
+        direction to be wrong in. An asset this grid has never registered is
+        reported missing too. At most 512 ids per request; ask again for more.
+      security:
+        - ServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetIds]
+              properties:
+                assetIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 512
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The subset the vault does not durably hold
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [missing]
+                properties:
+                  missing:
+                    type: array
+                    items: { type: string, format: uuid }
+        "400":
+          description: No ids, too many ids, or an id that is not a UUID
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405":
+          description: The endpoint only supports POST
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/v1/vault/blobs/{sha256}:
     parameters:
       - $ref: "#/components/parameters/RequestId"

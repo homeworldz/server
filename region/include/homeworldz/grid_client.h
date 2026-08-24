@@ -461,6 +461,13 @@ public:
     // blob already held, because this region's single HTTP thread is busy
     // with the upload and cannot answer a fetch-back until it returns.
     bool store_vault_asset(std::string_view asset_id, std::span<const std::byte> content);
+    // Which of these assets the vault does NOT hold. One round trip for many
+    // assets, so a startup backfill can write only what is absent instead of
+    // re-uploading everything it holds. std::nullopt means the question could
+    // not be asked — an older grid, or a failure — and the caller must then
+    // assume nothing is held rather than skip the writes.
+    std::optional<std::vector<std::string>> vault_missing_assets(
+        const std::vector<std::string>& asset_ids);
     std::optional<InventoryItem> copy_library_item(std::string_view user_id,
                                                    std::string_view source_item_id,
                                                    std::string_view destination_folder_id,

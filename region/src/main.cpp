@@ -1849,8 +1849,50 @@ int main(int argc, char* argv[]) {
                 // texture on every wrapper, the default wearables — must
                 // already be vault-held, because the durability fetch-back
                 // and this region's single thread cannot meet (ADR 0026).
+                // Ask what is absent before writing anything. Every path that
+                // creates an asset already writes it through to the vault at
+                // creation (see the ADR 0026 write-through comments beside
+                // each), so after one good pass this loop's whole job is to
+                // re-upload assets the vault already holds: welcome spent 145
+                // of its 165 second startup doing exactly that for 3180
+                // assets, every start, and the cost grows with the region's
+                // content rather than with anything that changed
+                // (measured 2026-08-24).
+                //
+                // Batched, because one round trip per asset is the shape that
+                // does not survive a hundred thousand of them.
+                std::unordered_set<std::string> absent;
+                bool absence_known = true;
+                {
+                    constexpr std::size_t query_batch = 512;
+                    std::vector<std::string> batch;
+                    batch.reserve(query_batch);
+                    const auto ask = [&]() {
+                        if (batch.empty()) return;
+                        keep_lease_alive();
+                        if (const auto missing = viewer_grid->vault_missing_assets(batch))
+                            absent.insert(missing->begin(), missing->end());
+                        else
+                            absence_known = false;
+                        batch.clear();
+                    };
+                    for (const auto& asset : assets) {
+                        batch.push_back(asset.viewer_id);
+                        if (batch.size() == query_batch) ask();
+                    }
+                    ask();
+                }
                 std::size_t vaulted = 0;
+                std::size_t already_held = 0;
                 for (const auto& asset : assets) {
+                    // A question that could not be asked is not an answer: an
+                    // older grid, or one that failed, means write everything
+                    // rather than skip it. Being slow is recoverable; a blob
+                    // the vault does not hold and nobody writes is not.
+                    if (absence_known && !absent.contains(asset.viewer_id)) {
+                        ++already_held;
+                        continue;
+                    }
                     // Keep the lease alive while doing it. Renewal is otherwise
                     // driven by the main loop, which does not run until startup
                     // finishes — and startup is not bounded: this vaults every
@@ -1874,7 +1916,9 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 std::cout << "{\"level\":\"info\",\"message\":\"bundled assets vaulted\",\"count\":"
-                          << vaulted << "}" << std::endl;
+                          << vaulted << ",\"alreadyHeld\":" << already_held
+                          << ",\"absenceKnown\":" << (absence_known ? "true" : "false")
+                          << "}" << std::endl;
             }
         }
         if (storage->load_snapshot(scene)) {
@@ -7084,6 +7128,22 @@ int main(int argc, char* argv[]) {
                                     asset[0] == std::byte{0xff} && asset[1] == std::byte{0x4f};
                                 const auto jp2_container = asset.size() >= 12 &&
                                     std::memcmp(asset.data() + 4, "jP  ", 4) == 0;
+                                // Only an image converts to an image. Asking
+                                // for a JPEG2000 of something that is not one
+                                // queues a job whose only possible outcome is
+                                // failure: a glTF render material fetched
+                                // through this capability spent five attempts
+                                // proving that an LLSD document is not a PNG
+                                // (2026-08-24). What this is instead is the
+                                // caller's mistake, and it is answered as one.
+                                const auto png = asset.size() >= 8 &&
+                                    asset[0] == std::byte{0x89} && asset[1] == std::byte{0x50} &&
+                                    asset[2] == std::byte{0x4e} && asset[3] == std::byte{0x47};
+                                const auto jpeg = asset.size() >= 3 &&
+                                    asset[0] == std::byte{0xff} && asset[1] == std::byte{0xd8} &&
+                                    asset[2] == std::byte{0xff};
+                                if (!j2c_codestream && !jp2_container && !png && !jpeg)
+                                    throw std::runtime_error("asset is not an image");
                                 if (!j2c_codestream && !jp2_container && viewer_grid) {
                                     if (auto legacy = viewer_grid->fetch_asset_rendition(
                                             texture->texture, "j2c-texture")) {

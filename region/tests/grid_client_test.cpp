@@ -704,6 +704,30 @@ int main() {
             writes->requests.back().body.find(R"("worn":false)") == std::string::npos) return 1;
     }
     {
+        // The startup backfill asks what the vault lacks before writing
+        // anything. A question that cannot be asked must not read as "nothing
+        // is missing", or a region skips writes the vault needed.
+        auto answering = std::make_shared<CannedTransport>(
+            200, R"({"missing":["11111111-1111-4111-8111-111111111111"]})");
+        homeworldz::grid::Client asking(answering);
+        const auto missing = asking.vault_missing_assets(
+            {"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"});
+        if (!missing || missing->size() != 1 ||
+            missing->front() != "11111111-1111-4111-8111-111111111111" ||
+            answering->requests.back().path != "/api/v1/vault/assets/missing" ||
+            answering->requests.back().body.find("22222222-2222-4222-8222-222222222222") ==
+                std::string::npos) return 1;
+        // A grid that holds everything answers an empty list, which is an
+        // answer; a grid that refuses the question answers nothing at all.
+        auto empty = std::make_shared<CannedTransport>(200, R"({"missing":[]})");
+        const auto none = homeworldz::grid::Client(empty).vault_missing_assets(
+            {"11111111-1111-4111-8111-111111111111"});
+        if (!none || !none->empty()) return 1;
+        auto refusing = std::make_shared<CannedTransport>(404, "{}");
+        if (homeworldz::grid::Client(refusing).vault_missing_assets(
+                {"11111111-1111-4111-8111-111111111111"})) return 1;
+    }
+    {
         // A refused child agent has to say which refusal it was: a neighbour
         // that is still starting answers nothing (0), one whose service token
         // differs answers 401, and they used to be the same log line.

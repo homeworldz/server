@@ -249,11 +249,16 @@ func (a *API) renditionJobs(w http.ResponseWriter, r *http.Request) {
 	if jobID, action, found := strings.Cut(suffix, "/"); found && action == "fail" && validUUID(jobID) {
 		var request struct {
 			Error string `json:"error"`
+			// Permanent says the worker read the input and it will never
+			// convert. Absent means retryable, which is the safe default: a
+			// job retried needlessly costs attempts, a job parked wrongly
+			// costs the rendition.
+			Permanent bool `json:"permanent,omitempty"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		switch err := a.renditions.Fail(r.Context(), jobID, request.Error); {
+		switch err := a.renditions.Fail(r.Context(), jobID, request.Error, request.Permanent); {
 		case errors.Is(err, renditions.ErrNotFound):
 			writeJSON(w, http.StatusNotFound, Error{Code: "job_not_found",
 				Message: "no leased job with that id"})

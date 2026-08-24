@@ -95,6 +95,22 @@ func (v *memoryVault) Held(_ context.Context, blobID string) (vault.Blob, error)
 		Checksum: registered.Checksum, IngestedAt: time.Unix(1, 0).UTC()}, nil
 }
 
+// HeldAssets answers the bulk question by asking the single one per asset,
+// which is what the real store does modulo one round trip.
+func (v *memoryVault) HeldAssets(ctx context.Context, assetIDs []string) ([]string, error) {
+	held := make([]string, 0, len(assetIDs))
+	for _, assetID := range assetIDs {
+		blob, err := v.registry.Blob(ctx, assetID)
+		if err != nil {
+			continue
+		}
+		if _, err := v.Held(ctx, blob.BlobID); err == nil {
+			held = append(held, assetID)
+		}
+	}
+	return held, nil
+}
+
 func (v *memoryVault) Open(ctx context.Context, blobID string) (io.ReadCloser, vault.Blob, error) {
 	blob, err := v.Held(ctx, blobID)
 	if err != nil {
@@ -245,5 +261,70 @@ func TestVaultAssetRequiresServiceToken(t *testing.T) {
 	// the viewer data path.
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestVaultMissingAssets covers the bulk question a region asks at startup.
+// The answer is what decides whether bytes are written, so the direction that
+// matters is the false negative: an asset the vault does not hold must never be
+// reported as held, or the region skips a write and the durability invariant
+// quietly loses a blob.
+func TestVaultMissingAssets(t *testing.T) {
+	content := []byte("bundled asset bytes")
+	handler, _ := newVaultHandler(content)
+	const strangerID = "77777777-7777-4777-8777-777777777777"
+
+	ask := func(ids ...string) []string {
+		t.Helper()
+		body, err := json.Marshal(VaultAssetQuery{AssetIDs: ids})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/vault/assets/missing",
+			bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+		}
+		var answer VaultMissingAssets
+		if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer.Missing
+	}
+
+	// Before the write, the asset is missing — and so is one this grid has
+	// never registered, because "write it again" is the safe direction.
+	if missing := ask(testAssetID, strangerID); len(missing) != 2 {
+		t.Fatalf("missing before ingest = %v, want both", missing)
+	}
+
+	requestVault(t, handler, http.MethodPut, "/api/v1/vault/assets/"+testAssetID,
+		content, http.StatusOK)
+
+	missing := ask(testAssetID, strangerID)
+	if len(missing) != 1 || missing[0] != strangerID {
+		t.Fatalf("missing after ingest = %v, want only the stranger", missing)
+	}
+
+	// An empty or oversized question is refused rather than answered with a
+	// list that means nothing.
+	for _, ids := range [][]string{{}, make([]string, maxVaultQuery+1)} {
+		body, err := json.Marshal(VaultAssetQuery{AssetIDs: ids})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/vault/assets/missing",
+			bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("a %d-id question answered %d", len(ids), response.Code)
+		}
 	}
 }

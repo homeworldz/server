@@ -33,6 +33,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -88,6 +89,18 @@ type Store interface {
 	Held(ctx context.Context, blobID string) (Blob, error)
 	// Open returns the bytes of a blob the vault holds. The caller closes them.
 	Open(ctx context.Context, blobID string) (io.ReadCloser, Blob, error)
+	// HeldAssets answers Held for many assets at once, keyed by asset id
+	// rather than blob id because that is what a region holds. It exists so a
+	// region can ask what is already vaulted instead of writing every bundled
+	// asset through on every start: welcome spent 145 of its 165 second
+	// startup re-uploading 3180 assets the vault already had (measured
+	// 2026-08-24), which is also the [[region-startup-outlasts-its-lease]]
+	// hazard growing with the region's content.
+	//
+	// The answer is exactly as strong as Held's: an index row whose bytes are
+	// missing or truncated is not held, and is reported missing so the caller
+	// writes it again.
+	HeldAssets(ctx context.Context, assetIDs []string) ([]string, error)
 }
 
 // PostgresStore keeps blob bytes on a local filesystem tree and indexes them in
@@ -197,6 +210,54 @@ func (s *PostgresStore) Held(ctx context.Context, blobID string) (Blob, error) {
 		return Blob{}, ErrNotFound
 	}
 	return blob, nil
+}
+
+func (s *PostgresStore) HeldAssets(ctx context.Context, assetIDs []string) ([]string, error) {
+	wanted := make([]string, 0, len(assetIDs))
+	for _, assetID := range assetIDs {
+		if validUUID(assetID) {
+			wanted = append(wanted, assetID)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+	// One query for the index, then one stat each, which is what Held does
+	// per blob. Splitting it that way is the point: the round trip is what
+	// costs a region its startup, and the stat costs microseconds.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT asset.asset_id, held.byte_length, registered.checksum
+		FROM assets AS asset
+		JOIN vault_blobs AS held ON held.blob_id = asset.blob_id
+		JOIN blobs AS registered ON registered.blob_id = asset.blob_id
+		WHERE asset.asset_id = ANY(string_to_array($1, ',')::uuid[])
+		  AND registered.checksum_algorithm = 'sha256'`, strings.Join(wanted, ","))
+	if err != nil {
+		return nil, fmt.Errorf("read vault blob index: %w", err)
+	}
+	defer rows.Close()
+	held := make([]string, 0, len(wanted))
+	for rows.Next() {
+		var assetID, checksum string
+		var length int64
+		if err := rows.Scan(&assetID, &length, &checksum); err != nil {
+			return nil, fmt.Errorf("scan vault blob index: %w", err)
+		}
+		stored, err := s.files.size(checksum)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		if stored != length {
+			continue
+		}
+		held = append(held, assetID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate vault blob index: %w", err)
+	}
+	return held, nil
 }
 
 func (s *PostgresStore) Open(ctx context.Context, blobID string) (io.ReadCloser, Blob, error) {

@@ -88,12 +88,30 @@ func TestPostgresRenditionLifecycle(t *testing.T) {
 	}
 
 	// Failure re-queues with the reason; the job is claimable again.
-	if err := store.Fail(ctx, claimed.ID, "converter exploded"); err != nil {
+	if err := store.Fail(ctx, claimed.ID, "converter exploded", false); err != nil {
 		t.Fatalf("fail = %v", err)
 	}
 	reclaimed, ok, err := store.Claim(ctx, []string{"sl-mesh"}, time.Minute)
 	if err != nil || !ok || reclaimed.Attempts != 2 {
 		t.Fatalf("reclaim = %#v %v %v", reclaimed, ok, err)
+	}
+
+	// A permanent failure parks the job on the spot, with attempts far below
+	// the cap: a worker that has read the bytes and found them unconvertible
+	// knows what four more attempts would only rediscover.
+	if err := store.Fail(ctx, reclaimed.ID, "the canonical image is neither PNG nor JPEG", true); err != nil {
+		t.Fatalf("permanent fail = %v", err)
+	}
+	if _, ok, err := store.Claim(ctx, []string{"sl-mesh"}, time.Minute); err != nil || ok {
+		t.Fatalf("a permanently failed job was claimed again: %v %v", ok, err)
+	}
+	// Requeued so the rest of the test still has a leased job to finish.
+	if _, err := store.Request(ctx, assetID, "sl-mesh"); err != nil {
+		t.Fatalf("requeue after permanent failure = %v", err)
+	}
+	reclaimed, ok, err = store.Claim(ctx, []string{"sl-mesh"}, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("reclaim after requeue = %#v %v %v", reclaimed, ok, err)
 	}
 
 	// Put stores bytes, mints the blob, records the rendition, completes the
@@ -179,7 +197,7 @@ func TestRequeueStaleRevivesFailures(t *testing.T) {
 	}
 	// Exhaust the attempts so the job parks rather than returning to the queue.
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if err := store.Fail(ctx, job.ID, "a skin binds joint \"CC_Base_Head\""); err != nil {
+		if err := store.Fail(ctx, job.ID, "a skin binds joint \"CC_Base_Head\"", false); err != nil {
 			t.Fatal(err)
 		}
 		if claimed, more, claimErr := store.Claim(ctx, []string{"sl-mesh"}, time.Minute); claimErr != nil {

@@ -1205,6 +1205,20 @@ bool Client::store_vault_asset(std::string_view asset_id, std::span<const std::b
                                              content.size())).status_code == 200;
 }
 
+std::optional<std::vector<std::string>> Client::vault_missing_assets(
+    const std::vector<std::string>& asset_ids) {
+    if (asset_ids.empty()) return std::vector<std::string>{};
+    std::string body{"{\"assetIds\":["};
+    for (std::size_t index = 0; index < asset_ids.size(); ++index) {
+        if (index != 0) body.push_back(',');
+        body += api::json_string(asset_ids[index]);
+    }
+    body += "]}";
+    const auto response = transport_->send("POST", "/api/v1/vault/assets/missing", body);
+    if (response.status_code != 200) return std::nullopt;
+    return json_string_array(response.body, "missing");
+}
+
 std::optional<std::string> Client::fetch_asset_rendition(std::string_view asset_id,
                                                          std::string_view kind) {
     const auto response = transport_->send(

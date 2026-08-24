@@ -35,6 +35,13 @@ func (a *API) vaultAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	assetID := strings.TrimPrefix(r.URL.Path, "/api/v1/vault/assets/")
+	// One name under this prefix is not an asset id: the bulk question a
+	// region asks at startup, which is what keeps it from writing every
+	// bundled asset through one round trip at a time.
+	if assetID == "missing" {
+		a.vaultMissingAssets(w, r)
+		return
+	}
 	if strings.Contains(assetID, "/") || !validUUID(assetID) {
 		a.notFound(w, r)
 		return
@@ -144,4 +151,57 @@ func writeDurabilityError(w http.ResponseWriter, err error) bool {
 			Message: "the item's asset bytes could not be stored durably"})
 	}
 	return true
+}
+
+// maxVaultQuery bounds one bulk question. A region asks about thousands of
+// bundled assets, so this is a page size rather than a limit on what it may
+// ask overall: welcome asks about 3180 in seven requests instead of making
+// 3180 uploads.
+const maxVaultQuery = 512
+
+// vaultMissingAssets answers POST /api/v1/vault/assets/missing: given asset
+// ids, which of them the vault does NOT durably hold.
+//
+// Missing rather than held, because missing is what the caller acts on, and
+// because the safe direction to fail in is "write it again". An asset this
+// grid has never heard of is missing too — the caller's write will say so
+// properly, with the registry's own 404.
+func (a *API) vaultMissingAssets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, Error{Code: "method_not_allowed", Message: "only POST is supported"})
+		return
+	}
+	var request VaultAssetQuery
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if len(request.AssetIDs) == 0 || len(request.AssetIDs) > maxVaultQuery {
+		writeJSON(w, http.StatusBadRequest, Error{Code: "invalid_vault_query",
+			Message: "assetIds must name between 1 and " + strconv.Itoa(maxVaultQuery) + " assets"})
+		return
+	}
+	for _, assetID := range request.AssetIDs {
+		if !validUUID(assetID) {
+			writeJSON(w, http.StatusBadRequest, Error{Code: "invalid_vault_query",
+				Message: "every assetId must be a UUID"})
+			return
+		}
+	}
+	held, err := a.vault.HeldAssets(r.Context(), request.AssetIDs)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "vault_error", Message: "vault lookup failed"})
+		return
+	}
+	holding := make(map[string]bool, len(held))
+	for _, assetID := range held {
+		holding[assetID] = true
+	}
+	missing := make([]string, 0, len(request.AssetIDs)-len(held))
+	for _, assetID := range request.AssetIDs {
+		if !holding[assetID] {
+			missing = append(missing, assetID)
+		}
+	}
+	writeJSON(w, http.StatusOK, VaultMissingAssets{Missing: missing})
 }

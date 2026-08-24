@@ -135,12 +135,18 @@ int main(int argc, char** argv) {
             log("error", "claimed job has no identity", ",\"body\":" + json_string(claim.body));
             continue;
         }
-        const auto give_up = [&](const std::string& reason) {
+        // permanent says this input will never convert, so the queue parks the
+        // job instead of spending four more attempts rediscovering it. Only for
+        // things read out of the bytes themselves: an unreachable vault or a
+        // rendition that is not ready yet is a different day's answer.
+        const auto give_up = [&](const std::string& reason, bool permanent = false) {
             log("warning", "conversion failed",
-                ",\"assetId\":" + json_string(asset_id) + ",\"error\":" + json_string(reason));
+                ",\"assetId\":" + json_string(asset_id) + ",\"error\":" + json_string(reason) +
+                ",\"permanent\":" + (permanent ? "true" : "false"));
             try {
                 transport->send("POST", "/api/v1/rendition-jobs/" + job_id + "/fail",
-                                "{\"error\":" + json_string(reason) + "}");
+                                "{\"error\":" + json_string(reason) +
+                                    ",\"permanent\":" + (permanent ? "true" : "false") + "}");
             } catch (const std::exception& error) {
                 log("error", "failure report failed", ",\"error\":" + json_string(error.what()));
             }
@@ -264,7 +270,11 @@ int main(int argc, char** argv) {
                         canonical.body.size());
                 const auto decoded = homeworldz::image::decode_png_or_jpeg(source);
                 if (!decoded) {
-                    give_up("the canonical image is neither PNG nor JPEG");
+                    // Not an image at all. The one on this grid was a glTF
+                    // render material, an LLSD document 423 bytes long, asked
+                    // for a JPEG2000 by a viewer fetching it through the
+                    // texture capability (2026-08-24).
+                    give_up("the canonical image is neither PNG nor JPEG", true);
                     continue;
                 }
                 const auto encoded = homeworldz::image::encode_j2c(*decoded);
@@ -290,7 +300,10 @@ int main(int argc, char** argv) {
                         canonical.body.size());
                 const auto decoded = homeworldz::image::decode_j2c(source);
                 if (!decoded) {
-                    give_up("the canonical image is not JPEG2000");
+                    // Same class as the j2c direction above: the bytes are
+                    // not the format this kind converts from, and they will
+                    // not become it.
+                    give_up("the canonical image is not JPEG2000", true);
                     continue;
                 }
                 const auto encoded = homeworldz::image::encode_png(*decoded);

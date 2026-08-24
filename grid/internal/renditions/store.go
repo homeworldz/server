@@ -121,7 +121,10 @@ type Store interface {
 	Claim(ctx context.Context, kinds []string, lease time.Duration) (Job, bool, error)
 	// Fail records a conversion failure and releases the job. Attempts
 	// exhausted parks it as failed; otherwise it returns to the queue.
-	Fail(ctx context.Context, jobID, reason string) error
+	// Fail records a failed attempt; permanent parks the job at once rather
+	// than queueing another try. See the implementation for which failures
+	// earn that.
+	Fail(ctx context.Context, jobID, reason string, permanent bool) error
 	// Put stores rendition bytes, minting their blob row, upserting the
 	// rendition record, and marking any job for (asset, kind) done — one
 	// transaction, so a recorded rendition always has its bytes.
@@ -226,7 +229,13 @@ func (s *PostgresStore) Claim(ctx context.Context, kinds []string, lease time.Du
 	return job, true, nil
 }
 
-func (s *PostgresStore) Fail(ctx context.Context, jobID, reason string) error {
+// Fail records a failed attempt. permanent parks the job immediately instead
+// of queueing it for another try: a worker that has read the bytes and found
+// them unconvertible — a canonical that is not an image at all, say — knows
+// something the queue cannot, and four more attempts at the same bytes will
+// reach the same answer. Everything else (an unreachable vault, a rendition
+// that is not ready yet) stays retryable and parks at maxAttempts as before.
+func (s *PostgresStore) Fail(ctx context.Context, jobID, reason string, permanent bool) error {
 	if !validUUID(jobID) {
 		return ErrInvalid
 	}
@@ -235,9 +244,9 @@ func (s *PostgresStore) Fail(ctx context.Context, jobID, reason string) error {
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE rendition_jobs SET
-			state = CASE WHEN attempts >= $3 THEN 'failed' ELSE 'queued' END,
+			state = CASE WHEN $4 OR attempts >= $3 THEN 'failed' ELSE 'queued' END,
 			leased_until = NULL, error = $2, updated_at = now()
-		WHERE id = $1 AND state = 'leased'`, jobID, reason, maxAttempts)
+		WHERE id = $1 AND state = 'leased'`, jobID, reason, maxAttempts, permanent)
 	if err != nil {
 		return fmt.Errorf("fail rendition job: %w", err)
 	}

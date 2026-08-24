@@ -64,10 +64,13 @@ func (m *memoryRenditions) Claim(_ context.Context, kinds []string, _ time.Durat
 	return renditions.Job{}, false, nil
 }
 
-func (m *memoryRenditions) Fail(_ context.Context, jobID, reason string) error {
+func (m *memoryRenditions) Fail(_ context.Context, jobID, reason string, permanent bool) error {
 	for jobKey, job := range m.jobs {
 		if job.ID == jobID && job.State == "leased" {
 			job.State = "queued"
+			if permanent {
+				job.State = "failed"
+			}
 			job.Error = reason
 			m.jobs[jobKey] = job
 			return nil

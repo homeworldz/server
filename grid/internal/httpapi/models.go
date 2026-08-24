@@ -251,6 +251,16 @@ type TransitActionRequest struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+// VaultAssetQuery asks which of these assets the vault does not hold.
+type VaultAssetQuery struct {
+	AssetIDs []string `json:"assetIds"`
+}
+
+// VaultMissingAssets answers it, naming only what is absent.
+type VaultMissingAssets struct {
+	Missing []string `json:"missing"`
+}
+
 type CreateUserRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
