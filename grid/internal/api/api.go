@@ -143,6 +143,10 @@ type Options struct {
 	// Messages persists instant messages for store-and-forward delivery over
 	// the grid channel. Nil disables POST /v1/client/messages.
 	Messages messages.Store
+	// RegionPublicBase is where a browser reaches a region's HTTP API; a
+	// region id is appended to it. Empty hands out the region's own endpoint.
+	// See config.Grid.RegionPublicBase for why the two differ.
+	RegionPublicBase string
 	// Stats collects the public grid statistics served at GET /v1/stats.
 	// Nil answers that route 503 rather than publishing zeros.
 	Stats *stats.Collector
@@ -154,31 +158,32 @@ type Options struct {
 
 // API is the website API handler.
 type API struct {
-	accounts        AccountStore
-	regions         RegionStore
-	leases          LeaseStore
-	presence        PresenceStore
-	signer          *webtoken.Signer
-	mailer          mailer.Mailer
-	logger          *slog.Logger
-	allowedOrigins  map[string]bool
-	verificationURL string
-	resetURL        string
-	limiter         *rateLimiter
-	version         string
-	gridName        string
-	welcomeText     string
-	welcome         []arrival.Point
-	sessions        SessionStore
-	locations       LocationStore
-	inventory       InventoryStore
-	ticketSigner    *webtoken.Signer
-	channelURL      string
-	channels        *channelHub
-	messages        messages.Store
-	stats           *stats.Collector
-	statsCache      *statsCache
-	events          eventlog.Recorder
+	accounts         AccountStore
+	regions          RegionStore
+	leases           LeaseStore
+	presence         PresenceStore
+	signer           *webtoken.Signer
+	mailer           mailer.Mailer
+	logger           *slog.Logger
+	allowedOrigins   map[string]bool
+	verificationURL  string
+	resetURL         string
+	limiter          *rateLimiter
+	version          string
+	gridName         string
+	welcomeText      string
+	welcome          []arrival.Point
+	sessions         SessionStore
+	locations        LocationStore
+	inventory        InventoryStore
+	ticketSigner     *webtoken.Signer
+	channelURL       string
+	channels         *channelHub
+	messages         messages.Store
+	regionPublicBase string
+	stats            *stats.Collector
+	statsCache       *statsCache
+	events           eventlog.Recorder
 }
 
 // New validates options and returns the composed website API handler.
@@ -205,31 +210,32 @@ func New(options Options) (http.Handler, error) {
 		burst = 10
 	}
 	a := &API{
-		accounts:        options.Accounts,
-		regions:         options.Regions,
-		leases:          options.Leases,
-		presence:        options.Presence,
-		signer:          options.Signer,
-		mailer:          options.Mailer,
-		logger:          options.Logger,
-		allowedOrigins:  origins,
-		verificationURL: strings.TrimRight(options.VerificationURL, "/"),
-		resetURL:        strings.TrimRight(options.ResetURL, "/"),
-		limiter:         newRateLimiter(float64(perMinute)/60.0, burst),
-		version:         options.Version,
-		gridName:        options.GridName,
-		welcomeText:     options.WelcomeMessage,
-		welcome:         options.Welcome,
-		sessions:        options.Sessions,
-		locations:       options.Locations,
-		inventory:       options.Inventory,
-		ticketSigner:    options.TicketSigner,
-		channelURL:      options.ChannelURL,
-		channels:        newChannelHub(),
-		messages:        options.Messages,
-		stats:           options.Stats,
-		statsCache:      newStatsCache(),
-		events:          options.Events,
+		accounts:         options.Accounts,
+		regions:          options.Regions,
+		leases:           options.Leases,
+		presence:         options.Presence,
+		signer:           options.Signer,
+		mailer:           options.Mailer,
+		logger:           options.Logger,
+		allowedOrigins:   origins,
+		verificationURL:  strings.TrimRight(options.VerificationURL, "/"),
+		resetURL:         strings.TrimRight(options.ResetURL, "/"),
+		limiter:          newRateLimiter(float64(perMinute)/60.0, burst),
+		version:          options.Version,
+		gridName:         options.GridName,
+		welcomeText:      options.WelcomeMessage,
+		welcome:          options.Welcome,
+		sessions:         options.Sessions,
+		locations:        options.Locations,
+		inventory:        options.Inventory,
+		ticketSigner:     options.TicketSigner,
+		channelURL:       options.ChannelURL,
+		channels:         newChannelHub(),
+		messages:         options.Messages,
+		regionPublicBase: strings.TrimRight(strings.TrimSpace(options.RegionPublicBase), "/"),
+		stats:            options.Stats,
+		statsCache:       newStatsCache(),
+		events:           options.Events,
 	}
 
 	mux := http.NewServeMux()

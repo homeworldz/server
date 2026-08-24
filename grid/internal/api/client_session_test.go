@@ -222,6 +222,31 @@ func (h *worldEntryHarness) open(t *testing.T, body, bearer string) *httptest.Re
 	return response
 }
 
+// TestRegionEndpointIsReachableFromABrowser covers the address handed to a
+// client: a region serves plain http and a browser will not fetch that from an
+// https page, so a deployment that terminates TLS in front of its regions
+// configures a base and every region is reached through it by id.
+//
+// By id, not by name: one region's name can be a prefix of another's, which is
+// how every Nova B session ended up routed to Nova.
+func TestRegionEndpointIsReachableFromABrowser(t *testing.T) {
+	const regionID = "60ed06a2-dbd0-40f8-bd3f-e23786752f81"
+	direct := &API{}
+	if got := direct.regionEndpointFor(regionID, "http://grid.example:42101/"); got != "http://grid.example:42101" {
+		t.Fatalf("unconfigured = %q, want the region's own endpoint", got)
+	}
+	proxied := &API{regionPublicBase: "https://grid.example/region"}
+	if got := proxied.regionEndpointFor(regionID, "http://grid.example:42101"); got !=
+		"https://grid.example/region/"+regionID {
+		t.Fatalf("configured = %q", got)
+	}
+	// A region the grid cannot name falls back rather than producing a base
+	// with nothing after it, which would route to whatever answers first.
+	if got := proxied.regionEndpointFor("", "http://grid.example:42101"); got != "http://grid.example:42101" {
+		t.Fatalf("nameless region = %q", got)
+	}
+}
+
 func TestClientSessionRequiresAuthentication(t *testing.T) {
 	harness := newWorldEntryHarness(t)
 	if response := harness.open(t, `{}`, ""); response.Code != http.StatusUnauthorized {

@@ -58,6 +58,21 @@ type Grid struct {
 	// and serves at /stats.csv ([grid] stats_path). Relative values resolve
 	// against the working directory, like the vault.
 	StatsPath string
+	// RegionPublicBase is where a browser reaches a region's HTTP API, as a
+	// base that a region id is appended to ([grid] region_public_base, e.g.
+	// https://grid.homeworldz.com/region). It exists because a region cannot
+	// serve TLS and a browser will not fetch http:// from an https:// page:
+	// the client asked the grid for a region, was handed the region's own
+	// http://host:port, and every asset fetch was blocked as mixed content
+	// before it left the browser (found in-world 2026-08-24). A reverse proxy
+	// in front of the regions terminates TLS and this is what it is reached
+	// at. Empty hands out the region's own endpoint, which is right for a
+	// deployment where the two are the same.
+	//
+	// Regions still reach each other at the raw endpoint: they have no TLS
+	// client, so routing them through the proxy would break every
+	// region-to-region call.
+	RegionPublicBase string
 
 	// Website API ([website] and [mail] sections). These configure the
 	// separate browser-facing homeworldz-api binary; the grid binary ignores them.
@@ -112,6 +127,8 @@ func LoadGrid(directory string) (Grid, error) {
 		Directory:    resolved,
 		VaultPath: strings.TrimSpace(parsed.Section("vault").Key("path").
 			MustString(filepath.Join("var", "vault"))),
+		RegionPublicBase: strings.TrimRight(strings.TrimSpace(
+			parsed.Section("grid").Key("region_public_base").MustString("")), "/"),
 		StatsPath: strings.TrimSpace(parsed.Section("grid").Key("stats_path").
 			MustString(filepath.Join("var", "stats.csv"))),
 		WelcomeLocations: splitList(parsed.Section("grid").Key("welcome_locations").String()),

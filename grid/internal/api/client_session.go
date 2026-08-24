@@ -130,7 +130,7 @@ func (a *API) clientSession(w http.ResponseWriter, r *http.Request) {
 			Name:     destination.Region.Name,
 			GridX:    destination.Region.GridX,
 			GridY:    destination.Region.GridY,
-			Endpoint: strings.TrimRight(destination.Region.PublicEndpoint, "/"),
+			Endpoint: a.regionEndpointFor(destination.Region.ID, destination.Region.PublicEndpoint),
 			Position: position,
 		},
 		Ticket:       ClientTicket{Token: ticket, ExpiresAt: ticketExpiry},
@@ -207,4 +207,21 @@ func (a *API) resolveClientDestination(w http.ResponseWriter, r *http.Request,
 		position := &[3]float64{float64(point.X), float64(point.Y), float64(point.Z)}
 		return destination, position, true
 	}
+}
+
+// regionEndpointFor answers where the caller should reach this region's HTTP
+// API. A browser cannot fetch http:// from an https:// page, and a region
+// cannot serve TLS, so a deployment that terminates TLS in front of its
+// regions configures the base and every region is reached through it by id.
+// Without that configuration the region's own endpoint is handed out, which is
+// what a deployment where the two are the same wants.
+//
+// By id rather than by name deliberately: a name can change, and one region's
+// name can be a prefix of another's — routing /session/nova* in front of
+// /session/novab* silently sent every Nova B connection to Nova (2026-08-24).
+func (a *API) regionEndpointFor(regionID, publicEndpoint string) string {
+	if a.regionPublicBase == "" || regionID == "" {
+		return strings.TrimRight(publicEndpoint, "/")
+	}
+	return a.regionPublicBase + "/" + regionID
 }
