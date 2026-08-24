@@ -13,23 +13,23 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="39">39%</progress>
- <strong>39%</strong>
+  <progress data-color="primary" max="100" value="40">40%</progress>
+ <strong>40%</strong>
 </label>
 </p>
 
 <p>
 <label class="roadmap-overall-progress">
  <span>Modern Homeworldz client + back-end:</span>
-  <progress data-color="primary" max="100" value="36">36%</progress>
- <strong>36%</strong>
+  <progress data-color="primary" max="100" value="37">37%</progress>
+ <strong>37%</strong>
 </label>
 </p>
 
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="86" aria-label="Phase 2 progress: 86%">86%</progress> | 86% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="87" aria-label="Phase 2 progress: 87%">87%</progress> | 87% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -37,7 +37,7 @@ client.
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="25" aria-label="Phase 7 progress: 25%">25%</progress> | 25% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="3" aria-label="Phase 8 progress: 3%">3%</progress> | 3% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="66" aria-label="Phase 9 progress: 66%">66%</progress> | 66% |
-| 10. Modern Client Support | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="8" aria-label="Phase 10 progress: 8%">8%</progress> | 8% |
+| 10. Modern Client Support | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="10" aria-label="Phase 10 progress: 10%">10%</progress> | 10% |
 | 11. Economy and Marketplace | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="0" aria-label="Phase 11 progress: 0%">0%</progress> | 0% |
 
 ## Phase 1: Functional Single-region World
@@ -164,7 +164,7 @@ two finished.
 - [x] Define an off-region disposition for every moving entity ([ADR 0037](adr/0037-object-border-crossings.md)): avatars, child prims, attachments, temporary-on-rez objects, non-physical objects, and the no-neighbor case each have a stated answer rather than whichever one the containment clamp produced.
 - [x] At a border with no eligible online neighbor, constrain avatar and physical-object origins to the configured Region extent and cancel outward velocity at the crossed edge.
 - [x] Resolve border neighbors from persistent grid region records plus their current online leases before choosing crossing versus containment.
-- [ ] Cross individual objects and complete linksets without changing creator, owner, permissions, inventory, or physical state. *Built and unit-tested; awaiting proof between two live regions.*
+- [ ] Cross individual objects and complete linksets without changing creator, owner, permissions, inventory, or physical state. *A single prim is proven between two live regions — same object id either side, and it stayed put across a relog. A multi-part linkset has still only been unit-tested.*
 - [ ] Carry a physical object's linear and angular motion across the border so its path is continuous through the crossing. *Built and unit-tested; awaiting proof between two live regions.*
 - [ ] Cross attachments as part of their avatar bundle.
 - [ ] Transfer an object and every avatar sitting on it as one coordinated bundle — sit target, seat assignment, and seated transform included — with no passenger briefly becoming authoritative in both regions or neither.
@@ -187,12 +187,12 @@ processes rather than within one, and the same three problems have to be
 solved again across a boundary where the neighbour is another server that can
 be slow, restarting, or gone.
 
-- [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it.
+- [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it. *Announcement and establishment are proven — 94 child agents established on the cloud grid and none refused. A neighbour that was still starting used to refuse the one offer it was ever made; refusals are retried, a child is renewed by its session's own traffic instead of expiring under a viewer still holding it, and a session's home region releases its children when it ends. What is not built is telling a viewer a neighbour has gone.*
 - [ ] Serve objects to a viewer whose avatar stands in a neighbouring region, interest-filtered by that viewer's camera and draw distance rather than by which region it belongs to.
 - [ ] Serve avatars the same way, so a resident is visible to people standing across the line and their movement is continuous rather than appearing only on arrival. *Built 2026-08-22 — movement, animations, arrivals, departures, and appearance changes all reach standing child circuits; awaiting live proof.*
 - [ ] Say out loud when something leaves a neighbouring viewer's interest, since a viewer keeps what it was told about and a silent departure strands an object at a stale position forever.
-- [ ] Reduce a border crossing to promoting a circuit the viewer already holds, as an internal facet line already is, and confirm in Firestorm that the world across the line is drawn before the crossing rather than after it.
-- [ ] Define what a viewer is shown when a neighbour is unreachable, restarting, or newly online, so the border degrades to empty rather than to a stall.
+- [x] Reduce a border crossing to promoting a circuit the viewer already holds, as an internal facet line already is, and confirm in Firestorm that the world across the line is drawn before the crossing rather than after it.
+- [ ] Define what a viewer is shown when a neighbour is unreachable, restarting, or newly online, so the border degrades to empty rather than to a stall. *A neighbour is never announced without a seed that answers, and one that was merely slow to start is retried rather than written off; the unreachable and restarting cases are still undefined.*
 
 ### World navigation
 
@@ -206,13 +206,13 @@ be slow, restarting, or gone.
 
 ### Inventory asset durability
 
-**.** A region that dies no longer takes its users' inventory
-with it: the vault holds verified bytes for every inventory-referenced asset's
-whole closure, and the grid refuses any commit it cannot make durable first.
-The layer separation below lands before the write-through that fills the vault.
-because re-keying an empty vault is free
-(.
-).
+A region that dies no longer takes its users' inventory with it: the vault
+holds verified bytes for every inventory-referenced asset's whole closure, and
+the grid refuses any commit it cannot make durable first. What the vault is
+*for* is user-owned content — an inventory item's closure, and an avatar's
+bakes, which travel with them the same way. A region's own scene assets stay in
+the region that holds them, and a Take or Take Copy is what writes a closure
+through.
 
 - [x] Separate the blob, asset, and instance layers.
 
@@ -488,6 +488,7 @@ it builds against.
 - [x] Publish the region's water to session clients.
 - [x] Bound the terrain alignment invariant by each sample's own quantization step.
 - [x] Rule out LayerData compression as the cause of rough-looking ground in Firestorm.
+- [x] Serve the browser client from the account site's own origin and hand it its configuration, so it reaches the grid carrying the account's own token and needs no sign-in of its own.
 - [ ] Serve appearance *to* session clients, so they can render each other.
 - [ ] Store modern asset formats at rest.
 - [ ] Mesh prims server-side, so the client renders one geometry pipeline and prim meshing logic is written once.
