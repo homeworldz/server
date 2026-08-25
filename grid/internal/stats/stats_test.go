@@ -324,6 +324,65 @@ func TestUpgradesAnOlderFile(t *testing.T) {
 	}
 }
 
+// TestUpgradesWithoutARowBeingDue covers the case that made this worth doing:
+// the day's row is already written, so nothing is due for another day, and the
+// file is still short a column this build measures. Before UpgradeColumns, the
+// live grid served a stats.csv missing land_square_metres and would have kept
+// serving it until six the next morning.
+func TestUpgradesWithoutARowBeingDue(t *testing.T) {
+	recorder := newTestRecorder(t, testSources())
+	legacy := "datetime,users,regions,region_equivalents\n" +
+		"260819-0600,5,3,11\n260820-0600,6,3,11\n"
+	if err := os.WriteFile(recorder.path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Before the recording hour, so RecordIfDue would return without writing
+	// anything and the old upgrade-on-append path would never run.
+	at(recorder, easternTime(t, 2026, time.August, 21, 5, 0))
+	if err := recorder.UpgradeColumns(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(recorder.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := header + "\n" +
+		"260819-0600,5,3,11,,,,,,,,,,,,\n" +
+		"260820-0600,6,3,11,,,,,,,,,,,,\n"
+	if string(content) != want {
+		t.Fatalf("upgraded file %q, want %q", content, want)
+	}
+	// No row was invented. An upgrade changes what the columns are called and
+	// how wide the rows are; it does not measure anything.
+	if last, err := recorder.lastRecordedDay(); err != nil || last != "260820" {
+		t.Fatalf("last recorded day = %q (%v), want 260820", last, err)
+	}
+	// And it is idempotent, which matters because it now runs at every start.
+	if err := recorder.UpgradeColumns(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := os.ReadFile(recorder.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != want {
+		t.Fatalf("second upgrade changed the file: %q", again)
+	}
+}
+
+// TestUpgradeLeavesAMissingFileAlone: a grid that has never recorded has no
+// file, and starting one at boot would create a headers-only stats.csv for a
+// grid that may never record. Absent stays absent.
+func TestUpgradeLeavesAMissingFileAlone(t *testing.T) {
+	recorder := newTestRecorder(t, testSources())
+	if err := recorder.UpgradeColumns(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(recorder.path); !os.IsNotExist(err) {
+		t.Fatalf("a file was created: %v", err)
+	}
+}
+
 // TestRefusesUnrecognizedColumns: a file whose header is not an older prefix
 // of this build's columns is left alone. Appending to it would produce a CSV
 // whose columns mean two different things down its length.

@@ -16,10 +16,9 @@
 //
 // Columns are only ever appended, never reordered or repurposed, so a chart
 // built against an older file keeps working. A file written by an older build
-// is upgraded in place the next time a row is due: its header becomes the
-// current one and its rows are padded with empty fields, which says "this
-// grid did not measure that yet" rather than the zero that would say it
-// measured nothing.
+// is upgraded in place at startup: its header becomes the current one and its
+// rows are padded with empty fields, which says "this grid did not measure
+// that yet" rather than the zero that would say it measured nothing.
 package stats
 
 import (
@@ -92,6 +91,14 @@ func New(path string, collector *Collector, logger *slog.Logger) (*Recorder, err
 // Run records whenever a row becomes due, once a minute, until the context
 // ends. It checks immediately so a restart never loses a day.
 func (r *Recorder) Run(ctx context.Context) {
+	// Bring an older file up to the current columns now rather than at the
+	// next due row. Waiting meant a build that measures a new column served a
+	// /stats.csv without it for up to a day — and exactly a day when the day's
+	// row was already written before the deploy, which is the normal case for
+	// anything deployed after six in the morning.
+	if err := r.UpgradeColumns(); err != nil {
+		r.logger.Error("upgrade grid stats columns", "error", err)
+	}
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -229,6 +236,16 @@ func (r *Recorder) append(line string) error {
 		return fmt.Errorf("append stats row: %w", err)
 	}
 	return nil
+}
+
+// UpgradeColumns brings a file written by an older build up to the current
+// columns, without waiting for a row to be due. Run calls it at startup; it is
+// exported so an operator tool can force it against a file the recorder is not
+// running over.
+func (r *Recorder) UpgradeColumns() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.upgradeHeader()
 }
 
 // upgradeHeader rewrites a file written by a build with fewer columns: the
