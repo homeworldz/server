@@ -20,6 +20,25 @@ settings on a new grid. The standard default-day settings asset is sourced
 from OpenSimulator's BSD-licensed asset set; its upstream notice is retained
 beside the asset.
 
+`viewer-standard/sounds/` holds the OpenSimulator `OSSnd*` replacement sounds
+from the same BSD-licensed set, each copied to the viewer UUID that Firestorm's
+`settings.xml` names for it (`UISndClick`, `UISndTyping`, and so on). One file
+serves several ids where the viewer asks for several: the eight
+`UISndPieMenuSliceHighlight*` slots are one upstream sound copied eight times,
+because the id is what the viewer fetches and it fetches all eight.
+
+**A viewer asks for these constantly, and asks again every time.** A missing one
+is not a single failed fetch: Firestorm marks the source corrupted and retries
+on the next event, so one absent id produces an unbounded warning stream. That
+is how the gap was noticed — `UISndFootsteps` fires on every footstep an avatar
+takes.
+
+**`UISndFootsteps` (`e8af4a28-aa83-4310-a7c4-c047e15ea0df`) is deliberately not
+here.** The upstream BSD set has no footstep replacement — it maps 27 ids and
+that is not one of them — so there is nothing to copy that this project has the
+rights to. It needs a sound of our own or a compatibly licensed one, and until
+there is one, that warning stream is expected rather than mysterious.
+
 The Halcyon source is distributed under the 3-clause BSD license. The texture
 set's provenance notice says that some included textures derive from Second
 Life Viewer Artwork, copyright Linden Research, Inc., and are licensed under
