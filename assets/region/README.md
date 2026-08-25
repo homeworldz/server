@@ -39,6 +39,23 @@ that is not one of them — so there is nothing to copy that this project has th
 rights to. It needs a sound of our own or a compatibly licensed one, and until
 there is one, that warning stream is expected rather than mysterious.
 
+The collision sounds beside them are the same story one layer down.
+`LLVOAvatar::getStepSound` returns the footstep id only while the avatar is on
+*land*; on anything rezzed it returns the collision sound for that prim's
+material, so a floor made of prims asks for a different id and produces the
+same unbounded stream when it is missing. Firestorm's OpenSim build swaps the
+whole matrix to OpenSim's own ids (`OPENSIM_SND_*`, llmaterialtable.cpp), and
+the upstream set supplies all 49 of them; the 56 here are that set entire,
+since the seven it does not currently name belong to the same matrix.
+
+**Format is not a preference here, it is a decode requirement.** The viewer
+decodes any Vorbis file and then writes a WAV header that is *hardcoded* to
+mono, 44100 Hz, 16-bit (llaudiodecodemgr.cpp). It does not read the stream's
+own rate or channel count back out. A stereo file is therefore played as
+interleaved mono — garbled, and about twice as fast — and a 48 kHz file plays
+about 8.8% slow. Everything in this directory is mono 44100 for that reason,
+and anything added later must be too.
+
 The Halcyon source is distributed under the 3-clause BSD license. The texture
 set's provenance notice says that some included textures derive from Second
 Life Viewer Artwork, copyright Linden Research, Inc., and are licensed under
