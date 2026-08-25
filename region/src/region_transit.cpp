@@ -45,6 +45,23 @@ std::optional<std::array<float, 3>> resolve_region_teleport_position(
     return requested_position;
 }
 
+std::vector<std::uint32_t> child_circuit_farewell_ids(
+    std::span<const FacetOccupant> occupants, int facet,
+    std::string_view recipient_session) {
+    std::vector<std::uint32_t> ids;
+    for (const auto& occupant : occupants) {
+        // A child circuit is filled with one facet and updated with one facet,
+        // so it holds one facet's ids and nothing else. Naming another's would
+        // be harmless — a viewer ignores an id it never held — but it would
+        // also mean this no longer describes what that circuit was shown, and
+        // the next reader would have to work out which.
+        if (occupant.facet != facet) continue;
+        if (!occupant.session_id.empty() && occupant.session_id == recipient_session) continue;
+        ids.push_back(occupant.local_id);
+    }
+    return ids;
+}
+
 std::optional<BorderCrossing> plan_border_crossing(
     int source_grid_x, int source_grid_y, int source_size_x, int source_size_y,
     std::array<double, 3> source_position,

@@ -384,5 +384,42 @@ int main() {
     // And an answer with no seed is a refusal, which a source must not announce
     // a neighbour on.
     if (!homeworldz::region::parse_child_agent_acceptance("{}").empty()) return 1;
+    // A farewell to a child circuit names what that circuit was shown, so a
+    // viewer whose avatar is next door drops this region's content instead of
+    // keeping a frozen copy of it at its last position.
+    {
+        constexpr std::string_view watcher = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        constexpr std::string_view resident = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const std::vector<homeworldz::region::FacetOccupant> occupants{
+            {10, 0, {}},                       // an object in facet 0
+            {11, 1, {}},                       // an object in facet 1
+            {20, 0, std::string(resident)},    // someone standing in facet 0
+            {21, 0, std::string(watcher)},     // the watcher's own avatar
+            {22, 1, std::string(resident)},    // and someone in the other facet
+        };
+        const auto facet0 = homeworldz::region::child_circuit_farewell_ids(
+            occupants, 0, watcher);
+        // The object and the other resident, and neither the watcher's own
+        // avatar nor anything belonging to a facet this circuit never carried.
+        if (facet0 != std::vector<std::uint32_t>{10, 20}) return 30;
+        const auto facet1 = homeworldz::region::child_circuit_farewell_ids(
+            occupants, 1, watcher);
+        if (facet1 != std::vector<std::uint32_t>{11, 22}) return 31;
+        // The watcher's own avatar is excluded because it is the recipient, not
+        // because of anything about that avatar: to a circuit that is not its
+        // own, it is an avatar like any other.
+        const auto seen_by_resident = homeworldz::region::child_circuit_farewell_ids(
+            occupants, 0, resident);
+        if (seen_by_resident != std::vector<std::uint32_t>{10, 21}) return 32;
+        // A facet holding nothing yields nothing, so a farewell for it is not
+        // sent at all rather than sent empty.
+        if (!homeworldz::region::child_circuit_farewell_ids(occupants, 7, watcher).empty())
+            return 33;
+        // An object never carries a session id, so an empty recipient — which
+        // a malformed child record could produce — must not sweep every object
+        // out of the farewell.
+        if (homeworldz::region::child_circuit_farewell_ids(occupants, 0, "") !=
+            std::vector<std::uint32_t>{10, 20, 21}) return 34;
+    }
     return 0;
 }

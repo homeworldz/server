@@ -35,6 +35,29 @@ std::optional<std::array<float, 3>> resolve_region_teleport_position(
     int region_grid_x, int region_grid_y, int region_size_x, int region_size_y,
     std::uint64_t requested_handle, std::array<float, 3> requested_position);
 
+// One thing a child circuit was shown: a rezzed object, or an avatar standing
+// in the facet. `session_id` is the avatar's session and is empty for an
+// object — which is what lets a farewell tell the recipient's own avatar apart
+// from everything else it is looking at.
+struct FacetOccupant {
+    std::uint32_t local_id{};
+    int facet{};
+    std::string session_id;
+};
+
+// What a farewell to a child circuit on `facet` must name, so the viewer drops
+// what this region will stop updating (ADR 0038).
+//
+// The recipient's own avatar is never named. Its object belongs to whichever
+// circuit roots it, which is somewhere else by definition for a child, and a
+// kill for it reads to that viewer as its own body being deleted. The
+// codebase has made the neighbouring mistake before — a wearer's detaches
+// broadcast to everyone including the wearer, which desynchronised Firestorm's
+// attachment manager — so the exclusion is the rule's job, not each caller's.
+std::vector<std::uint32_t> child_circuit_farewell_ids(
+    std::span<const FacetOccupant> occupants, int facet,
+    std::string_view recipient_session);
+
 class InboundTransitRegistry {
 public:
     bool stage(const grid::AvatarTransit& transit, std::string_view local_region_id,

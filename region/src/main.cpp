@@ -4744,6 +4744,10 @@ int main(int argc, char* argv[]) {
     // regions are up long before anyone logs in, 94 offers were established
     // and none refused — which is exactly why this went unseen there and bit
     // a local pair started alongside its client.
+    // Sessions this region held as children at the last sweep. An expiry is a
+    // silence — the registry simply stops returning the entry — so the only way
+    // to see one is to notice what used to be there and is not.
+    std::unordered_set<std::string> watched_child_sessions;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point>
         child_agent_retry_at;
     constexpr auto child_agent_retry_interval = std::chrono::seconds(30);
@@ -5405,6 +5409,63 @@ int main(int argc, char* argv[]) {
                   << ",\"objects\":" << objects_sent
                   << ",\"avatars\":" << avatars_sent
                   << "}" << std::endl;
+    };
+    // The mirror of backfill_child_circuit: name everything a child circuit was
+    // shown, so the viewer drops it instead of keeping it.
+    //
+    // A viewer keeps what it was told about. A child circuit is filled with a
+    // facet's whole world and then updated for as long as this region serves
+    // it, so when that stops — the region is restarting, or the child expired
+    // because the viewer stopped talking to it — silence leaves every object
+    // and avatar on the screen at the position it last had. Nothing on the
+    // viewer's side clears them: they are simply there, at a stale position,
+    // until it logs out. A departure has to be said out loud.
+    //
+    // The ids are recomputed from the facet rather than remembered per circuit.
+    // What a child was told is "this facet's contents", which the scene can
+    // answer at any time, and an id a viewer never held is ignored by it — so
+    // recomputing is both simpler than a per-circuit ledger and safe in the
+    // direction that matters. Returns how many ids were named.
+    const auto farewell_child_circuit = [&](const std::string& child_endpoint,
+                                            std::string_view child_session_id,
+                                            std::chrono::steady_clock::time_point when) {
+        const auto facet = endpoint_facet_of(child_endpoint);
+        std::vector<homeworldz::region::FacetOccupant> occupants;
+        for (const auto& [entity_id, entity] : scene.entities()) {
+            // The same filter the object paths use: an entity with no object id
+            // is not a rezzed object but an avatar's own body entity, and those
+            // are collected below as the avatars they are.
+            if (!session_object_visible(entity)) continue;
+            occupants.push_back({static_cast<std::uint32_t>(entity_id), entity_facet(entity), {}});
+        }
+        for (const auto& [other_endpoint, other] : avatars) {
+            static_cast<void>(other_endpoint);
+            const auto& standing = other.controller.state().position;
+            occupants.push_back({static_cast<std::uint32_t>(other.entity_id),
+                                 facet_of_position(standing.x, standing.y),
+                                 other.session_id});
+        }
+        const auto leaving = homeworldz::region::child_circuit_farewell_ids(
+            occupants, facet, child_session_id);
+        if (leaving.empty()) return std::size_t{0};
+        const auto kill = homeworldz::viewer::encode_kill_object(leaving);
+        if (kill.empty()) return std::size_t{0};
+        if (const auto framed = circuits.send(child_endpoint, kill, true, when, true))
+            static_cast<void>(send_udp(viewer_server, child_endpoint, *framed));
+        return leaving.size();
+    };
+    // The same farewell addressed by session rather than by circuit, for a
+    // child that is already out of the registry: an expiry is noticed after
+    // the entry is gone, so its routes cannot be read back from it.
+    const auto farewell_child_session = [&](const std::string& session_id,
+                                            std::chrono::steady_clock::time_point when) {
+        const auto session_uuid = homeworldz::viewer::parse_uuid(session_id);
+        if (!session_uuid) return std::size_t{0};
+        std::size_t cleared = 0;
+        for (int facet = 0; facet < facet_count; ++facet)
+            if (const auto route = circuits.session_endpoint_for_facet(*session_uuid, facet))
+                cleared += farewell_child_circuit(*route, session_id, when);
+        return cleared;
     };
     // Return one root object (and its linkset) to its owner's inventory: serialize
     // the linkset, store and register the asset, create an object item in the
@@ -16101,13 +16162,36 @@ int main(int argc, char* argv[]) {
             std::erase_if(announced_child_seeds, [&](const auto& entry) {
                 return session_is_gone(entry.first);
             });
+            // A child that is no longer held is a viewer this region has
+            // stopped serving, and it is still holding everything this region
+            // showed it. Tell it those are gone.
+            //
+            // A promotion leaves the registry the same way an expiry does, and
+            // must not be farewelled: the crossing arrived, the session is
+            // rooted here now, and on a square region its child circuit and its
+            // new primary are the same endpoint — so this would blank the
+            // region the viewer just walked into, one tick after arriving. An
+            // avatar under that session is the proof it was promoted, which is
+            // the same question `session_is_gone` already asks.
+            std::unordered_set<std::string> still_children;
+            for (const auto& child : child_agents.live(now))
+                still_children.insert(child.session_id);
+            for (const auto& session : watched_child_sessions) {
+                if (still_children.contains(session)) continue;
+                if (!session_is_gone(session + "|")) continue;
+                if (const auto cleared = farewell_child_session(session, now); cleared > 0)
+                    std::cout << "{\"level\":\"info\",\"message\":\"child circuit cleared\""
+                                 ",\"session\":" << homeworldz::api::json_string(session)
+                              << ",\"cleared\":" << cleared << "}" << std::endl;
+            }
+            watched_child_sessions = std::move(still_children);
         }
     }
     // Graceful shutdown (SIGINT/SIGTERM set running=false): tell every connected
     // viewer why it is being disconnected — a KickUser with a reason string, so
     // it shows a clear message instead of a generic timeout/crash — then give the
     // datagrams a few seconds to leave and be processed before the process exits.
-    if (!avatars.empty()) {
+    {
         const auto shutdown_now = std::chrono::steady_clock::now();
         const std::string reason = "This region is restarting. Please log back in shortly.";
         std::size_t kicked = 0;
@@ -16123,11 +16207,37 @@ int main(int argc, char* argv[]) {
                 ++kicked;
             }
         }
-        std::cout << "{\"level\":\"info\",\"message\":\"region shutdown: viewers kicked\",\"count\":"
-                  << kicked << "}" << std::endl;
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-        std::cout.flush();
-        std::cerr.flush();
+        // A viewer watching from a neighbour is not being kicked — its session
+        // is somewhere else and survives this restart — but everything this
+        // region drew on its screen is about to stop being updated, and it
+        // would keep a frozen copy of this facet until it logged out. This is
+        // the departure that has no other announcement: an expiry is at least
+        // noticed by the sweep, while a restart simply ends.
+        //
+        // Deliberately outside the old `avatars.empty()` guard. A region can
+        // hold no avatars of its own and still be watched from next door,
+        // which is precisely the border case child circuits exist for, and it
+        // is the likeliest case of all for a quiet region being deployed.
+        std::size_t cleared_circuits = 0;
+        std::size_t cleared_ids = 0;
+        for_each_child_circuit(every_facet, shutdown_now,
+            [&](const std::string& route, const auto& child) {
+                const auto cleared = farewell_child_circuit(route, child.session_id, shutdown_now);
+                if (cleared == 0) return;
+                ++cleared_circuits;
+                cleared_ids += cleared;
+            });
+        if (kicked > 0 || cleared_circuits > 0) {
+            std::cout << "{\"level\":\"info\",\"message\":\"region shutdown: viewers kicked\",\"count\":"
+                      << kicked << ",\"childCircuitsCleared\":" << cleared_circuits
+                      << ",\"idsCleared\":" << cleared_ids << "}" << std::endl;
+            // Long enough for the datagrams to leave and be processed. Both
+            // the kick and the farewell need it: a farewell that never left the
+            // socket is the silence it was written to replace.
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            std::cout.flush();
+            std::cerr.flush();
+        }
     }
     try {
         storage->save_snapshot(scene);
