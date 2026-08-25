@@ -1,4 +1,5 @@
 #include "homeworldz/viewer_protocol.h"
+#include "homeworldz/visual_params.h"
 
 #include <algorithm>
 #include <array>
@@ -2001,6 +2002,53 @@ int main() {
         // Zero means "not an attachment" and must stay zero, or every ordinary
         // prim in the region claims to be worn on point 0.
         if (homeworldz::viewer::attachment_state(0) != 0) return 40;
+    }
+
+    // The appearance version is on the wire twice -- visual param 11000 and the
+    // AppearanceData byte -- and the viewer checks they agree
+    // (LLVOAvatar::isUsingServerBakes). When they disagreed it warned "wt 1
+    // differs from expected 0", believed the byte, and composited masks itself,
+    // which is what produced the "NO aux source" and Kakadu component errors
+    // downstream. Relayed appearances disagreed every time: AgentSetAppearance
+    // has no version field, so the decoder left the byte at 0 while forwarding a
+    // server-bake viewer's param 11000 = 1 verbatim.
+    {
+        using homeworldz::viewer::appearance_version_param_index;
+        using homeworldz::viewer::visual_param_count;
+        const auto index = appearance_version_param_index();
+        if (index >= visual_param_count()) return 41;
+
+        // A viewer's array, claiming version 1 the only way an inbound message
+        // can claim it.
+        std::vector<std::uint8_t> params(visual_param_count(), 7);
+        params[index] = 1;
+        const auto encoded = homeworldz::viewer::encode_avatar_appearance(
+            {{}, 3, std::vector<std::byte>(16, std::byte{4}), params, {}, 0});
+        if (encoded.empty()) return 42;
+        // Locate the params: 4 id + 16 sender + 1 trial + 2 length + entry.
+        const std::size_t params_at = 4 + 16 + 1 + 2 + 16 + 1;
+        if (encoded.size() < params_at + visual_param_count() + 2) return 43;
+        if (std::to_integer<std::uint8_t>(encoded[params_at + index]) != 0) return 44;
+        // Every other param is passed through untouched.
+        if (std::to_integer<std::uint8_t>(encoded[params_at + (index == 0 ? 1 : 0)]) != 7) return 45;
+        // And the byte itself still says what it said.
+        const auto version_at = params_at + visual_param_count() + 1;
+        if (std::to_integer<std::uint8_t>(encoded[version_at]) != 0) return 46;
+
+        // Version 1 agrees the other way, so this is a rule and not a clamp:
+        // when the server-bake bit and its capability ship, both halves move.
+        const auto server_side = homeworldz::viewer::encode_avatar_appearance(
+            {{}, 3, std::vector<std::byte>(16, std::byte{4}), params, {}, 1});
+        if (std::to_integer<std::uint8_t>(server_side[params_at + index]) != 1) return 47;
+
+        // An array this build cannot index is left entirely alone rather than
+        // having some unrelated param overwritten by a guess.
+        std::vector<std::uint8_t> foreign(visual_param_count() - 1, 9);
+        const auto untouched = homeworldz::viewer::encode_avatar_appearance(
+            {{}, 3, std::vector<std::byte>(16, std::byte{4}), foreign, {}, 0});
+        if (untouched.empty()) return 48;
+        for (std::size_t i = 0; i < foreign.size(); ++i)
+            if (std::to_integer<std::uint8_t>(untouched[params_at + i]) != 9) return 49;
     }
 
     return 0;

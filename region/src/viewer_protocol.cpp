@@ -1,6 +1,7 @@
 #include "homeworldz/viewer_protocol.h"
 
 #include "homeworldz/terrain_layers.h"
+#include "homeworldz/visual_params.h"
 
 #include <algorithm>
 #include <bit>
@@ -2106,6 +2107,15 @@ std::optional<AgentSetAppearance> decode_agent_set_appearance(std::span<const st
     return result;
 }
 
+namespace {
+// The index of visual param 11000, or one past the end when the array is not
+// the length this build understands — which reads as "no index to rewrite".
+std::size_t visual_param_index_for_version(std::size_t supplied) {
+    if (supplied != visual_param_count()) return supplied;
+    return appearance_version_param_index();
+}
+}  // namespace
+
 std::vector<std::byte> encode_avatar_appearance(const AvatarAppearance& message) {
     if (message.texture_entry.empty() || message.texture_entry.size() > 65535 ||
         message.visual_params.empty() || message.visual_params.size() > 255)
@@ -2118,7 +2128,30 @@ std::vector<std::byte> encode_avatar_appearance(const AvatarAppearance& message)
     append_le_u16(output, static_cast<std::uint16_t>(message.texture_entry.size()));
     output.insert(output.end(), message.texture_entry.begin(), message.texture_entry.end());
     output.push_back(static_cast<std::byte>(message.visual_params.size()));
-    for (const auto value : message.visual_params) output.push_back(static_cast<std::byte>(value));
+    // The appearance version is stated twice in this message — as visual param
+    // 11000 and as the AppearanceData byte below — and the viewer checks that
+    // they agree (LLVOAvatar::isUsingServerBakes). Disagree and it warns "wt 1
+    // differs from expected 0", believes the byte, and falls back to
+    // compositing the avatar's masks itself; that fallback is what produces
+    // "Masks loaded callback but NO aux source" and the Kakadu "range of
+    // apparent image components is empty or illegal" errors downstream.
+    //
+    // They disagreed for every relayed appearance. AgentSetAppearance carries
+    // no version field, so an inbound one only ever says what it wants through
+    // param 11000; the decoder leaves appearance_version at 0 and the params
+    // are forwarded verbatim, which for a server-bake-capable viewer means
+    // param 11000 = 1 going out under a byte of 0.
+    //
+    // Enforced here rather than at each caller because this is the one place
+    // both halves are written, and build_visual_params already applies the
+    // same rule to appearances the region builds. Positional only when the
+    // array is the length this build knows: a viewer sending some other count
+    // is not one whose param 11000 we can locate, and guessing would rewrite
+    // an unrelated param.
+    const auto version_index = visual_param_index_for_version(message.visual_params.size());
+    for (std::size_t index = 0; index < message.visual_params.size(); ++index)
+        output.push_back(static_cast<std::byte>(
+            index == version_index ? message.appearance_version : message.visual_params[index]));
     output.push_back(std::byte{1}); // one appearance metadata block
     output.push_back(static_cast<std::byte>(message.appearance_version)); // 0=legacy, 1=server-side
     append_le_u32(output, message.serial);

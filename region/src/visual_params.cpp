@@ -278,6 +278,12 @@ constexpr ParamDef kParams[] = {
 
 std::size_t visual_param_count() { return std::size(kParams); }
 
+std::size_t appearance_version_param_index() {
+    for (std::size_t index = 0; index < std::size(kParams); ++index)
+        if (kParams[index].id == 11000) return index;
+    return std::size(kParams);
+}
+
 std::vector<std::uint8_t> build_visual_params(const std::vector<Wearable>& worn,
                                               std::uint8_t appearance_version) {
     std::vector<std::uint8_t> params;

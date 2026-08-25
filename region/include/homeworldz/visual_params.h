@@ -27,6 +27,16 @@ std::vector<std::uint8_t> build_visual_params(const std::vector<Wearable>& worn,
 // The number of visual params transmitted (253).
 std::size_t visual_param_count();
 
+// Where param 11000 sits in that array, so a relayed appearance can be held to
+// the same rule build_visual_params applies to a built one.
+//
+// The version is on the wire twice and the two halves arrive by different
+// routes: inbound it is only ever visual param 11000 (AgentSetAppearance has no
+// version field at all), outbound it is also the AppearanceData byte. Copying a
+// viewer's params through while writing our own byte therefore forwards its
+// answer and overrides it at the same time.
+std::size_t appearance_version_param_index();
+
 }  // namespace homeworldz::viewer
 
 #endif  // HOMEWORLDZ_VISUAL_PARAMS_H
