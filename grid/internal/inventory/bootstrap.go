@@ -28,6 +28,14 @@ type Bootstrapper interface {
 // happened to log in through Firestorm once, which repaired it silently and
 // hid the fault (found 2026-08-24 sweeping for paths only one transport runs).
 //
+// Reproducing it means checking the items, not the folders. The folders have a
+// third writer: httpapi's GET .../system-folders/{type} ensures the whole
+// skeleton before answering, so a region placing an uploaded item creates all
+// of them as a side effect. An account that has uploaded anything therefore
+// shows a complete folder tree and still has nothing to wear, which reads as
+// the bug being absent. The default outfit below is the half that only a login
+// writes, and the half the fault was actually about.
+//
 // A nil store means the deployment serves no inventory, and the deterministic
 // skeleton is the honest answer: those folder ids are derived from the user id,
 // so they are the same ids the store would have created.
