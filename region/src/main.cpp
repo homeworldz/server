@@ -4182,7 +4182,16 @@ int main(int argc, char* argv[]) {
                                      std::chrono::steady_clock::time_point when) -> WearOutcome {
         // indra's ATTACHMENT_RIGHT_HAND: where an item with no remembered point
         // goes, matching what a viewer expects from a plain Wear.
-        constexpr std::uint8_t attachment_point_right_hand = 5;
+        //
+        // Six, not five. avatar_lad.xml is the authority and numbers these
+        // `id="5" name="Left Hand"`, `id="6" name="Right Hand"`; this held 5
+        // under a name that said right, so every item without a remembered
+        // point was worn on the wrong hand. Rigged mesh hid it — a rigged
+        // attachment binds to the skeleton and renders identically wherever it
+        // is attached — so the only symptom was the inventory panel reading
+        // "(worn on Left Hand)" against three mesh body parts, which is where
+        // an operator spotted it (2026-08-26).
+        constexpr std::uint8_t attachment_point_right_hand = 6;
         constexpr std::uint8_t attachment_point_mask =
             static_cast<std::uint8_t>(~homeworldz::viewer::attachment_add);
         WearOutcome outcome;
