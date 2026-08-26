@@ -2246,14 +2246,61 @@ int main(int argc, char* argv[]) {
                       << homeworldz::api::json_string(error.what()) << "}" << std::endl;
         }
     }
+    // Assets this region has looked for and the grid does not have.
+    //
+    // Two things went wrong without this, and only one of them was expensive.
+    //
+    // The cheap one first: nothing said which asset was missing. Every caller
+    // reaches this through a catch that swallows the exception, so a texture a
+    // viewer could not be served produced silence here and a grey or black
+    // object there — the only evidence was in the viewer's own log, on someone
+    // else's machine. An object whose creator has the texture cached renders
+    // perfectly for the one person able to report it, so silence on this side
+    // meant nobody could see the fault at all (found 2026-08-26: a worn mesh
+    // named four textures that exist nowhere on the deployment).
+    //
+    // The expensive one: a miss re-asked the grid every time. find_asset is a
+    // synchronous HTTP call on this loop, and a viewer re-requests an image it
+    // has not received, so an unresolvable texture bought a grid round-trip per
+    // request forever. On this deployment the grid is the same machine and
+    // answers in under a millisecond, which is exactly why it was invisible
+    // rather than why it was harmless: the same code with the grid a network
+    // hop away spends the region's main loop waiting.
+    //
+    // Short-lived on purpose. An asset can arrive after it was asked for — an
+    // upload completing, a peer coming back, a vault restore — so this must
+    // expire rather than decide once and for all.
+    constexpr auto missing_asset_ttl = std::chrono::seconds(60);
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> missing_assets;
+    const auto note_asset_missing = [&](const std::string& asset_id, std::string_view why) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto [entry, fresh] = missing_assets.insert_or_assign(
+            asset_id, now + missing_asset_ttl);
+        static_cast<void>(entry);
+        // Once per asset per window: the point is to name it, not to reproduce
+        // the request storm in the log.
+        if (fresh)
+            std::cerr << "{\"level\":\"warning\",\"message\":\"asset could not be served\",\"assetId\":"
+                      << homeworldz::api::json_string(asset_id) << ",\"reason\":"
+                      << homeworldz::api::json_string(why) << "}" << std::endl;
+    };
     const auto read_federated_asset = [&](std::string_view asset_id) -> std::vector<std::byte> {
         try {
             return storage->read_asset(asset_id);
         } catch (const std::exception&) {
             if (!viewer_grid) throw;
         }
+        const auto key = std::string(asset_id);
+        if (const auto known = missing_assets.find(key); known != missing_assets.end()) {
+            if (std::chrono::steady_clock::now() < known->second)
+                throw std::runtime_error("asset is known to be absent");
+            missing_assets.erase(known);
+        }
         const auto metadata = viewer_grid->find_asset(asset_id);
-        if (!metadata) throw std::runtime_error("asset federation metadata was not found");
+        if (!metadata) {
+            note_asset_missing(key, "the grid holds no such asset");
+            throw std::runtime_error("asset federation metadata was not found");
+        }
         const auto normalized_region_endpoint = [&] {
             auto endpoint = region_public_endpoint;
             while (!endpoint.empty() && endpoint.back() == '/') endpoint.pop_back();
@@ -2309,6 +2356,11 @@ int main(int argc, char* argv[]) {
             std::cerr << "{\"level\":\"error\",\"message\":\"vault asset failed verification\",\"assetId\":"
                       << homeworldz::api::json_string(metadata->asset_id) << "}" << std::endl;
         }
+        // The grid knows the asset but no source produced verified bytes. Worth
+        // saying differently from "no such asset": this one names a real
+        // record, so it is a replication or vault fault rather than content
+        // that was never stored, and it is the case that can heal on its own.
+        note_asset_missing(key, "no verified replica was available");
         throw std::runtime_error("no verified asset replica was available");
     };
 
