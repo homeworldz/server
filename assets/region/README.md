@@ -33,11 +33,16 @@ on the next event, so one absent id produces an unbounded warning stream. That
 is how the gap was noticed — `UISndFootsteps` fires on every footstep an avatar
 takes.
 
-**`UISndFootsteps` (`e8af4a28-aa83-4310-a7c4-c047e15ea0df`) is deliberately not
-here.** The upstream BSD set has no footstep replacement — it maps 27 ids and
-that is not one of them — so there is nothing to copy that this project has the
-rights to. It needs a sound of our own or a compatibly licensed one, and until
-there is one, that warning stream is expected rather than mysterious.
+**`UISndFootsteps` (`e8af4a28-aa83-4310-a7c4-c047e15ea0df`) came from elsewhere.**
+The upstream BSD set has no footstep replacement — it maps 27 ids and that is
+not one of them — so this one is a CC0 recording by GboxMikeFozzy, published on
+OpenGameArt as `01-footstep.ogg` and dedicated to the public domain with no
+attribution required. Resampled to mono 44100 from the 48 kHz original; nothing
+else about it was changed.
+
+It is the id that prompted the whole set: `getStepSound` returns it on every
+step an avatar takes on land, so while it was missing it produced a warning on
+every footstep.
 
 The collision sounds beside them are the same story one layer down.
 `LLVOAvatar::getStepSound` returns the footstep id only while the avatar is on
