@@ -11908,7 +11908,7 @@ int main(int argc, char* argv[]) {
                                     // some later session instead.
                                     pending_login_spawns.erase(requested);
                                 }
-                                const auto spawn = arrival ? arrival_position :
+                                auto spawn = arrival ? arrival_position :
                                     (login_spawn ? *login_spawn :
                                      (persisted ? persisted->position : initial_spawn));
                                 if (login_spawn && !arrival)
@@ -11918,6 +11918,41 @@ int main(int argc, char* argv[]) {
                                 const auto known_geometry = avatar_geometries.find(endpoint);
                                 const auto geometry = known_geometry == avatar_geometries.end() ?
                                     homeworldz::viewer::AvatarGeometry{} : known_geometry->second;
+                                // An avatar that walked over a border arrives on
+                                // the ground, and the two regions' terrain need
+                                // not agree to the centimetre at the seam — Jolt
+                                // quantizes the heightfield per block, so the
+                                // edge either side of a border is the coarsest
+                                // part of both. Carried across unchanged, the
+                                // source's height leaves the arrival hanging
+                                // above the destination's ground or buried in
+                                // it; hanging means a fall and then a landing
+                                // animation for a walk (operator, in-world
+                                // 2026-08-27), which is what this is really for.
+                                //
+                                // Only for an arrival, only when not flying, and
+                                // only across a seam-sized gap: someone who
+                                // crossed while genuinely falling from height is
+                                // owed the fall and the landing at the end of it.
+                                if (arrival && !arrival->flying) {
+                                    const auto ground = collision_ground_height(spawn);
+                                    const auto support = ground +
+                                        std::clamp(static_cast<double>(geometry.height),
+                                                   1.0, 3.0) * 0.5;
+                                    const auto gap = spawn.z - support;
+                                    if (std::abs(gap) <= 2.0) {
+                                        std::cout << "{\"level\":\"info\",\"message\":"
+                                                     "\"arrival regrounded\",\"arrivedAt\":" << spawn.z
+                                                  << ",\"destinationSupport\":" << support
+                                                  << ",\"gap\":" << gap << "}" << std::endl;
+                                        spawn.z = support;
+                                    } else {
+                                        std::cout << "{\"level\":\"info\",\"message\":"
+                                                     "\"arrival left airborne\",\"arrivedAt\":" << spawn.z
+                                                  << ",\"destinationSupport\":" << support
+                                                  << ",\"gap\":" << gap << "}" << std::endl;
+                                    }
+                                }
                                 homeworldz::viewer::AvatarController controller{
                                     spawn, collision_ground_height(spawn),
                                     geometry.height, geometry.hip_offset,
