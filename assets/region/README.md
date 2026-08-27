@@ -44,6 +44,26 @@ It is the id that prompted the whole set: `getStepSound` returns it on every
 step an avatar takes on land, so while it was missing it produced a warning on
 every footstep.
 
+`viewer-standard/textures/` also answers Firestorm's four hardcoded terrain
+fallbacks — `TERRAIN_DIRT_DETAIL`, `TERRAIN_GRASS_DETAIL`,
+`TERRAIN_MOUNTAIN_DETAIL`, `TERRAIN_ROCK_DETAIL` (indra_constants.cpp) — with
+**our own CC0 layer textures under those ids**, rather than with anything
+sourced from Second Life. Each is a byte-for-byte copy of the matching file in
+`library/terrain/`, paired by what it depicts: dirt gets Ground079L, grass gets
+Grass005, mountain gets Rock060, rock gets Rock002.
+
+They are duplicated files rather than an alias mechanism, deliberately: the
+alternative was code, and a few megabytes of repeated bytes is a smaller debt
+than a format only this directory understands. The grid is unaffected either
+way — blobs are content-addressed, so both ids resolve to one stored blob.
+
+A viewer asks for these before the region handshake tells it which textures
+this region actually uses, so serving them prevents a 404 rather than changing
+what anyone sees; regions render from their own configured layers
+(`terrain::layer_assets`) as before. The sky ids beside them — `IMG_MOON`,
+`DEFAULT_CLOUD_ID`, `IMG_RAINBOW`, `IMG_HALO` — have no counterpart in our set
+and are still unanswered.
+
 The collision sounds beside them are the same story one layer down.
 `LLVOAvatar::getStepSound` returns the footstep id only while the avatar is on
 *land*; on anything rezzed it returns the collision sound for that prim's
