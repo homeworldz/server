@@ -69,9 +69,34 @@ a texture.
 A viewer asks for these before the region handshake tells it which textures
 this region actually uses, so serving them prevents a 404 rather than changing
 what anyone sees; regions render from their own configured layers
-(`terrain::layer_assets`) as before. The sky ids beside them — `IMG_MOON`,
-`DEFAULT_CLOUD_ID`, `IMG_RAINBOW`, `IMG_HALO` — have no counterpart in our set
-and are still unanswered.
+(`terrain::layer_assets`) as before.
+
+`IMG_MOON` and `DEFAULT_CLOUD_ID` are answered the same way, from the upstream
+set's own `moon.jp2` and `cloud.jp2` — raw j2c codestreams despite the
+extension, so they are copied under the viewer's ids unconverted.
+`IMG_RAINBOW` and `IMG_HALO` have no counterpart anywhere available and remain
+unanswered; both are optional sky overlays and their absence costs one 404 per
+session each.
+
+**Most of the ids a viewer hardcodes must NOT be served, which is why this
+list is short.** Of 321 constants in `indra_constants.cpp`, `sound_ids.cpp` and
+`llsettingssky.cpp`, 258 are absent here and nearly all of them should stay
+that way:
+
+- `IMG_USE_BAKED_*` (head, upper, lower, eyes, skirt, hair, arms, legs, aux) are
+  **sentinels**, not assets. They mean "composite the bake for this slot".
+  Serving bytes under one would make a viewer draw a texture where it must
+  build a bake.
+- `BLANK_MATERIAL_ASSET_ID` and `BLANK_OBJECT_NORMAL` are sentinels too — "no
+  material", "no normal map".
+- 220 `SND_*` are Second Life's library collision, slide and roll sounds, only
+  ever requested when a *region triggers them*. This region has no SoundTrigger
+  path at all, and Firestorm's OpenSim build swaps the whole matrix to the
+  `OPENSIM_SND_*` ids, all 49 of which are shipped.
+
+The list worth serving is the one a viewer actually asks for unprompted, and
+the "asset could not be served" log is what identifies it. Reach for that
+before adding anything here.
 
 The collision sounds beside them are the same story one layer down.
 `LLVOAvatar::getStepSound` returns the footstep id only while the avatar is on
