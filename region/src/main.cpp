@@ -4207,7 +4207,27 @@ int main(int argc, char* argv[]) {
                 outcome.refused = "inventory could not be checked";
                 outcome.inconclusive = true;
             }
-            else if (!item) outcome.refused = "inventory item not found";
+            else if (!item) {
+                outcome.refused = "inventory item not found";
+                // The grid's own worn list is what asked for this item, and the
+                // grid says the item does not exist. The record has outlived
+                // what it names, so it will ask again at every login and fail
+                // again every time — fourteen such rows were found on one
+                // account, two weeks old, surviving a full detach, a rebuilt
+                // outfit and a complete re-wear (2026-08-27). Nothing pruned
+                // them because nothing ever had.
+                //
+                // Deliberately only on this branch. `unavailable` above is a
+                // grid that could not be asked, and pruning on that would let
+                // one unreachable minute strip an outfit permanently: this
+                // record is the only memory of what someone was wearing.
+                // Refusing to convict on silence is the same rule the
+                // inconclusive flag exists for.
+                if (viewer_grid && viewer_grid->set_attachment_worn(user_id, item_id, 0, false))
+                    std::cout << "{\"level\":\"info\",\"message\":\"worn record pruned\""
+                                 ",\"itemId\":" << homeworldz::api::json_string(item_id)
+                              << ",\"reason\":\"inventory item no longer exists\"}" << std::endl;
+            }
             else if (item->asset_type != 6 || item->inventory_type != 6)
                 outcome.refused = "inventory item is not an object";
             else {
