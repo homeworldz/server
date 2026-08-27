@@ -53,9 +53,18 @@ sourced from Second Life. Each is a byte-for-byte copy of the matching file in
 Grass005, mountain gets Rock060, rock gets Rock002.
 
 They are duplicated files rather than an alias mechanism, deliberately: the
-alternative was code, and a few megabytes of repeated bytes is a smaller debt
-than a format only this directory understands. The grid is unaffected either
-way — blobs are content-addressed, so both ids resolve to one stored blob.
+alternative was code, and repeated bytes are a smaller debt than a format only
+this directory understands. The grid is unaffected either way — blobs are
+content-addressed, so both ids resolve to one stored blob.
+
+**Shipped as `.j2c`, and it has to be.** The first attempt shipped the PNG
+canonicals and let the pipeline derive the JPEG2000 the way it did for the
+originals. It cannot: meshsmith reads canonical bytes from the vault, and a
+bundled region asset is not vaulted (ADR 0026 narrowed the vault to
+user-owned content), so every conversion failed with "canonical bytes
+unavailable (vault answered 404)". A `.png` here registers an asset no viewer
+can read. Ship the derived form for anything bundled that a viewer fetches as
+a texture.
 
 A viewer asks for these before the region handshake tells it which textures
 this region actually uses, so serving them prevents a 404 rather than changing
