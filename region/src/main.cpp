@@ -12016,6 +12016,7 @@ int main(int argc, char* argv[]) {
                                         now + std::chrono::seconds(2) : now;
                                 if (physics_world) {
                                     auto& live = avatars.at(endpoint);
+                                    const auto was_grounded = live.controller.state().grounded;
                                     live.physics_character = physics_world->create_character(
                                         character_definition(entity,
                                             live.controller.state().position,
@@ -12024,6 +12025,19 @@ int main(int argc, char* argv[]) {
                                         live.physics_character, live.controller.state().velocity);
                                     physics_world->set_character_flying(
                                         live.physics_character, live.controller.state().flying);
+                                    // An arrival gives a standing avatar a
+                                    // capsule it did not have here, and the
+                                    // fresh character reports airborne for one
+                                    // step before it finds the ground — which
+                                    // the controller cannot tell from touching
+                                    // down after a fall. Walk across a border
+                                    // and the destination animates a landing
+                                    // you did not do (operator, in-world
+                                    // 2026-08-27). Same hazard and same remedy
+                                    // as reshape_avatar_capsule, on the path
+                                    // that never got it; an avatar that really
+                                    // was falling is still owed its landing.
+                                    if (was_grounded) live.controller.ignore_next_landing();
                                 }
                                 if (viewer_grid && registration)
                                     static_cast<void>(viewer_grid->update_presence(name, registration->region_id()));
@@ -14594,6 +14608,7 @@ int main(int argc, char* argv[]) {
                         session_draw_distances[inbound.session_id]);
                     live.controller.apply(seed);
                     if (physics_world) {
+                        const auto was_grounded = live.controller.state().grounded;
                         live.physics_character = physics_world->create_character(
                             character_definition(entity,
                                 live.controller.state().position,
@@ -14602,6 +14617,11 @@ int main(int argc, char* argv[]) {
                             live.physics_character, live.controller.state().velocity);
                         physics_world->set_character_flying(
                             live.physics_character, live.controller.state().flying);
+                        // The session transport's arrival, and the same
+                        // one-step loss of contact as the viewer path above.
+                        // Both transports resolve this separately, which is
+                        // how one of them keeps missing a fix the other has.
+                        if (was_grounded) live.controller.ignore_next_landing();
                     }
                     if (viewer_grid && registration)
                         static_cast<void>(viewer_grid->update_presence(
