@@ -4209,13 +4209,19 @@ int main(int argc, char* argv[]) {
             }
             else if (!item) {
                 outcome.refused = "inventory item not found";
-                // The grid's own worn list is what asked for this item, and the
-                // grid says the item does not exist. The record has outlived
-                // what it names, so it will ask again at every login and fail
-                // again every time — fourteen such rows were found on one
-                // account, two weeks old, surviving a full detach, a rebuilt
-                // outfit and a complete re-wear (2026-08-27). Nothing pruned
-                // them because nothing ever had.
+                // The item is gone, so the record that names it is stale.
+                //
+                // This is a narrow case, and narrower than it first looked.
+                // `attachments.ListWorn` already inner-joins inventory_items
+                // and excludes Trash, so a worn record whose item was deleted
+                // is filtered out at the grid and never reaches an arrival
+                // replay at all — the fourteen stale rows found on one account
+                // (2026-08-27) were inert residue, not fourteen doomed wears
+                // per login, which is what this comment first claimed. What is
+                // left for this branch is the race: an item listed as worn and
+                // then deleted before the wear completes, and an explicit Wear
+                // of an item that has just gone. Both leave a record worth
+                // dropping; neither is the pile in the table.
                 //
                 // Deliberately only on this branch. `unavailable` above is a
                 // grid that could not be asked, and pruning on that would let
