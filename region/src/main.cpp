@@ -4170,9 +4170,17 @@ int main(int argc, char* argv[]) {
         // attachment costs about 65 ms and only 2-5 ms of that is the grid
         // lookup, so the rest is somewhere in here and worth naming rather
         // than guessing at (2026-08-28).
+        //
+        // build_time was the three of scene construction, closure
+        // materialization and broadcast together, which named a number without
+        // naming a cause: two of those three reach out of the region and one
+        // does not. Split, because "70 ms per prim" points at three different
+        // fixes depending on which of them holds it.
         std::chrono::steady_clock::duration lookup_time{};
         std::chrono::steady_clock::duration asset_time{};
         std::chrono::steady_clock::duration build_time{};
+        std::chrono::steady_clock::duration closure_time{};
+        std::chrono::steady_clock::duration broadcast_time{};
     };
     // wear_attachment rezzes one inventory item onto a wearer's avatar. Two
     // callers: the viewer's Wear, and an avatar arriving with worn items the
@@ -4256,6 +4264,13 @@ int main(int argc, char* argv[]) {
                 // Wearing replaces the point's occupant, and re-wearing an item
                 // already on moves it rather than doubling it. "Attach To >"
                 // sets ATTACHMENT_ADD to keep the rest.
+                //
+                // Timed as build even though it precedes the asset read: this
+                // scans every entity in the region once per attachment, so on a
+                // fourteen-item arrival into a populated region it is not the
+                // nothing it looks like, and leaving it out of every phase
+                // would let it read as idle time between ticks.
+                const auto displace_started = std::chrono::steady_clock::now();
                 std::vector<std::pair<homeworldz::scene::EntityId, std::string>> displaced;
                 for (const auto& [candidate_id, candidate] : scene.entities()) {
                     if (candidate.attachment_point == 0 || candidate.parent_id != wearer_id)
@@ -4272,6 +4287,7 @@ int main(int argc, char* argv[]) {
                         static_cast<void>(viewer_grid->set_attachment_worn(
                             user_id, displaced_item, 0, false));
                 }
+                outcome.build_time = std::chrono::steady_clock::now() - displace_started;
                 const auto asset_started = std::chrono::steady_clock::now();
                 const auto content = read_federated_asset(item->asset_id);
                 const auto linkset = homeworldz::asset::parse_linkset_asset(content);
@@ -4345,9 +4361,15 @@ int main(int argc, char* argv[]) {
                     outcome.worn = true;
                     // The worn object stands in this region, so its closure must
                     // be servable from here (ADR 0026).
+                    const auto closure_started = std::chrono::steady_clock::now();
                     materialize_asset_closure({{item->asset_id, 6}}, "attach");
+                    outcome.closure_time =
+                        std::chrono::steady_clock::now() - closure_started;
                 }
-                outcome.build_time = std::chrono::steady_clock::now() - build_started;
+                // Net of the closure, so the two are addable rather than
+                // nested: buildMs is the scene work this region does alone.
+                outcome.build_time += std::chrono::steady_clock::now() - build_started
+                                      - outcome.closure_time;
             }
         } catch (const std::exception& error) {
             for (auto entity = entity_ids.rbegin(); entity != entity_ids.rend(); ++entity)
@@ -4358,15 +4380,18 @@ int main(int argc, char* argv[]) {
         }
         outcome.prims = entity_ids.size();
         if (outcome.worn) {
-            // Broadcasting counts as build: it is per-prim work this wear
-            // caused, and leaving it out would attribute the cost to nothing.
+            // Broadcasting is per-prim work this wear caused, so it is counted;
+            // it is counted apart from the build because it scales with the
+            // viewers watching rather than with the prims built.
             const auto broadcast_started = std::chrono::steady_clock::now();
             for (const auto entity_id : entity_ids)
                 if (const auto* entity = scene.find(entity_id))
                     broadcast_object_update(*entity, when);
+            outcome.broadcast_time = std::chrono::steady_clock::now() - broadcast_started;
+            // Outside the timer: this is a grid write, not a broadcast, and on
+            // the arrival path record is false and it does not happen at all.
             outcome.recorded = !record || (viewer_grid && viewer_grid->set_attachment_worn(
                 user_id, item_id, outcome.point, true));
-            outcome.build_time += std::chrono::steady_clock::now() - broadcast_started;
         }
         return outcome;
     };
@@ -4405,6 +4430,8 @@ int main(int argc, char* argv[]) {
         std::chrono::steady_clock::duration lookup_time{};
         std::chrono::steady_clock::duration asset_time{};
         std::chrono::steady_clock::duration build_time{};
+        std::chrono::steady_clock::duration closure_time{};
+        std::chrono::steady_clock::duration broadcast_time{};
         std::chrono::steady_clock::time_point started{};
     };
     std::deque<PendingAttachmentRestore> pending_attachment_restores;
@@ -4466,6 +4493,8 @@ int main(int argc, char* argv[]) {
             job.lookup_time += outcome.lookup_time;
             job.asset_time += outcome.asset_time;
             job.build_time += outcome.build_time;
+            job.closure_time += outcome.closure_time;
+            job.broadcast_time += outcome.broadcast_time;
             job.prims += outcome.prims;
             if (outcome.worn) {
                 ++restored;
@@ -4491,8 +4520,15 @@ int main(int argc, char* argv[]) {
             return std::chrono::duration_cast<std::chrono::milliseconds>(span).count();
         };
         // wallMs is the whole dressing including the ticks spent waiting
-        // between attachments; the three phases below are the work itself, and
-        // what they leave unaccounted for is the idle time the spreading buys.
+        // between attachments; the phases below are the work itself, and what
+        // they leave unaccounted for is the idle time the spreading buys.
+        //
+        // The phases are disjoint and together cover the whole of a wear:
+        // lookup asks the grid for the item, asset reads and parses it, build
+        // displaces what the item replaces and makes the prims, closure makes
+        // the asset servable from here (ADR 0026), broadcast tells the viewers.
+        // Only build is work this region does alone, so a large buildMs and a
+        // large closureMs are different problems with different fixes.
         std::cout << "{\"level\":" << (job.restored == job.total ? "\"info\"" : "\"warn\"")
                   << ",\"message\":\"worn attachments restored\",\"userId\":"
                   << homeworldz::api::json_string(job.user_id) << ",\"restored\":" << job.restored
@@ -4502,7 +4538,9 @@ int main(int argc, char* argv[]) {
                   << ",\"wallMs\":" << milliseconds(std::chrono::steady_clock::now() - job.started)
                   << ",\"lookupMs\":" << milliseconds(job.lookup_time)
                   << ",\"assetMs\":" << milliseconds(job.asset_time)
-                  << ",\"buildMs\":" << milliseconds(job.build_time) << "}" << std::endl;
+                  << ",\"buildMs\":" << milliseconds(job.build_time)
+                  << ",\"closureMs\":" << milliseconds(job.closure_time)
+                  << ",\"broadcastMs\":" << milliseconds(job.broadcast_time) << "}" << std::endl;
         pending_attachment_restores.pop_front();
         return true;
     };
