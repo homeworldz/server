@@ -13,23 +13,23 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="40">40%</progress>
- <strong>40%</strong>
+  <progress data-color="primary" max="100" value="42">42%</progress>
+ <strong>42%</strong>
 </label>
 </p>
 
 <p>
 <label class="roadmap-overall-progress">
  <span>Modern Homeworldz client + back-end:</span>
-  <progress data-color="primary" max="100" value="37">37%</progress>
- <strong>37%</strong>
+  <progress data-color="primary" max="100" value="38">38%</progress>
+ <strong>38%</strong>
 </label>
 </p>
 
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="87" aria-label="Phase 2 progress: 87%">87%</progress> | 87% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="90" aria-label="Phase 2 progress: 90%">90%</progress> | 90% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -136,8 +136,8 @@ client.
 - [x] Hand an avatar across a region border, preserving position, velocity, and appearance.
 - [x] Pass live Firestorm acceptance for a two-way border handoff in one continuous session.
 - [ ] Complete remote-host failure recovery and reconciliation for interrupted teleports.
-- [ ] Cross a walking or flying avatar between adjacent regions while preserving appearance, controls, velocity, camera, and session continuity.
-- [ ] Transfer the complete attachment set with the avatar and prevent duplicate activation at source and destination.
+- [x] Cross a walking or flying avatar between adjacent regions while preserving appearance, controls, velocity, camera, and session continuity. *Sixteen consecutive crossings, none slower than 55 ms from signal to promotion and some 1.2 seconds apart, after four separate causes were removed: the wardrobe rebuilt before the arrival completed, a login guard holding every arrival for five seconds, no event from destination to source at all, and a five-second cache in front of the event once there was one.*
+- [x] Transfer the complete attachment set with the avatar and prevent duplicate activation at source and destination. *Fourteen mesh attachments intact across every crossing. Restoring them is deferred so the arrival completes first — a wardrobe costs about a second to build and used to be built before the avatar could move.*
 - [ ] Handle disconnects, destination failure, retries, stale transit records, and reconciliation after process restart.
 
 ### Objects, Sitting and Crossings
@@ -187,10 +187,10 @@ processes rather than within one, and the same three problems have to be
 solved again across a boundary where the neighbour is another server that can
 be slow, restarting, or gone.
 
-- [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it. *Announcement and establishment are proven — 94 child agents established on the cloud grid and none refused. A neighbour that was still starting used to refuse the one offer it was ever made; refusals are retried, a child is renewed by its session's own traffic instead of expiring under a viewer still holding it, and a session's home region releases its children when it ends. What is not built is telling a viewer a neighbour has gone.*
+- [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it. *Announcement and establishment are proven — 94 child agents established on the cloud grid and none refused. A neighbour that was still starting used to refuse the one offer it was ever made; refusals are retried, a child is renewed by its session's own traffic instead of expiring under a viewer still holding it, and a session's home region releases its children when it ends. Telling a viewer a neighbour has gone is now built and proven: a region clears what it showed each watching circuit before it restarts, and again when a child expires.*
 - [ ] Serve objects to a viewer whose avatar stands in a neighbouring region, interest-filtered by that viewer's camera and draw distance rather than by which region it belongs to.
 - [ ] Serve avatars the same way, so a resident is visible to people standing across the line and their movement is continuous rather than appearing only on arrival. *Built 2026-08-22 — movement, animations, arrivals, departures, and appearance changes all reach standing child circuits; awaiting live proof.*
-- [ ] Say out loud when something leaves a neighbouring viewer's interest, since a viewer keeps what it was told about and a silent departure strands an object at a stale position forever.
+- [ ] Say out loud when something leaves a neighbouring viewer's interest, since a viewer keeps what it was told about and a silent departure strands an object at a stale position forever. *The departures that do not depend on interest are done and proven live (2026-08-27): a region names everything it showed a watching circuit before it restarts, and again when a child expires, rather than falling silent and leaving a frozen copy on screen until logout. The interest half waits on the filtering above, which does not exist yet — nothing can leave a filter there is none of.*
 - [x] Reduce a border crossing to promoting a circuit the viewer already holds, as an internal facet line already is, and confirm in Firestorm that the world across the line is drawn before the crossing rather than after it.
 - [ ] Define what a viewer is shown when a neighbour is unreachable, restarting, or newly online, so the border degrades to empty rather than to a stall. *A neighbour is never announced without a seed that answers, and one that was merely slow to start is retried rather than written off; the unreachable and restarting cases are still undefined.*
 
