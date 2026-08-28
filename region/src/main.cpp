@@ -4360,9 +4360,39 @@ int main(int argc, char* argv[]) {
     // A grid that cannot answer leaves the avatar as it is. An empty wardrobe
     // and an unanswered question look identical afterwards, and only one of
     // them is a reason to arrive wearing nothing.
+    // Restoring is deferred rather than done in the arrival handler, and the
+    // reason is measured rather than assumed.
+    //
+    // Each attachment costs about 65 ms — only 2-5 ms of which is the grid
+    // lookup; the rest is reading the object asset, parsing its linkset and
+    // building the entities. Fourteen of those ran back to back inside
+    // CompleteAgentMovement, and the arrival could not complete until the last
+    // one finished, so a wearer stood pinned at the border for 900 ms while a
+    // wardrobe was assembled (measured 2026-08-27: lookups spanning
+    // 54.900 to 55.807, promote at 55.906). It scaled with what you had on,
+    // which is why an avatar wearing nothing crossed cleanly and the same
+    // border felt like a wall to one wearing fourteen mesh parts.
+    //
+    // So the arrival completes first and the wardrobe follows, a little each
+    // tick. Attachments reach the viewer as ordinary object updates moments
+    // later, which is what a viewer expects anyway — it is how arriving in
+    // Second Life behaves, and it is the same path a Wear already takes.
+    struct PendingAttachmentRestore {
+        std::string user_id;
+        homeworldz::scene::EntityId wearer_id{};
+        std::vector<homeworldz::grid::WornAttachment> remaining;
+        std::size_t restored{};
+        std::size_t inconclusive{};
+        std::size_t total{};
+    };
+    std::deque<PendingAttachmentRestore> pending_attachment_restores;
+    // The one grid call worth making up front: it is a single request, it is
+    // what decides whether there is anything to do at all, and an empty or
+    // unanswerable wardrobe should not leave a job sitting in the queue.
     const auto restore_attachments = [&](const std::string& user_id,
                                          homeworldz::scene::EntityId wearer_id,
                                          std::chrono::steady_clock::time_point when) {
+        static_cast<void>(when);
         if (!viewer_grid) return;
         const auto worn = viewer_grid->worn_attachments(user_id);
         if (!worn) {
@@ -4371,9 +4401,36 @@ int main(int argc, char* argv[]) {
             return;
         }
         if (worn->empty()) return;
-        std::size_t restored = 0;
-        std::size_t inconclusive = 0;
-        for (const auto& item : *worn) {
+        // A second arrival for the same wearer supersedes the first: the
+        // entity id it was building onto is gone.
+        std::erase_if(pending_attachment_restores,
+                      [&](const auto& job) { return job.user_id == user_id; });
+        pending_attachment_restores.push_back(
+            {user_id, wearer_id, {worn->begin(), worn->end()}, 0, 0, worn->size()});
+    };
+    // One attachment per tick, so the cost is spread across frames instead of
+    // spent in one. Returns whether anything was done.
+    const auto advance_attachment_restores =
+        [&](std::chrono::steady_clock::time_point when) {
+        if (pending_attachment_restores.empty()) return false;
+        auto& job = pending_attachment_restores.front();
+        // The wearer left, or was replaced, while the wardrobe was in flight.
+        // Nothing to dress, and the remaining items belong to nobody.
+        if (!scene.find(job.wearer_id)) {
+            std::cout << "{\"level\":\"warn\",\"message\":\"worn attachment restore abandoned\""
+                         ",\"userId\":" << homeworldz::api::json_string(job.user_id)
+                      << ",\"restored\":" << job.restored
+                      << ",\"remaining\":" << job.remaining.size() << "}" << std::endl;
+            pending_attachment_restores.pop_front();
+            return true;
+        }
+        const auto item = job.remaining.front();
+        job.remaining.erase(job.remaining.begin());
+        {
+            const auto& user_id = job.user_id;
+            const auto wearer_id = job.wearer_id;
+            auto& restored = job.restored;
+            auto& inconclusive = job.inconclusive;
             // keep_others: the grid's list may legitimately hold two items on
             // one point, and rezzing the second must not evict the first.
             // record=false: this list is the record.
@@ -4381,27 +4438,31 @@ int main(int argc, char* argv[]) {
                                                  item.attachment_point, true, false, when);
             if (outcome.worn) {
                 ++restored;
-                continue;
+            } else {
+                if (outcome.inconclusive) ++inconclusive;
+                // "Could not be run" is not "refused". The distinction is the
+                // whole value of saying anything here: a wearer whose grid
+                // hiccuped has not lost the item, and the log must not read as
+                // though they had.
+                std::cout << "{\"level\":\"warn\",\"message\":"
+                          << (outcome.inconclusive
+                                  ? "\"worn attachment could not be checked\""
+                                  : "\"worn attachment not restored\"")
+                          << ",\"userId\":"
+                          << homeworldz::api::json_string(user_id) << ",\"itemId\":"
+                          << homeworldz::api::json_string(item.item_id) << ",\"attachmentPoint\":"
+                          << static_cast<unsigned>(item.attachment_point) << ",\"reason\":"
+                          << homeworldz::api::json_string(outcome.refused) << "}" << std::endl;
             }
-            if (outcome.inconclusive) ++inconclusive;
-            // "Could not be run" is not "refused". The distinction is the whole
-            // value of saying anything here: a wearer whose grid hiccuped has
-            // not lost the item, and the log must not read as though they had.
-            std::cout << "{\"level\":\"warn\",\"message\":"
-                      << (outcome.inconclusive
-                              ? "\"worn attachment could not be checked\""
-                              : "\"worn attachment not restored\"")
-                      << ",\"userId\":"
-                      << homeworldz::api::json_string(user_id) << ",\"itemId\":"
-                      << homeworldz::api::json_string(item.item_id) << ",\"attachmentPoint\":"
-                      << static_cast<unsigned>(item.attachment_point) << ",\"reason\":"
-                      << homeworldz::api::json_string(outcome.refused) << "}" << std::endl;
         }
-        std::cout << "{\"level\":" << (restored == worn->size() ? "\"info\"" : "\"warn\"")
+        if (!job.remaining.empty()) return true;
+        std::cout << "{\"level\":" << (job.restored == job.total ? "\"info\"" : "\"warn\"")
                   << ",\"message\":\"worn attachments restored\",\"userId\":"
-                  << homeworldz::api::json_string(user_id) << ",\"restored\":" << restored
-                  << ",\"inconclusive\":" << inconclusive
-                  << ",\"worn\":" << worn->size() << "}" << std::endl;
+                  << homeworldz::api::json_string(job.user_id) << ",\"restored\":" << job.restored
+                  << ",\"inconclusive\":" << job.inconclusive
+                  << ",\"worn\":" << job.total << "}" << std::endl;
+        pending_attachment_restores.pop_front();
+        return true;
     };
     // Restore enabled task scripts after a Region restart. VM state is not yet
     // persisted, so each restored script starts fresh and re-runs state_entry;
@@ -16283,6 +16344,9 @@ int main(int argc, char* argv[]) {
             next_child_agent_offer = now + std::chrono::milliseconds(250);
             static_cast<void>(offer_one_child_agent());
         }
+        // One attachment per tick for an avatar that has just arrived. The
+        // arrival itself already completed; this is the wardrobe catching up.
+        static_cast<void>(advance_attachment_restores(now));
         // A session that has gone stops being owed offers, or the set grows for
         // the life of the process and a returning session is never re-offered.
         if (now >= next_child_agent_sweep) {
