@@ -7053,6 +7053,70 @@ int main(int argc, char* argv[]) {
                                 request, 204, "application/json", {});
                         }
                     }
+                    // "I have them." The destination of a crossing says so as
+                    // soon as it promotes, so this region can stop being their
+                    // home without waiting to find out.
+                    //
+                    // Before this, a departure was discovered by the ping cycle:
+                    // every five seconds the authority check asked the grid
+                    // where a session lived, and only an answer naming another
+                    // region demoted the avatar to a child. A viewer crossing
+                    // straight back inside that window arrived somewhere that
+                    // held neither an avatar nor a child, so the capability gate
+                    // timed out at 500 ms and the region re-sent a world the
+                    // viewer already had (operator, 2026-08-28).
+                    //
+                    // Halcyon solves it the same way and has since InWorldz: the
+                    // source hands over a CallbackURI, and the destination calls
+                    // SendReleaseAgent from CompleteMovement, which is what its
+                    // WaitForCallback is waiting on. This is that callback.
+                    constexpr std::string_view arrival_confirm_prefix = "/api/v1/transits/";
+                    constexpr std::string_view arrival_confirm_suffix = "/arrived";
+                    if (response.path.starts_with(arrival_confirm_prefix) &&
+                        response.path.ends_with(arrival_confirm_suffix)) {
+                        const auto authorization =
+                            homeworldz::http::request_header_value(request, "Authorization");
+                        const auto confirmed = response.path.substr(
+                            arrival_confirm_prefix.size(),
+                            response.path.size() - arrival_confirm_prefix.size() -
+                                arrival_confirm_suffix.size());
+                        if (response.method != "POST") {
+                            response = homeworldz::http::response_for_content(
+                                request, 405, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "method_not_allowed", "arrival confirmation requires POST"}));
+                        } else if (service_token.empty() ||
+                                   authorization != "Bearer " + service_token) {
+                            response = homeworldz::http::response_for_content(
+                                request, 401, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "unauthorized", "a valid grid service token is required"}));
+                        } else {
+                            // Only for the transit this region actually started,
+                            // and only for an avatar it is actually handing off.
+                            // A confirmation naming a transit nobody here owns is
+                            // answered 204 rather than acted on: the caller's
+                            // intent is satisfied either way, and a stale or
+                            // mistaken id must not retire a standing avatar.
+                            std::size_t confirmed_count = 0;
+                            for (auto& [endpoint, avatar] : avatars) {
+                                if (avatar.outbound_transit_id != confirmed) continue;
+                                // The authority check runs on the next tick and
+                                // demotes; this only stops it waiting up to five
+                                // seconds to be asked.
+                                avatar.next_ping = std::chrono::steady_clock::now();
+                                static_cast<void>(endpoint);
+                                ++confirmed_count;
+                            }
+                            if (confirmed_count > 0)
+                                std::cout << "{\"level\":\"info\",\"message\":\"arrival confirmed by destination\""
+                                             ",\"transitId\":"
+                                          << homeworldz::api::json_string(std::string(confirmed))
+                                          << "}" << std::endl;
+                            response = homeworldz::http::response_for_content(
+                                request, 204, "application/json", {});
+                        }
+                    }
                     if (response.path == "/api/v1/child-agents") {
                         // Declared here rather than in the else-if below: an
                         // if-statement takes one init-statement, not two.
@@ -12349,6 +12413,38 @@ int main(int argc, char* argv[]) {
                             // viewer still holds a world it may not.
                             const auto promoted = child_agents.promote(
                                 session_id, std::chrono::steady_clock::now());
+                            // Tell the region they came from, now, before any of
+                            // the work below. Halcyon's own note on this sequence
+                            // says the sending side "does an awful lot before
+                            // releasing the agent from the previous region" and
+                            // that it should release first; that is the same
+                            // mistake the wardrobe restore was making here until
+                            // this afternoon, so the confirmation goes first.
+                            //
+                            // Source resolved from the transit rather than
+                            // carried in it: the region an avatar crossed from is
+                            // a neighbour by definition, so its endpoint is
+                            // already known. Best effort — the source's own
+                            // authority check still asks the grid on its next
+                            // cycle, so a call that fails costs latency and not
+                            // correctness.
+                            if (arrival && !arrival->source_region_id.empty() &&
+                                !service_token.empty()) {
+                                for (const auto& neighbor : region_neighbors) {
+                                    if (neighbor.id != arrival->source_region_id ||
+                                        neighbor.public_endpoint.empty())
+                                        continue;
+                                    try {
+                                        if (auto transport = homeworldz::grid::socket_transport(
+                                                neighbor.public_endpoint, service_token))
+                                            static_cast<void>(
+                                                homeworldz::grid::confirm_avatar_arrival(
+                                                    *transport, arrival->id));
+                                    } catch (const std::exception&) {
+                                    }
+                                    break;
+                                }
+                            }
                             // The gate waits for the viewer to fetch this
                             // arrival's seed capability. A promoted child
                             // fetched this region's capabilities when it was

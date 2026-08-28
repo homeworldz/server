@@ -1281,6 +1281,12 @@ bool release_child_agent(Transport& destination, std::string_view session_id) {
     return status == 204 || status == 200;
 }
 
+bool confirm_avatar_arrival(Transport& source, std::string_view transit_id) {
+    const auto status = source.send(
+        "POST", "/api/v1/transits/" + std::string(transit_id) + "/arrived", {}).status_code;
+    return status == 204 || status == 200;
+}
+
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document) {
     return destination.send("POST", "/api/v1/object-transits/" + std::string(transit_id) +

@@ -534,6 +534,20 @@ std::string establish_child_agent(Transport& destination, std::string_view docum
 // expiry, which is the behaviour this replaces rather than depends on.
 bool release_child_agent(Transport& destination, std::string_view session_id);
 
+// Tell the region an avatar just left that the avatar is here now, so it can
+// stop being their home without waiting to be told by the grid.
+//
+// The only region-to-region call that runs destination to source. Everything
+// else in this file is the source arranging things at the destination; this is
+// the destination answering. Halcyon's equivalent is SendReleaseAgent against
+// the CallbackURI the source handed over, sent from CompleteMovement — the call
+// its WaitForCallback is waiting on.
+//
+// Best effort by design: the receiving region's own authority check still asks
+// the grid on its next cycle, so a confirmation that never arrives costs
+// latency rather than correctness.
+bool confirm_avatar_arrival(Transport& source, std::string_view transit_id);
+
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document);
 bool activate_object_arrival(Transport& destination, std::string_view transit_id);
