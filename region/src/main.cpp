@@ -4166,6 +4166,13 @@ int main(int argc, char* argv[]) {
         // a probe that convicts on silence spends the credibility it needs for
         // the times it is right (client core, 2026-08-08).
         bool inconclusive{};
+        // Where the time went, for the arrival restore to total up. Each
+        // attachment costs about 65 ms and only 2-5 ms of that is the grid
+        // lookup, so the rest is somewhere in here and worth naming rather
+        // than guessing at (2026-08-28).
+        std::chrono::steady_clock::duration lookup_time{};
+        std::chrono::steady_clock::duration asset_time{};
+        std::chrono::steady_clock::duration build_time{};
     };
     // wear_attachment rezzes one inventory item onto a wearer's avatar. Two
     // callers: the viewer's Wear, and an avatar arriving with worn items the
@@ -4198,9 +4205,11 @@ int main(int argc, char* argv[]) {
         outcome.point = requested_point & attachment_point_mask;
         std::vector<homeworldz::scene::EntityId> entity_ids;
         try {
+            const auto lookup_started = std::chrono::steady_clock::now();
             const auto lookup = viewer_grid
                 ? viewer_grid->lookup_inventory_item(user_id, item_id)
                 : homeworldz::grid::InventoryItemLookup{};
+            outcome.lookup_time = std::chrono::steady_clock::now() - lookup_started;
             const auto& item = lookup.item;
             if (!scene.find(wearer_id)) outcome.refused = "wearer has no avatar here";
             else if (lookup.outcome == homeworldz::grid::InventoryLookup::unavailable) {
@@ -4263,8 +4272,11 @@ int main(int argc, char* argv[]) {
                         static_cast<void>(viewer_grid->set_attachment_worn(
                             user_id, displaced_item, 0, false));
                 }
+                const auto asset_started = std::chrono::steady_clock::now();
                 const auto content = read_federated_asset(item->asset_id);
                 const auto linkset = homeworldz::asset::parse_linkset_asset(content);
+                outcome.asset_time = std::chrono::steady_clock::now() - asset_started;
+                const auto build_started = std::chrono::steady_clock::now();
                 if (!linkset) outcome.refused = "object asset did not parse";
                 else {
                     const auto& asset = linkset->root;
@@ -4335,6 +4347,7 @@ int main(int argc, char* argv[]) {
                     // be servable from here (ADR 0026).
                     materialize_asset_closure({{item->asset_id, 6}}, "attach");
                 }
+                outcome.build_time = std::chrono::steady_clock::now() - build_started;
             }
         } catch (const std::exception& error) {
             for (auto entity = entity_ids.rbegin(); entity != entity_ids.rend(); ++entity)
@@ -4345,11 +4358,15 @@ int main(int argc, char* argv[]) {
         }
         outcome.prims = entity_ids.size();
         if (outcome.worn) {
+            // Broadcasting counts as build: it is per-prim work this wear
+            // caused, and leaving it out would attribute the cost to nothing.
+            const auto broadcast_started = std::chrono::steady_clock::now();
             for (const auto entity_id : entity_ids)
                 if (const auto* entity = scene.find(entity_id))
                     broadcast_object_update(*entity, when);
             outcome.recorded = !record || (viewer_grid && viewer_grid->set_attachment_worn(
                 user_id, item_id, outcome.point, true));
+            outcome.build_time += std::chrono::steady_clock::now() - broadcast_started;
         }
         return outcome;
     };
@@ -4384,6 +4401,11 @@ int main(int argc, char* argv[]) {
         std::size_t restored{};
         std::size_t inconclusive{};
         std::size_t total{};
+        std::size_t prims{};
+        std::chrono::steady_clock::duration lookup_time{};
+        std::chrono::steady_clock::duration asset_time{};
+        std::chrono::steady_clock::duration build_time{};
+        std::chrono::steady_clock::time_point started{};
     };
     std::deque<PendingAttachmentRestore> pending_attachment_restores;
     // The one grid call worth making up front: it is a single request, it is
@@ -4405,8 +4427,13 @@ int main(int argc, char* argv[]) {
         // entity id it was building onto is gone.
         std::erase_if(pending_attachment_restores,
                       [&](const auto& job) { return job.user_id == user_id; });
-        pending_attachment_restores.push_back(
-            {user_id, wearer_id, {worn->begin(), worn->end()}, 0, 0, worn->size()});
+        PendingAttachmentRestore job;
+        job.user_id = user_id;
+        job.wearer_id = wearer_id;
+        job.remaining.assign(worn->begin(), worn->end());
+        job.total = worn->size();
+        job.started = std::chrono::steady_clock::now();
+        pending_attachment_restores.push_back(std::move(job));
     };
     // One attachment per tick, so the cost is spread across frames instead of
     // spent in one. Returns whether anything was done.
@@ -4436,6 +4463,10 @@ int main(int argc, char* argv[]) {
             // record=false: this list is the record.
             const auto outcome = wear_attachment(user_id, wearer_id, item.item_id,
                                                  item.attachment_point, true, false, when);
+            job.lookup_time += outcome.lookup_time;
+            job.asset_time += outcome.asset_time;
+            job.build_time += outcome.build_time;
+            job.prims += outcome.prims;
             if (outcome.worn) {
                 ++restored;
             } else {
@@ -4456,11 +4487,22 @@ int main(int argc, char* argv[]) {
             }
         }
         if (!job.remaining.empty()) return true;
+        const auto milliseconds = [](std::chrono::steady_clock::duration span) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(span).count();
+        };
+        // wallMs is the whole dressing including the ticks spent waiting
+        // between attachments; the three phases below are the work itself, and
+        // what they leave unaccounted for is the idle time the spreading buys.
         std::cout << "{\"level\":" << (job.restored == job.total ? "\"info\"" : "\"warn\"")
                   << ",\"message\":\"worn attachments restored\",\"userId\":"
                   << homeworldz::api::json_string(job.user_id) << ",\"restored\":" << job.restored
                   << ",\"inconclusive\":" << job.inconclusive
-                  << ",\"worn\":" << job.total << "}" << std::endl;
+                  << ",\"worn\":" << job.total
+                  << ",\"prims\":" << job.prims
+                  << ",\"wallMs\":" << milliseconds(std::chrono::steady_clock::now() - job.started)
+                  << ",\"lookupMs\":" << milliseconds(job.lookup_time)
+                  << ",\"assetMs\":" << milliseconds(job.asset_time)
+                  << ",\"buildMs\":" << milliseconds(job.build_time) << "}" << std::endl;
         pending_attachment_restores.pop_front();
         return true;
     };
