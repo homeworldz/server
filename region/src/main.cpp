@@ -942,38 +942,25 @@ std::string_view http_request_body(std::string_view request) {
 // EstablishAgentCommunication's sim-ip-and-port is parsed by the viewer with
 // inet_addr, which does not resolve names. The field only ever held a literal
 // address while region endpoints were loopback; once a region is configured by
-// hostname, passing the authority through unresolved emits a value the viewer
-// silently rejects. Resolve it here, the way simulator_event_endpoint below
-// already does for the same reason.
-std::string simulator_endpoint(std::string_view public_endpoint, int viewer_port) {
-    auto authority = public_endpoint;
-    const auto scheme = authority.find("://");
-    if (scheme != std::string_view::npos) authority.remove_prefix(scheme + 3);
-    const auto slash = authority.find('/');
-    if (slash != std::string_view::npos) authority = authority.substr(0, slash);
-    const auto colon = authority.rfind(':');
-    if (colon != std::string_view::npos) authority = authority.substr(0, colon);
-    const auto host = std::string(authority);
-    if (host.empty()) return {};
-    in_addr literal{};
-    if (inet_pton(AF_INET, host.c_str(), &literal) == 1)
-        return host + ':' + std::to_string(viewer_port);
-    addrinfo hints{};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    addrinfo* addresses{};
-    if (getaddrinfo(host.c_str(), nullptr, &hints, &addresses) != 0) return {};
-    std::string resolved;
-    for (auto* address = addresses; address; address = address->ai_next) {
-        if (address->ai_family != AF_INET || address->ai_addrlen < sizeof(sockaddr_in)) continue;
-        const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(address->ai_addr);
-        std::array<char, INET_ADDRSTRLEN> text{};
-        if (inet_ntop(AF_INET, &ipv4->sin_addr, text.data(), text.size()))
-            resolved = std::string(text.data()) + ':' + std::to_string(viewer_port);
-        break;
-    }
-    freeaddrinfo(addresses);
-    return resolved;
+// hostname, an unresolved authority emits a value the viewer silently rejects.
+//
+// This used to resolve the name itself, which made every child-agent
+// announcement resolve the same host TWICE — once here for the string and once
+// in simulator_event_endpoint below for EnableSimulator's binary address — and
+// the announcement sites checked only the second. When the extra getaddrinfo
+// failed (systemd-resolved, under a burst of crossings) this returned an empty
+// string, we published `sim-ip-and-port` as "", and Firestorm built an LLHost
+// at 0.0.0.0 for a sim it had just been told to talk to. Four of those landed
+// in one crossing storm and the viewer died two seconds after the last
+// (2026-08-28).
+//
+// So it no longer resolves: it formats the address the caller already has. One
+// resolution per announcement, one failure to check, and the two events cannot
+// name different hosts even when the name has several A records.
+std::string simulator_endpoint(const homeworldz::viewer::SimulatorEventEndpoint& simulator) {
+    return std::to_string(simulator.address[0]) + '.' + std::to_string(simulator.address[1]) +
+           '.' + std::to_string(simulator.address[2]) + '.' +
+           std::to_string(simulator.address[3]) + ':' + std::to_string(simulator.port);
 }
 
 // The wearable assets this region ships, in wearable-type order. A viewer that
@@ -4892,9 +4879,7 @@ int main(int argc, char* argv[]) {
                 facet_handle(facet), *simulator, edge, edge));
         enqueue_viewer_event(session_id,
             homeworldz::viewer::establish_agent_communication_event_xml({
-                agent_id,
-                simulator_endpoint(region_public_endpoint, target.viewer_port),
-                facet_seed}));
+                agent_id, simulator_endpoint(*simulator), facet_seed}));
         return facet_seed;
     };
 
@@ -5121,9 +5106,7 @@ int main(int argc, char* argv[]) {
                         static_cast<std::uint32_t>(neighbor.size_y)));
                 enqueue_viewer_event(live.session_id,
                     homeworldz::viewer::establish_agent_communication_event_xml({
-                        child.agent_id,
-                        simulator_endpoint(neighbor.public_endpoint, neighbor.viewer_port),
-                        seed}));
+                        child.agent_id, simulator_endpoint(*simulator), seed}));
                 announced_child_seeds[live.session_id + '|' + neighbor.id + '|' +
                     std::to_string(neighbor.grid_x) + ',' +
                     std::to_string(neighbor.grid_y)] = seed;
@@ -7684,8 +7667,10 @@ int main(int argc, char* argv[]) {
                                             *establish_facet)].viewer_port;
                                         break;
                                     }
-                                const auto sim_ip_and_port =
-                                    simulator_endpoint(region_public_endpoint, establish_port);
+                                const auto establish_simulator =
+                                    simulator_event_endpoint(region_public_endpoint, establish_port);
+                                const auto sim_ip_and_port = establish_simulator
+                                    ? simulator_endpoint(*establish_simulator) : std::string{};
                                 // The seed named here is the one that facet's
                                 // region already holds — the same computed rule
                                 // as the crossing ceremony — never the polling
