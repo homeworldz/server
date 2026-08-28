@@ -7101,9 +7101,21 @@ int main(int argc, char* argv[]) {
                             std::size_t confirmed_count = 0;
                             for (auto& [endpoint, avatar] : avatars) {
                                 if (avatar.outbound_transit_id != confirmed) continue;
-                                // The authority check runs on the next tick and
-                                // demotes; this only stops it waiting up to five
-                                // seconds to be asked.
+                                // Forget what the grid said about this session
+                                // before asking it again.
+                                //
+                                // Bringing the check forward is not enough on its
+                                // own: viewer sessions are cached for five
+                                // seconds, so the authority check ran promptly
+                                // and was told by the cache that the session
+                                // still lived here — the question was asked early
+                                // and answered stale. That is why one demote
+                                // landed a millisecond after its confirmation
+                                // and the next took the full five seconds
+                                // (2026-08-28). A cache in front of an event is
+                                // the event not arriving.
+                                if (viewer_sessions && !avatar.session_id.empty())
+                                    viewer_sessions->invalidate(avatar.session_id);
                                 avatar.next_ping = std::chrono::steady_clock::now();
                                 static_cast<void>(endpoint);
                                 ++confirmed_count;
