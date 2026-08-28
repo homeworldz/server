@@ -15534,6 +15534,25 @@ int main(int argc, char* argv[]) {
                         avatar.outbound_transit_id = transit_id;
                         avatar.outbound_transit_expires = now + std::chrono::seconds(30);
                         avatar.handing_off = true;
+                        // Ask the grid who owns this session again, soon.
+                        //
+                        // A departure is noticed by the ping cycle: every five
+                        // seconds the authority check asks the grid where this
+                        // session lives, and only when the answer names another
+                        // region does this one demote the avatar to a child.
+                        // The crossing is signalled here, so the region already
+                        // knows it is handing off, and waiting up to a full
+                        // interval to confirm it left the destination without a
+                        // child agent for anyone crossing straight back —
+                        // demote at 06:50:52 for a return crossing at 06:50:46
+                        // (2026-08-28). That return fell to the slow path: the
+                        // capability gate timed out at 500 ms and the region
+                        // re-sent a world the viewer already had.
+                        //
+                        // The grid still decides. This only stops the question
+                        // being asked late; a crossing that rolls back answers
+                        // "still here" and nothing is demoted.
+                        avatar.next_ping = now + std::chrono::milliseconds(400);
                         std::cout << "{\"level\":\"info\",\"message\":\"avatar border crossing signaled\","
                                      "\"promotingChild\":" << (promoting ? "true" : "false") << ","
                                      "\"transitId\":"
