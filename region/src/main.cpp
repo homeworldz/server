@@ -12098,8 +12098,30 @@ int main(int argc, char* argv[]) {
                                 // seen live 2026-08-20 when a mismatched login
                                 // facet fired the ceremony one tick after
                                 // arrival).
+                                //
+                                // That hazard is a *login*: a viewer part-way
+                                // through starting. One that arrived by
+                                // crossing or teleport is fully running — it
+                                // just completed a ceremony to get here — and
+                                // holding it for five seconds is what an
+                                // operator felt as the border "wall". Walk back
+                                // at the line inside that window and the
+                                // crossing cannot fire, so containment slides
+                                // the avatar along the edge like a cliff face.
+                                // The give-away was in the timestamps: four
+                                // crossings 5.05s apart, which was the throttle
+                                // setting the pace and not the walking
+                                // (2026-08-28).
+                                //
+                                // A short hold still earns its place on a
+                                // transit arrival. Arrival is only 0.3 m inside
+                                // the border (the destination inset), so
+                                // without one a step still carrying momentum
+                                // back over the line can bounce a viewer
+                                // between two regions.
                                 avatar_iterator->second.next_crossing_attempt =
-                                    now + std::chrono::seconds(5);
+                                    now + (arrival ? std::chrono::seconds(1)
+                                                   : std::chrono::seconds(5));
                                 avatar_iterator->second.session_id =
                                     homeworldz::viewer::format_uuid(identity->session_id);
                                 // The unsuffixed event poll (login) and the
