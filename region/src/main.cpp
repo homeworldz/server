@@ -4867,6 +4867,28 @@ int main(int argc, char* argv[]) {
     const auto enqueue_facet_child_events = [&](const std::string& session_id,
                                                 const std::string& agent_id,
                                                 int facet) -> std::optional<std::string> {
+        // Already announced to this session: return that seed and send nothing.
+        //
+        // The seed is deterministic, so re-announcing hands Firestorm a Seed
+        // URL it already holds. It takes its duplicate-seed path, refetches the
+        // capability set, and compares the two. When that comparison runs while
+        // the first fetch is still in flight it sees one capability against
+        // twenty-four and resolves the disagreement by replacing its capability
+        // map with the comparison copy — which setCapabilityDebug builds
+        // without EventQueueGet and without SimulatorFeatures. The region is
+        // then left with no event queue, "SimulatorFeatures cap not set"
+        // follows in the viewer's log, and it died seconds later (2026-08-28).
+        //
+        // Each caller already skips the announcement once the child circuit is
+        // up. This closes the window before that, which a burst of crossings
+        // holds open. Cleared with the rest of the session's state on a real
+        // departure but not on a demotion, so a session that genuinely lost a
+        // child is announced to again.
+        if (const auto announced = session_facet_seeds.find(session_id);
+            announced != session_facet_seeds.end())
+            if (const auto already = announced->second.find(facet);
+                already != announced->second.end())
+                return already->second;
         const auto& target = region_facets[static_cast<std::size_t>(facet)];
         const auto simulator = simulator_event_endpoint(
             region_public_endpoint, target.viewer_port);
