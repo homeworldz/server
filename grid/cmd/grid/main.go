@@ -198,6 +198,7 @@ func main() {
 			ServiceToken:      settings.ServiceToken,
 			GridPublicURL:     settings.PublicURL,
 			GridName:          settings.Name,
+			GridNick:          settings.Nick,
 			AboutURL:          settings.AboutURL,
 			SupportURL:        settings.SupportURL,
 			RegisterURL:       settings.RegisterURL,

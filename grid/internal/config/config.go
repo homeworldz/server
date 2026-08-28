@@ -11,10 +11,21 @@ import (
 )
 
 type Grid struct {
-	Address      string
-	PublicURL    string
-	Name         string
-	DatabaseURL  string
+	Address   string
+	PublicURL string
+	Name      string
+	// Nick is the grid's short identifier, published as <gridnick> in
+	// /get_grid_info. A viewer keys its saved grid entries on it, so two grids
+	// answering to one nick are two grids a viewer cannot tell apart.
+	//
+	// The default is deliberately NOT the public grid's nick. It used to be
+	// hardcoded "homeworldz", so every install — a developer's localhost
+	// included — claimed the same identity as grid.homeworldz.com, and one
+	// machine had both in its viewer's grid list under the same nick
+	// (2026-08-28). Anyone standing up their own grid should have to say who
+	// they are before answering to the name of ours.
+	Nick        string
+	DatabaseURL string
 	ServiceToken string
 	// WorkerToken authenticates the grid's own conversion workers (ADR 0033).
 	// It is deliberately not the service token: regions hold that one, regions
@@ -121,6 +132,7 @@ func LoadGrid(directory string) (Grid, error) {
 		Address:      parsed.Section("server").Key("address").MustString("127.0.0.1:42000"),
 		PublicURL:    parsed.Section("server").Key("public_url").MustString("http://127.0.0.1:42000"),
 		Name:         strings.TrimSpace(parsed.Section("grid").Key("name").MustString("Homeworldz")),
+		Nick:         strings.TrimSpace(parsed.Section("grid").Key("nick").MustString("homeworldz-local")),
 		DatabaseURL:  parsed.Section("database").Key("url").String(),
 		ServiceToken: parsed.Section("auth").Key("service_token").String(),
 		WorkerToken:  parsed.Section("auth").Key("worker_token").String(),

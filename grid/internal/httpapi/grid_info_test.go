@@ -12,6 +12,7 @@ import (
 
 func TestViewerGridInfo(t *testing.T) {
 	handler := New(nil, "test", Options{GridPublicURL: "http://grid.example:8002/", GridName: "Homeworldz Local",
+		GridNick:    "homeworldz",
 		AboutURL:    "https://example.com/",
 		SupportURL:  "https://example.com/faq",
 		RegisterURL: "https://accounts.example.com/register",
@@ -34,6 +35,27 @@ func TestViewerGridInfo(t *testing.T) {
 	// The human-facing pages come from configuration, not from the grid's own
 	// public URL: the site and the account site are separate deployments, and
 	// deriving them here would have published grid.example links for both.
+	// An unconfigured nick must not be the public grid's. A viewer keys its
+	// saved grid entries on the nick, so a default of "homeworldz" made every
+	// install — a developer's localhost included — indistinguishable from
+	// grid.homeworldz.com in the grid manager (found 2026-08-28 with both in
+	// one viewer's list under one nick).
+	{
+		bare := New(nil, "test", Options{GridPublicURL: "http://localhost:42100/"})
+		bareRequest := httptest.NewRequest(http.MethodGet, "/get_grid_info", nil)
+		bareResponse := httptest.NewRecorder()
+		bare.ServeHTTP(bareResponse, bareRequest)
+		var bareInfo viewerGridInfo
+		if err := xml.Unmarshal(bareResponse.Body.Bytes(), &bareInfo); err != nil {
+			t.Fatalf("decode default grid info: %v", err)
+		}
+		if bareInfo.GridNick == "homeworldz" {
+			t.Fatal("an unconfigured grid claims the public grid's nick")
+		}
+		if bareInfo.GridNick != "homeworldz-local" {
+			t.Fatalf("default nick = %q, want homeworldz-local", bareInfo.GridNick)
+		}
+	}
 	if info.About != "https://example.com/" || info.Help != "https://example.com/faq" ||
 		info.Register != "https://accounts.example.com/register" ||
 		info.Password != "https://accounts.example.com/forgot" {

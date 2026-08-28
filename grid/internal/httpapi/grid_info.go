@@ -46,7 +46,7 @@ type viewerGridInfo struct {
 
 func (a *API) gridInfo(w http.ResponseWriter, _ *http.Request) {
 	contents, err := xml.Marshal(viewerGridInfo{
-		GridNick: "homeworldz",
+		GridNick: a.gridNick,
 		GridName: a.gridName,
 		Platform: "OpenSim",
 		Login:    a.publicURL + "/login",
