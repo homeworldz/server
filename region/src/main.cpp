@@ -7211,6 +7211,22 @@ int main(int argc, char* argv[]) {
                             child.seed = region_public_endpoint + "/caps/seed/" +
                                 child.session_id + "/0000000c-a9e7-4000-8000-000000000000";
                             const auto now = std::chrono::steady_clock::now();
+                            // The number the avatar already has, learned before
+                            // it ever stands here. highest_appearance_versions
+                            // is per-process, so each region was counting its
+                            // own sequence — Nova reached 11 while Nova B was
+                            // still on 4 — and every crossing into the region
+                            // with the lower count announced a CofVersion the
+                            // viewer had already passed, which it discards as a
+                            // roll-back. Half of all crossing appearance seeds
+                            // were being thrown away (2026-08-28).
+                            //
+                            // Observed here rather than at the promotion: a
+                            // child is established ahead of the crossing, so by
+                            // the time this region seeds anything the counter
+                            // has already caught up, and no extra grid call
+                            // lands on the arrival path to do it.
+                            observe_appearance_version(child.agent_id, child.cof_version);
                             const auto& established = child_agents.establish(child, now);
                             std::cout << "{\"level\":\"info\",\"message\":\"child agent established\""
                                          ",\"agent\":" << homeworldz::api::json_string(established.agent_id)
