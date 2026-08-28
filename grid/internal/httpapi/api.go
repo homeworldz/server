@@ -17,6 +17,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/arrival"
 	"github.com/homeworldz/server/grid/internal/assetmeta"
 	"github.com/homeworldz/server/grid/internal/attachments"
+	"github.com/homeworldz/server/grid/internal/config"
 	"github.com/homeworldz/server/grid/internal/durability"
 	"github.com/homeworldz/server/grid/internal/estate"
 	"github.com/homeworldz/server/grid/internal/eventlog"
@@ -106,7 +107,7 @@ type Options struct {
 	// GridNick is published as <gridnick>. A viewer keys its saved grid entries
 	// on it, so two grids answering to one nick are two grids it cannot tell
 	// apart. Defaults to a local nick rather than the public grid's.
-	GridNick      string
+	GridNick string
 	// AboutURL, SupportURL, RegisterURL and PasswordURL are the human-facing
 	// pages published in get_grid_info. Each is omitted from the document when
 	// empty, so an unconfigured grid advertises nothing rather than a dead link.
@@ -197,14 +198,11 @@ func New(ready ReadinessChecker, version string, options Options) http.Handler {
 	if a.publicURL == "" {
 		a.publicURL = "http://127.0.0.1:42000"
 	}
-	if a.gridName == "" {
-		a.gridName = "Homeworldz"
-	}
-	if a.gridNick == "" {
-		// Deliberately not the public grid's nick — see config.Grid.Nick. An
-		// unconfigured install should not answer to the name of ours.
-		a.gridNick = "homeworldz-local"
-	}
+	// Both come resolved from configuration in every real deployment; this is
+	// for a handler built directly, and it defers to the same rule rather than
+	// inventing a second one. Two places deciding one default is how they end
+	// up disagreeing.
+	a.gridNick, a.gridName = config.GridIdentity(a.publicURL, a.gridNick, a.gridName)
 	// The inventory-commit invariant of ADR 0026 is installed here, around the
 	// store, rather than left to each handler: every path that commits an
 	// inventory reference goes through it, including ones written later. A

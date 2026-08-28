@@ -113,6 +113,45 @@ type Grid struct {
 	SMTPImplicitTLS      bool
 }
 
+// GridIdentity resolves the nick and name a grid publishes in /get_grid_info,
+// filling in whichever the operator did not set.
+//
+// The fallback is decided by the grid's own public URL rather than by a
+// constant, so the public deployment is correct with nothing configured and
+// every other deployment is correct with nothing configured either. A single
+// hardcoded default cannot be both: "homeworldz" was right for one grid and
+// wrong for all the rest, which is how a developer's localhost came to sit in
+// a viewer's grid manager under the same nick as grid.homeworldz.com
+// (2026-08-28). A viewer keys its saved grid entries on the nick, so two grids
+// answering to one are two grids it cannot tell apart.
+//
+// Only the real domain counts. `homeworldz.com` and anything under it is the
+// grid this project runs; a look-alike like `homeworldz.com.example.net` ends
+// with the string but not with the domain, and is somebody else.
+func GridIdentity(publicURL, nick, name string) (string, string) {
+	if nick != "" && name != "" {
+		return nick, name
+	}
+	official := false
+	if parsed, err := url.Parse(strings.TrimSpace(publicURL)); err == nil {
+		host := strings.ToLower(parsed.Hostname())
+		official = host == "homeworldz.com" || strings.HasSuffix(host, ".homeworldz.com")
+	}
+	if nick == "" {
+		nick = "homeworldz-local"
+		if official {
+			nick = "homeworldz"
+		}
+	}
+	if name == "" {
+		name = "Homeworldz Local"
+		if official {
+			name = "Homeworldz"
+		}
+	}
+	return nick, name
+}
+
 func LoadGrid(directory string) (Grid, error) {
 	resolved, err := filepath.Abs(directory)
 	if err != nil {
@@ -131,8 +170,8 @@ func LoadGrid(directory string) (Grid, error) {
 	result := Grid{
 		Address:      parsed.Section("server").Key("address").MustString("127.0.0.1:42000"),
 		PublicURL:    parsed.Section("server").Key("public_url").MustString("http://127.0.0.1:42000"),
-		Name:         strings.TrimSpace(parsed.Section("grid").Key("name").MustString("Homeworldz")),
-		Nick:         strings.TrimSpace(parsed.Section("grid").Key("nick").MustString("homeworldz-local")),
+		Name:         strings.TrimSpace(parsed.Section("grid").Key("name").String()),
+		Nick:         strings.TrimSpace(parsed.Section("grid").Key("nick").String()),
 		DatabaseURL:  parsed.Section("database").Key("url").String(),
 		ServiceToken: parsed.Section("auth").Key("service_token").String(),
 		WorkerToken:  parsed.Section("auth").Key("worker_token").String(),
@@ -159,6 +198,9 @@ func LoadGrid(directory string) (Grid, error) {
 		PasswordURL: strings.TrimSpace(parsed.Section("grid").Key("password_url").
 			MustString("https://my.homeworldz.com/forgot")),
 	}
+	// Before the validation below, which requires a name: an unset one is
+	// filled from the grid's own domain rather than rejected.
+	result.Nick, result.Name = GridIdentity(result.PublicURL, result.Nick, result.Name)
 	if result.VaultPath == "" {
 		return Grid{}, fmt.Errorf("invalid asset vault path %q", result.VaultPath)
 	}
