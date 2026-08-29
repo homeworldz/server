@@ -42,7 +42,19 @@ Two words are reserved and should not be used loosely:
 
 ## Line endings
 
-Markdown and plain text files use native line endings — CRLF on Windows.
+Every text file in this repository is LF, in the repository and in every
+working tree — Windows included. `.gitattributes` states it once with
+`* text=auto eol=lf`, rather than leaving the checkout to each machine's
+`core.autocrlf`, which is how a tree ends up half CRLF without anyone choosing
+it.
+
+This paragraph used to say native line endings, CRLF on Windows. It had been
+untrue since `.gitattributes` was written: no Markdown file in the tree was ever
+CRLF, so the rule described nothing and only misled anyone who followed it.
+
+The exemptions are in `.gitattributes` and are about content addressing, not
+style: a vault asset's identity is the SHA-256 of its bytes, so normalising a
+carriage return out of a `.bodypart` renames the asset.
 
 ## Reporting a live observation
 

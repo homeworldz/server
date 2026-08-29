@@ -75,4 +75,7 @@ with `scripts/build-region.sh`, never cross-compiled from Windows.
   `node syncweb.mjs`, which copies it to
   `../homeworldz.com/content/roadmaps/SERVER.md`
   and leaves the change unstaged there for review.
-- Markdown and plain text use native line endings (CRLF on Windows).
+- Every text file here is LF, on Windows too — `.gitattributes` sets
+  `* text=auto eol=lf` for the repository and every working tree. The
+  exemptions listed there are content-addressed assets whose bytes are their
+  identity, not a style choice.
