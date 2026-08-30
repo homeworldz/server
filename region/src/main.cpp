@@ -15949,13 +15949,40 @@ int main(int argc, char* argv[]) {
                         child.cof_version = dressed->second.serial;
                         child.appearance_version = dressed->second.appearance_version;
                     }
-                    // The seed the viewer already holds for this region, so a
-                    // later announcement or crossing repeats it rather than
-                    // inventing a second one. establish() keeps the first seed
-                    // it is given, which is what makes this stick.
-                    if (const auto seeds = session_facet_seeds.find(session_id);
-                        seeds != session_facet_seeds.end() && !seeds->second.empty())
-                        child.seed = seeds->second.begin()->second;
+                    // The seed the viewer already holds for the facet this
+                    // avatar is leaving from, so a later announcement or
+                    // crossing repeats it rather than inventing a second one.
+                    // establish() keeps the first seed it is given, which is
+                    // what makes this stick — and what made getting it wrong
+                    // stick too.
+                    //
+                    // This took `begin()` of an unordered_map of facet to seed,
+                    // which is not the departing facet and not even a stable
+                    // choice. On Nova the avatar left facet 0 and the record
+                    // kept facet 1's seed; that is what Nova then answered the
+                    // neighbour's child-agent offer with, what the neighbour
+                    // stored in announced_child_seeds, and what CrossedRegion
+                    // named on the way back. Firestorm held facet 1's seed
+                    // against facet 0's region, so setSeedCapability took the
+                    // fresh path, cleared that region's capabilities and
+                    // refetched them asynchronously — and AgentMovementComplete
+                    // ran through the empty map. "SimulatorFeatures cap not
+                    // set", then the crash, on the first return (2026-08-30).
+                    //
+                    // The rule is the one the crossing and teleport paths
+                    // already use: the session's arrival facet holds the bare
+                    // seed, every sibling facet holds its own suffixed one.
+                    const auto departing_facet = endpoint_facet_of(endpoint);
+                    if (const auto arrived = session_arrival_facets.find(session_id);
+                        arrived != session_arrival_facets.end() &&
+                        arrived->second == departing_facet) {
+                        child.seed = region_public_endpoint + "/caps/seed/" + session_id;
+                    } else if (const auto seeds = session_facet_seeds.find(session_id);
+                               seeds != session_facet_seeds.end()) {
+                        if (const auto held = seeds->second.find(departing_facet);
+                            held != seeds->second.end())
+                            child.seed = held->second;
+                    }
                     if (child.seed.empty())
                         child.seed = region_public_endpoint + "/caps/seed/" + session_id +
                             "/0000000c-a9e7-4000-8000-000000000000";
