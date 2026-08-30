@@ -2259,6 +2259,11 @@ int main(int argc, char* argv[]) {
     // expire rather than decide once and for all.
     constexpr auto missing_asset_ttl = std::chrono::seconds(60);
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> missing_assets;
+    // Closure members already confirmed to be held locally. Assets are
+    // content-addressed and are never rewritten, so "it was here" does not go
+    // stale, and a texture shared by ten worn parts is confirmed once instead
+    // of ten times.
+    std::unordered_set<std::string> materialized_assets;
     const auto note_asset_missing = [&](const std::string& asset_id, std::string_view why) {
         const auto now = std::chrono::steady_clock::now();
         const auto [entry, fresh] = missing_assets.insert_or_assign(
@@ -2403,6 +2408,34 @@ int main(int argc, char* argv[]) {
         for (std::size_t index = 0; index < queue.size() && index < closure_bound; ++index) {
             const auto [id, type] = queue[index];
             last_closure_members.push_back(id);
+            // Only these three name further members. Everything else — every
+            // texture, every mesh — is a leaf, and a leaf has to be *present*,
+            // not read: reading it meant pulling megabytes of j2c and mesh off
+            // disk to learn a fact the metadata row already states.
+            //
+            // That was the whole of the cost. A fourteen-attachment arrival
+            // spent ~950 ms here with every member already local and nothing
+            // fetched, which was long enough that a crossing landed inside the
+            // previous restore — and the overlapping rezzes killed the viewer
+            // (2026-08-30). find_asset answers the same question without the
+            // bytes.
+            const bool names_more_members = type == 6 || type == 5 || type == 13;
+            if (!names_more_members) {
+                if (materialized_assets.contains(id)) continue;
+                if (storage->find_asset(id)) {
+                    materialized_assets.insert(id);
+                    continue;
+                }
+                // Absent locally: this is the case that genuinely has to fetch
+                // and store, and the one this whole walk exists for.
+                try {
+                    static_cast<void>(read_federated_asset(id));
+                    materialized_assets.insert(id);
+                } catch (const std::exception&) {
+                    ++unavailable;
+                }
+                continue;
+            }
             std::vector<std::byte> content;
             try {
                 content = read_federated_asset(id);
@@ -4457,7 +4490,17 @@ int main(int argc, char* argv[]) {
         auto& job = pending_attachment_restores.front();
         // The wearer left, or was replaced, while the wardrobe was in flight.
         // Nothing to dress, and the remaining items belong to nobody.
-        if (!scene.find(job.wearer_id)) {
+        //
+        // Asked of the live avatars, not of the scene. A departure removes the
+        // presence and its attachments but leaves the avatar's scene entity
+        // standing, so scene.find() went on answering yes for an avatar that
+        // had crossed out — and the region kept rezzing and broadcasting its
+        // wardrobe into a region it had left. The viewer got those on top of
+        // the destination's own copies and reported seven attachments
+        // "re-attached" before it died (2026-08-30).
+        const auto wearer_present = std::any_of(avatars.begin(), avatars.end(),
+            [&](const auto& entry) { return entry.second.entity_id == job.wearer_id; });
+        if (!wearer_present) {
             std::cout << "{\"level\":\"warn\",\"message\":\"worn attachment restore abandoned\""
                          ",\"userId\":" << homeworldz::api::json_string(job.user_id)
                       << ",\"restored\":" << job.restored
