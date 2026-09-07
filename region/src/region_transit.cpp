@@ -469,6 +469,8 @@ std::string encode_child_agent_request(const ChildAgent& agent) {
         ",\"sessionId\":" + quoted_string(agent.session_id) +
         ",\"circuitCode\":" + std::to_string(agent.circuit_code) +
         ",\"homeRegionId\":" + quoted_string(agent.home_region_id) +
+        ",\"facetGridX\":" + std::to_string(agent.facet_grid_x) +
+        ",\"facetGridY\":" + std::to_string(agent.facet_grid_y) +
         ",\"position\":" + number_array(position) +
         ",\"worn\":" + worn + appearance + "}";
 }
@@ -493,6 +495,13 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
     if (!position) return refuse("position");
     if (!worn) return refuse("worn");
     agent.worn = std::move(*worn);
+    // Optional, and absent is a real answer: a source that predates facet-aware
+    // offers says nothing, and nothing resolves to facet 0 — which is what a
+    // single-facet region has and all this used to assume.
+    if (const auto facet_grid_x = json_number_field(document, "facetGridX"))
+        agent.facet_grid_x = static_cast<int>(*facet_grid_x);
+    if (const auto facet_grid_y = json_number_field(document, "facetGridY"))
+        agent.facet_grid_y = static_cast<int>(*facet_grid_y);
     // The appearance is optional as a whole and indivisible within itself. One
     // half of it is not a smaller appearance, it is a broken one, and it would
     // reach a viewer as an avatar wearing part of itself.
@@ -560,17 +569,24 @@ const ChildAgent& ChildAgentRegistry::establish(
     std::chrono::seconds lifetime) {
     purge(now);
     const auto session_id = agent.session_id;
+    const auto facet = agent.facet;
+    const auto offered_seed = agent.seed;
     const auto existing = entries_.find(session_id);
     if (existing != entries_.end()) {
-        // Everything the source told us may have moved on; the seed may not.
-        const auto minted = existing->second.agent.seed;
+        // Everything the source told us may have moved on; the seed may not —
+        // and "the seed" is per facet, because one session is a child on every
+        // facet of this region that borders where it stands, and each of those
+        // is a separate sim to the viewer. Keeping a single seed per record
+        // answered the second facet with the first facet's URL.
         existing->second.agent = std::move(agent);
-        existing->second.agent.seed = minted;
+        existing->second.agent.seed =
+            existing->second.seeds.try_emplace(facet, offered_seed).first->second;
         existing->second.expires_at = now + lifetime;
         return existing->second.agent;
     }
     auto& entry = entries_[session_id];
     entry.agent = std::move(agent);
+    entry.agent.seed = entry.seeds.try_emplace(facet, offered_seed).first->second;
     entry.expires_at = now + lifetime;
     return entry.agent;
 }

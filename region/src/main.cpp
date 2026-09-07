@@ -5077,6 +5077,12 @@ int main(int argc, char* argv[]) {
                 child.session_id = live.session_id;
                 child.circuit_code = live.circuit_code;
                 child.home_region_id = registration->region_id();
+                // Which of the neighbour's facets this offer is for, named by
+                // that facet's own map corner. The grid resolved the neighbour
+                // to a facet already; this passes that on instead of leaving
+                // the destination to answer every facet with one seed.
+                child.facet_grid_x = neighbor.grid_x;
+                child.facet_grid_y = neighbor.grid_y;
                 // Where the avatar is, in absolute grid metres. Not relative to
                 // the neighbour: that needs both ends to agree which frame, and
                 // they did not — this was measured from the neighbour's *facet*
@@ -7269,12 +7275,37 @@ int main(int argc, char* argv[]) {
                             // a seed the viewer has not seen before makes
                             // Firestorm tear down and rebuild this region's
                             // capabilities in place, and doing that repeatedly
-                            // crashed it (2026-08-20). One child per session
-                            // per region, so the session is the whole key and
-                            // the visit id is a constant — distinct from the
-                            // facet family, which is 0000000f-ace0-...
+                            // crashed it (2026-08-20).
+                            //
+                            // One per session per *facet*, not per region. The
+                            // visit id was a constant on the reasoning that a
+                            // session is one child here — which is true of the
+                            // record and false of the seed. A 2x1 region is two
+                            // sims to a viewer, two handles and two ports, and
+                            // the source announces each separately; answering
+                            // both with one URL meant the second region object
+                            // met a seed it had never seen, cleared its
+                            // capabilities to refetch, and was still empty when
+                            // AgentMovementComplete arrived (2026-09-07).
+                            //
+                            // The source names the facet by its map corner,
+                            // since it knows corners and not our numbering.
+                            child.facet = 0;
+                            for (int candidate = 0; candidate < facet_count; ++candidate) {
+                                const auto& entry =
+                                    region_facets[static_cast<std::size_t>(candidate)];
+                                if (entry.grid_x == child.facet_grid_x &&
+                                    entry.grid_y == child.facet_grid_y) {
+                                    child.facet = candidate;
+                                    break;
+                                }
+                            }
+                            char child_visit[37];
+                            std::snprintf(child_visit, sizeof child_visit,
+                                          "0000000c-a9e7-4000-8000-%012x",
+                                          static_cast<unsigned>(child.facet));
                             child.seed = region_public_endpoint + "/caps/seed/" +
-                                child.session_id + "/0000000c-a9e7-4000-8000-000000000000";
+                                child.session_id + "/" + child_visit;
                             const auto now = std::chrono::steady_clock::now();
                             // The number the avatar already has, learned before
                             // it ever stands here. highest_appearance_versions
@@ -16016,6 +16047,9 @@ int main(int argc, char* argv[]) {
                     // already use: the session's arrival facet holds the bare
                     // seed, every sibling facet holds its own suffixed one.
                     const auto departing_facet = endpoint_facet_of(endpoint);
+                    // The record is for the facet it left from, so the seed
+                    // below files under that facet and not over a sibling's.
+                    child.facet = departing_facet;
                     if (const auto arrived = session_arrival_facets.find(session_id);
                         arrived != session_arrival_facets.end() &&
                         arrived->second == departing_facet) {

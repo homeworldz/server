@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -165,6 +166,21 @@ struct ChildAgent {
     // expected from one it did not.
     std::string home_region_id;
     std::string seed;
+    // Which facet of the *destination* this offer is for, named by that facet's
+    // map corner because the source knows corners and not the destination's own
+    // numbering. -1 means unstated, which resolves to facet 0.
+    //
+    // A faceted region is several sims to a viewer — a 2x1 is two region
+    // objects with two handles and two ports — and each needs its own seed. One
+    // seed per session per region handed the same URL to both, so whichever
+    // region object received it second saw a seed it had never seen, cleared
+    // its capabilities to refetch them, and was still empty when
+    // AgentMovementComplete arrived. That is the crash (2026-09-07).
+    int facet_grid_x{-1};
+    int facet_grid_y{-1};
+    // Resolved from the corner above by the destination, which is the only side
+    // that knows its own facet numbering. Not carried on the wire.
+    int facet{};
     // Where the avatar is, in absolute grid metres — its region's map corner
     // times 256 plus its local position. Absolute because a region-local number
     // needs both ends to agree *which* region, and they did not: the source was
@@ -280,6 +296,12 @@ private:
     struct Entry {
         ChildAgent agent;
         std::chrono::steady_clock::time_point expires_at;
+        // Minted seeds by facet. One record per session is right — one avatar,
+        // one presence — but a session can be a child on several facets of this
+        // region at once, and each of those is a separate sim to the viewer
+        // with a separate seed. Keeping one seed per record handed both facets
+        // the same URL.
+        std::map<int, std::string> seeds;
     };
 
     void purge(std::chrono::steady_clock::time_point now);
