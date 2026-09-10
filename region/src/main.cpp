@@ -4508,22 +4508,6 @@ int main(int argc, char* argv[]) {
             pending_attachment_restores.pop_front();
             return true;
         }
-        // A time budget rather than one per tick.
-        //
-        // One per tick was right when an attachment cost about 70 ms and a
-        // single one was all a frame could afford. Confirming a closure member
-        // instead of reading it took that to about 4 ms, and the count then
-        // became an artificial floor: fourteen attachments held 62 ms of work
-        // across 131 ms of wall clock, and the difference is a gap the wearer
-        // sees, because a mesh avatar's body *is* its attachments.
-        //
-        // Still bounded, because cheap is not guaranteed. An asset this region
-        // does not hold is fetched from a peer or the vault, and fourteen of
-        // those in one tick would stop the region for everyone standing in it.
-        // Spend up to the budget, then yield and finish on the next tick.
-        constexpr auto restore_budget = std::chrono::milliseconds(20);
-        const auto restore_started = std::chrono::steady_clock::now();
-        do {
         const auto item = job.remaining.front();
         job.remaining.erase(job.remaining.begin());
         {
@@ -4561,16 +4545,13 @@ int main(int argc, char* argv[]) {
                           << homeworldz::api::json_string(outcome.refused) << "}" << std::endl;
             }
         }
-        } while (!job.remaining.empty() &&
-                 std::chrono::steady_clock::now() - restore_started < restore_budget);
         if (!job.remaining.empty()) return true;
         const auto milliseconds = [](std::chrono::steady_clock::duration span) {
             return std::chrono::duration_cast<std::chrono::milliseconds>(span).count();
         };
-        // wallMs is the whole dressing, including any tick spent waiting after
-        // the budget ran out; the phases below are the work itself. A wardrobe
-        // that fits inside one budget leaves almost nothing unaccounted for,
-        // and a gap between wallMs and the phases means it did not fit.
+        // wallMs is the whole dressing including the ticks spent waiting
+        // between attachments; the phases below are the work itself, and what
+        // they leave unaccounted for is the idle time the spreading buys.
         //
         // The phases are disjoint and together cover the whole of a wear:
         // lookup asks the grid for the item, asset reads and parses it, build
@@ -16719,10 +16700,8 @@ int main(int argc, char* argv[]) {
             next_child_agent_offer = now + std::chrono::milliseconds(250);
             static_cast<void>(offer_one_child_agent());
         }
-        // The wardrobe of an avatar that has just arrived, up to a time budget
-        // per tick. The arrival itself already completed; this is the wardrobe
-        // catching up, and it catches up in one tick unless something in it
-        // has to be fetched.
+        // One attachment per tick for an avatar that has just arrived. The
+        // arrival itself already completed; this is the wardrobe catching up.
         static_cast<void>(advance_attachment_restores(now));
         // A session that has gone stops being owed offers, or the set grows for
         // the life of the process and a returning session is never re-offered.
