@@ -26,6 +26,7 @@ import (
 	"github.com/homeworldz/server/grid/internal/locations"
 	"github.com/homeworldz/server/grid/internal/provisioning"
 	"github.com/homeworldz/server/grid/internal/regions"
+	"github.com/homeworldz/server/grid/internal/webaccount"
 )
 
 type rpcMethodCall struct {
@@ -214,15 +215,44 @@ type loginFields struct {
 // resolveViewerLogin performs authentication, region resolution, circuit
 // allocation, and inventory preparation shared by every login wire format. It
 // returns the resolved fields, or a ("", reason, message) failure triple.
+// viewerLoginUserid derives the userid a viewer's two name fields mean.
+//
+// "Resident" is the Linden sentinel for a single-word name and is dropped
+// rather than joined; everything else is rejoined and handed to the one
+// authoritative derivation, so the viewer and the website resolve the same
+// typing to the same account.
+//
+// Its own function so the rule can be tested. It was four lines inside the
+// login path, which is why nothing checked it.
+func viewerLoginUserid(first, last string) string {
+	joined := first
+	if last != "" && !strings.EqualFold(last, "Resident") {
+		joined += "." + last
+	}
+	return webaccount.DeriveUserid(joined)
+}
+
 func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, start string) (*loginFields, string, string) {
 	first := strings.TrimSpace(firstRaw)
 	last := strings.TrimSpace(lastRaw)
-	username := strings.ToLower(first)
-	if last != "" && !strings.EqualFold(last, "Resident") {
-		username += "." + strings.ToLower(last)
-	}
+	// A viewer splits what was typed on the first space, period or underscore
+	// and sends the halves, so "Mr. President", "mr.president" and
+	// "Mr President" all arrive here as the same pair. Rejoin them and derive
+	// the userid the one way the project derives it.
+	//
+	// This built the key by hand — lowercase and a literal period — which
+	// agreed with DeriveUserid only for input DeriveUserid would not have
+	// rewritten. Anything else, an interior space or a character outside
+	// [a-z0-9'.], produced a userid no row can hold, and the login failed as a
+	// wrong password rather than as the near-miss it was. The website resolved
+	// the same typing correctly, which is what made it look like a viewer
+	// problem.
+	//
+	// The userid and only the userid, as on the website: a display name is not
+	// a second identifier, so a rename does not carry a login with it.
+	username := viewerLoginUserid(first, last)
 	passwordHash := strings.TrimPrefix(passwd, "$1$")
-	if first == "" || len(passwordHash) != 32 {
+	if first == "" || username == "" || len(passwordHash) != 32 {
 		return nil, "key", "The username or password is incorrect."
 	}
 	session, err := a.identity.CreateViewerSession(r.Context(), username, strings.ToLower(passwordHash), 12*time.Hour)
