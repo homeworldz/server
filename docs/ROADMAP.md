@@ -13,8 +13,8 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="42">42%</progress>
- <strong>42%</strong>
+  <progress data-color="primary" max="100" value="43">43%</progress>
+ <strong>43%</strong>
 </label>
 </p>
 
@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="90" aria-label="Phase 2 progress: 90%">90%</progress> | 90% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="92" aria-label="Phase 2 progress: 92%">92%</progress> | 92% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -134,10 +134,10 @@ client.
 - [x] Teleport between registered regions with destination validation, viewer circuit establishment, arrival placement, source retirement, and durable last-location login.
 - [x] Teleport within the current Region without creating a Grid transit, preserving flight state and returning Firestorm's `TeleportLocal` response.
 - [x] Hand an avatar across a region border, preserving position, velocity, and appearance.
-- [x] Pass live Firestorm acceptance for a two-way border handoff in one continuous session.
+- [x] Pass live Firestorm acceptance for a two-way border handoff in one continuous session. *Held up under deliberate abuse on 2026-09-10: 58 consecutive crossings including reversals taken the instant the border was passed, with no viewer crash and no attachment lost. Getting there meant removing four things that each killed Firestorm rather than degrading — the same address resolved twice with only one answer checked, an appearance version counted per region so every crossing handed the viewer a number it had already passed, a facet's seed announced to a session that already held it, and a departing region's child record keeping whichever facet's seed an unordered map happened to yield first. All four presented as a viewer that simply died at the border.*
 - [ ] Complete remote-host failure recovery and reconciliation for interrupted teleports.
 - [x] Cross a walking or flying avatar between adjacent regions while preserving appearance, controls, velocity, camera, and session continuity. *Sixteen consecutive crossings, none slower than 55 ms from signal to promotion and some 1.2 seconds apart, after four separate causes were removed: the wardrobe rebuilt before the arrival completed, a login guard holding every arrival for five seconds, no event from destination to source at all, and a five-second cache in front of the event once there was one.*
-- [x] Transfer the complete attachment set with the avatar and prevent duplicate activation at source and destination. *Fourteen mesh attachments intact across every crossing. Restoring them is deferred so the arrival completes first — a wardrobe costs about a second to build and used to be built before the avatar could move.*
+- [x] Transfer the complete attachment set with the avatar and prevent duplicate activation at source and destination. *Fourteen mesh attachments intact across every crossing, and dressing one now costs 17 ms where it cost about a second (2026-09-10). Two things were paid for and neither was needed: the closure walk read every texture and mesh in full to establish that they were present, which the metadata row already states; and the wardrobe's inventory items were looked up at the crossing, one synchronous grid call each, when the source names what a visiting avatar wears at the moment it offers the child agent. Those lookups now happen while the avatar is still a child, so a promotion asks the grid nothing.*
 - [ ] Handle disconnects, destination failure, retries, stale transit records, and reconciliation after process restart.
 
 ### Objects, Sitting and Crossings
