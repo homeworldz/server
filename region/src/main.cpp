@@ -2259,6 +2259,34 @@ int main(int argc, char* argv[]) {
     // expire rather than decide once and for all.
     constexpr auto missing_asset_ttl = std::chrono::seconds(60);
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> missing_assets;
+    // Inventory items looked up before they are needed, keyed "user|item".
+    //
+    // Rezzing a wardrobe costs one synchronous grid call per attachment and
+    // almost nothing else — 56 ms of lookup against 0 ms of building, for
+    // fourteen worn items. Spent at a crossing that is the whole of the gap
+    // the wearer sees; spent while the avatar is still a child of this region
+    // it costs nothing anyone is waiting on.
+    //
+    // Held briefly and on purpose. An item's name or permissions can change,
+    // and a wear should not dress an avatar from a stale record for longer
+    // than the crossing it was fetched for.
+    struct PrefetchedItem {
+        std::chrono::steady_clock::time_point fetched_at;
+        homeworldz::grid::InventoryItemLookup lookup;
+    };
+    std::unordered_map<std::string, PrefetchedItem> prefetched_items;
+    constexpr auto prefetched_item_lifetime = std::chrono::minutes(5);
+    const auto prefetch_key = [](std::string_view user_id, std::string_view item_id) {
+        return std::string(user_id) + '|' + std::string(item_id);
+    };
+    // What is waiting to be looked up, drained on the tick one at a time for
+    // the reason the wardrobe itself is: a grid read on this thread stops the
+    // region, and fourteen at once stop it long enough to be seen.
+    struct PendingItemPrefetch {
+        std::string user_id;
+        std::vector<std::string> item_ids;
+    };
+    std::deque<PendingItemPrefetch> pending_item_prefetches;
     // Closure members already confirmed to be held locally. Assets are
     // content-addressed and are never rewritten, so "it was here" does not go
     // stale, and a texture shared by ten worn parts is confirmed once instead
@@ -4234,9 +4262,19 @@ int main(int argc, char* argv[]) {
         std::vector<homeworldz::scene::EntityId> entity_ids;
         try {
             const auto lookup_started = std::chrono::steady_clock::now();
-            const auto lookup = viewer_grid
-                ? viewer_grid->lookup_inventory_item(user_id, item_id)
-                : homeworldz::grid::InventoryItemLookup{};
+            // Prefetched while the avatar was still a child of this region, if
+            // it was one. Only answers that found an item are ever cached, so
+            // a grid that could not be asked is asked again here rather than
+            // being remembered as a refusal.
+            homeworldz::grid::InventoryItemLookup lookup;
+            const auto prefetched = prefetched_items.find(prefetch_key(user_id, item_id));
+            if (prefetched != prefetched_items.end() &&
+                lookup_started - prefetched->second.fetched_at < prefetched_item_lifetime) {
+                lookup = prefetched->second.lookup;
+            } else {
+                if (prefetched != prefetched_items.end()) prefetched_items.erase(prefetched);
+                if (viewer_grid) lookup = viewer_grid->lookup_inventory_item(user_id, item_id);
+            }
             outcome.lookup_time = std::chrono::steady_clock::now() - lookup_started;
             const auto& item = lookup.item;
             if (!scene.find(wearer_id)) outcome.refused = "wearer has no avatar here";
@@ -4455,6 +4493,33 @@ int main(int argc, char* argv[]) {
         std::chrono::steady_clock::time_point started{};
     };
     std::deque<PendingAttachmentRestore> pending_attachment_restores;
+    // One inventory lookup per tick for a child agent's worn set, so the
+    // crossing that promotes it does not have to make them. Same pacing and
+    // the same reason as the wardrobe itself: this is a grid read on the
+    // region's only thread, and doing fourteen at once stops the region for
+    // long enough to be felt — which is what a 20 ms budget over these proved
+    // (reverted, cdd097c). Nothing waits on these, so one per tick is free.
+    const auto advance_item_prefetches = [&]() {
+        if (pending_item_prefetches.empty() || !viewer_grid) {
+            pending_item_prefetches.clear();
+            return false;
+        }
+        auto& job = pending_item_prefetches.front();
+        const auto item_id = job.item_ids.back();
+        job.item_ids.pop_back();
+        const auto key = prefetch_key(job.user_id, item_id);
+        if (!prefetched_items.contains(key)) {
+            auto lookup = viewer_grid->lookup_inventory_item(job.user_id, item_id);
+            // Only a found item is worth remembering. A grid that could not be
+            // asked is not an answer, and caching it would turn one bad moment
+            // into a wardrobe that stays missing for the life of the entry.
+            if (lookup.item)
+                prefetched_items.insert_or_assign(
+                    key, PrefetchedItem{std::chrono::steady_clock::now(), std::move(lookup)});
+        }
+        if (job.item_ids.empty()) pending_item_prefetches.pop_front();
+        return true;
+    };
     // The one grid call worth making up front: it is a single request, it is
     // what decides whether there is anything to do at all, and an empty or
     // unanswerable wardrobe should not leave a job sitting in the queue.
@@ -4508,6 +4573,27 @@ int main(int argc, char* argv[]) {
             pending_attachment_restores.pop_front();
             return true;
         }
+        // Keep going while the next item needs no grid read.
+        //
+        // The pacing is there to keep synchronous grid reads off a single
+        // tick — one is 4 ms, fourteen at once stop the region long enough to
+        // be seen, which a plain time budget proved by making the crossing
+        // worse rather than better (reverted, cdd097c). An item prefetched
+        // while its wearer was a child here needs no read at all, so it is not
+        // what the pacing is pacing, and a whole prefetched wardrobe rezzes in
+        // one tick for a few milliseconds of building.
+        //
+        // Anything not prefetched still costs a tick of its own, so a login or
+        // a wardrobe that changed mid-visit paces exactly as before.
+        const auto next_needs_no_lookup = [&] {
+            if (job.remaining.empty()) return false;
+            const auto found = prefetched_items.find(
+                prefetch_key(job.user_id, job.remaining.front().item_id));
+            return found != prefetched_items.end() &&
+                   std::chrono::steady_clock::now() - found->second.fetched_at <
+                       prefetched_item_lifetime;
+        };
+        do {
         const auto item = job.remaining.front();
         job.remaining.erase(job.remaining.begin());
         {
@@ -4545,6 +4631,7 @@ int main(int argc, char* argv[]) {
                           << homeworldz::api::json_string(outcome.refused) << "}" << std::endl;
             }
         }
+        } while (next_needs_no_lookup());
         if (!job.remaining.empty()) return true;
         const auto milliseconds = [](std::chrono::steady_clock::duration span) {
             return std::chrono::duration_cast<std::chrono::milliseconds>(span).count();
@@ -7323,6 +7410,23 @@ int main(int argc, char* argv[]) {
                             // has already caught up, and no extra grid call
                             // lands on the arrival path to do it.
                             observe_appearance_version(child.agent_id, child.cof_version);
+                            // The source carries what this avatar is wearing,
+                            // so their inventory items can be looked up now,
+                            // spread across the ticks before it ever crosses.
+                            // A promotion then dresses it without asking the
+                            // grid anything, which is where the crossing's
+                            // whole visible cost was.
+                            if (!child.worn.empty()) {
+                                PendingItemPrefetch prefetch;
+                                prefetch.user_id = child.agent_id;
+                                for (const auto& worn : child.worn)
+                                    prefetch.item_ids.push_back(worn.item_id);
+                                std::erase_if(pending_item_prefetches,
+                                    [&](const auto& queued) {
+                                        return queued.user_id == prefetch.user_id;
+                                    });
+                                pending_item_prefetches.push_back(std::move(prefetch));
+                            }
                             const auto& established = child_agents.establish(child, now);
                             std::cout << "{\"level\":\"info\",\"message\":\"child agent established\""
                                          ",\"agent\":" << homeworldz::api::json_string(established.agent_id)
@@ -16703,6 +16807,10 @@ int main(int argc, char* argv[]) {
         // One attachment per tick for an avatar that has just arrived. The
         // arrival itself already completed; this is the wardrobe catching up.
         static_cast<void>(advance_attachment_restores(now));
+        // Only when the wardrobe is not the thing on this thread: dressing an
+        // avatar that has arrived is owed to someone standing here, and a
+        // lookup for a child that may never cross is not.
+        if (pending_attachment_restores.empty()) static_cast<void>(advance_item_prefetches());
         // A session that has gone stops being owed offers, or the set grows for
         // the life of the process and a returning session is never re-offered.
         if (now >= next_child_agent_sweep) {
