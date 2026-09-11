@@ -896,6 +896,24 @@ std::vector<std::byte> encode_disable_simulator() {
     // connection to this simulator immediately instead of pinging a dead
     // circuit for thirty seconds — sent on a facet's old endpoint when an
     // internal crossing re-tags the circuit away from it (ADR 0036).
+    //
+    // UDP on the circuit, and it has to stay there. This message carries no
+    // address, so its handler asks the message system who sent it:
+    //
+    //     LLHost host = mesgsys->getSender();
+    //     LLWorld::getInstance()->removeRegion(host);
+    //
+    // Over a circuit that answer is the real peer. Over the event queue it is
+    // whatever the viewer stamped on the event when it built that queue's
+    // poll, and Firestorm stamps an empty string whenever the region it built
+    // the poll against had no valid address — which it parses back into
+    // 0.0.0.0 with a warning and then uses. removeRegion would be asked to
+    // remove a region at 0.0.0.0, find nothing, and leave the real one
+    // standing in the viewer forever.
+    //
+    // So: a message whose handler calls getSender() must not be moved to the
+    // event queue. It would keep working in every test where the sender
+    // happened to be valid, and fail silently where it was not (2026-09-10).
     constexpr std::array<std::byte, 4> disable_simulator_id{
         std::byte{0xff}, std::byte{0xff}, std::byte{0x00}, std::byte{0x98}};
     return {disable_simulator_id.begin(), disable_simulator_id.end()};

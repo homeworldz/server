@@ -4962,6 +4962,21 @@ int main(int argc, char* argv[]) {
                   << ",\"status\":" << response.status_code << "}" << std::endl;
         pending_event_responses.erase(pending);
     };
+    // Queue one event-queue event for a session.
+    //
+    // What goes here must carry every address it needs in its own body. A
+    // legacy message delivered this way reaches Firestorm through
+    // LLMessageHandlerBridge, which sets the message system's idea of the
+    // sender from a field the *viewer* stamps on the event — the address it
+    // captured when it built that queue's poll, not anything we send. Our own
+    // top-level keys are discarded: it copies "body" across and nothing else.
+    //
+    // When that captured address is empty the viewer parses it back to
+    // 0.0.0.0, warns, and carries on, so any handler that asks who sent the
+    // message gets a host that names nothing. Every event enqueued here today
+    // reads its address out of its own body and is unaffected; a message whose
+    // handler calls getSender() would fail silently and only sometimes. See
+    // encode_disable_simulator, which stays on the circuit for this reason.
     const auto enqueue_viewer_event = [&](const std::string& session_id, std::string event) {
         queued_viewer_events[session_id].push_back(std::move(event));
         flush_pending_viewer_events(session_id);
