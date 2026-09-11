@@ -438,6 +438,11 @@ SessionCore::Result SessionCore::handle_text(std::string_view text) {
             ",\"displayName\":" + json_string(identity_.display_name) + "}" +
             ",\"movement\":{\"walkSpeed\":" + json_number_text(homeworldz::viewer::avatar_walk_speed) +
             ",\"runSpeed\":" + json_number_text(homeworldz::viewer::avatar_fast_speed) +
+            // Published rather than left to be inferred from runSpeed, which
+            // it happens to equal: flight ignores the walk/run gait, and a
+            // client that reads its own flight speed off runSpeed would follow
+            // the day running is tuned and flight is not.
+            ",\"flySpeed\":" + json_number_text(homeworldz::viewer::avatar_fly_speed) +
             ",\"jumpVelocity\":" + json_number_text(homeworldz::viewer::avatar_jump_velocity) +
             ",\"gravity\":" + json_number_text(homeworldz::viewer::avatar_gravity) +
             "},\"interestSweepMs\":100" +

@@ -118,8 +118,19 @@ std::string motion_fields_json(MovementAnimation state,
 // observation that rubber-bands the day the region changes it (client core
 // request, 2026-07-28). The region owns these numbers; this header is their
 // single definition.
-inline constexpr double avatar_walk_speed = 4.0;   // m/s; also flight cruise
-inline constexpr double avatar_fast_speed = 8.0;   // m/s, run and fast flight
+inline constexpr double avatar_walk_speed = 4.0;   // m/s
+inline constexpr double avatar_fast_speed = 8.0;   // m/s, running
+// Flight has one speed and the walk/run gait does not reach it, as in Second
+// Life, where the always-run toggle does nothing while airborne. This used to
+// be the same ternary as the ground: flight cruised at walk speed and ran at
+// run speed, so a preference about walking silently halved how fast someone
+// flew (operator, 2026-09-11).
+//
+// Its own constant although it currently equals the run speed, because it is
+// its own thing: writing `flying ? avatar_fast_speed : ...` would say flight
+// runs, which is the conflation being removed, and would move flight the next
+// time running is tuned.
+inline constexpr double avatar_fly_speed = 8.0;    // m/s, flying, gait-independent
 inline constexpr double avatar_jump_velocity = 5.0;  // m/s straight up
 inline constexpr double avatar_gravity = 9.81;     // m/s², airborne non-flying
 // The avatar capsule and its ground contract, published like the movement

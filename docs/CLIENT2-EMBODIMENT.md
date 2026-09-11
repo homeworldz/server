@@ -473,7 +473,7 @@ Server → client:
   position?, message}` when embodied chat lands — existing readers keep
   working.
 - `hello` (the auth reply) carries, additively since 2026-07-28,
-  `movement: {walkSpeed, runSpeed, jumpVelocity, gravity}` and
+  `movement: {walkSpeed, runSpeed, flySpeed, jumpVelocity, gravity}` and
   `interestSweepMs`. The movement block is the region's authoritative
   movement model for client-side prediction of the client's own avatar —
   the same constants the server controller computes with, published so no
@@ -481,7 +481,9 @@ Server → client:
   numbers: diagonal input is normalized (never faster than straight);
   horizontal velocity is control-driven while flying or grounded, but an
   airborne non-flying avatar is ballistic with directional input still
-  steering; flight cruise speed equals walk/run speed; avatar capsule height
+  steering; flight uses `flySpeed` and the walk/run gait does not reach it,
+  as in Second Life, so a client must not fold its run state into flight even
+  though the two numbers are equal today; avatar capsule height
   is per-avatar (from its shape), not a constant. `interestSweepMs` is the
   avatar-interest sweep period — the floor on remote-transform staleness,
   which is what an extrapolation cap should be derived from.

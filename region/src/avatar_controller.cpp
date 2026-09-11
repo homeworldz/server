@@ -301,7 +301,11 @@ void AvatarController::step(double seconds) {
     const double length = std::hypot(forward, left);
     if (length > 1.0) { forward /= length; left /= length; }
     const bool fast = controls_ & (control_fast_forward | control_fast_left | control_fast_up);
-    const double speed = fast ? avatar_fast_speed : avatar_walk_speed;
+    // The gait is a ground concept. Flying is one speed whether or not the
+    // wearer has always-run set, which is what Second Life does and what a
+    // viewer's own toggle implies: it says "run", not "move faster".
+    const double speed = state_.flying ? avatar_fly_speed
+                                       : (fast ? avatar_fast_speed : avatar_walk_speed);
     // Horizontal velocity is control-driven while flying (release hovers in
     // place) or grounded (release stops), but an airborne avatar that is not
     // flying is ballistic: momentum from the moment flight ended or the jump

@@ -152,13 +152,15 @@ int main() {
     update.body_rotation = {0.F, 0.F, 0.F}; // facing +x
     glider.apply(update);
     glider.step(0.25);
-    if (!glider.state().flying || std::abs(glider.state().velocity.x - 4.0) > 1e-9) return 25;
+    // Flight speed, not walk speed: the gait does not reach flight.
+    if (!glider.state().flying || std::abs(glider.state().velocity.x - 8.0) > 1e-9) return 25;
     update.control_flags = 0; // flight and keys released together
     glider.apply(update);
     glider.step(0.25);
     if (glider.state().flying || glider.state().grounded) return 26;
-    // Horizontal momentum carried through; gravity owns the vertical.
-    if (std::abs(glider.state().velocity.x - 4.0) > 1e-9 || glider.state().velocity.y != 0.0 ||
+    // Horizontal momentum carried through at the speed it was flying at;
+    // gravity owns the vertical.
+    if (std::abs(glider.state().velocity.x - 8.0) > 1e-9 || glider.state().velocity.y != 0.0 ||
         glider.state().velocity.z >= 0.0)
         return 27;
     const auto glide_x = glider.state().position.x;
@@ -449,6 +451,43 @@ int main() {
         reshaped.synchronize_physics({128.0, 128.0, 25.0}, {}, false);
         reshaped.synchronize_physics({128.0, 128.0, 25.0}, {}, true);
         if (reshaped.movement_animation() != MovementAnimation::land) return 43;
+    }
+
+    // The walk/run gait does not reach flight. Second Life's always-run toggle
+    // does nothing while airborne, and this used to halve how fast someone flew
+    // because a preference about walking was read as a preference about speed.
+    //
+    // Asserted as an equality between the two gaits rather than against 8.0, so
+    // it keeps meaning what it means if the flight speed is ever retuned.
+    {
+        homeworldz::viewer::AgentUpdate gait;
+        gait.body_rotation = {0.F, 0.F, 0.F}; // facing +x
+        const auto flight_speed = [&](std::uint32_t extra) {
+            homeworldz::viewer::AvatarController flier;
+            flier.teleport({100.0, 100.0, 60.0}, true);
+            gait.control_flags =
+                homeworldz::viewer::control_fly | homeworldz::viewer::control_forward | extra;
+            flier.apply(gait);
+            flier.step(0.25);
+            return flier.state().velocity.x;
+        };
+        const auto walking = flight_speed(0);
+        const auto running = flight_speed(homeworldz::viewer::control_fast_forward);
+        if (std::abs(walking - running) > 1e-9) return 44;
+        // And it is the fast one, not the slow one: flight is never a cruise.
+        if (std::abs(walking - homeworldz::viewer::avatar_fly_speed) > 1e-9) return 45;
+        // The gait still owns the ground, or this would have proved nothing.
+        homeworldz::viewer::AvatarController walker;
+        gait.control_flags = homeworldz::viewer::control_forward;
+        walker.apply(gait);
+        walker.step(0.25);
+        const auto ground_walk = walker.state().velocity.x;
+        homeworldz::viewer::AvatarController runner;
+        gait.control_flags =
+            homeworldz::viewer::control_forward | homeworldz::viewer::control_fast_forward;
+        runner.apply(gait);
+        runner.step(0.25);
+        if (std::abs(runner.state().velocity.x - ground_walk) < 1e-9) return 46;
     }
     return 0;
 }
