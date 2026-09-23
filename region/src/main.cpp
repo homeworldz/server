@@ -16515,66 +16515,19 @@ int main(int argc, char* argv[]) {
                              static_cast<float>(state.velocity.y),
                              static_cast<float>(state.velocity.z)},
                             state.rotation);
-                        const bool announced =
-                            [&] {
-                                const auto sent = circuits.send(new_route, update, true, now, true);
-                                if (!sent) return false;
-                                static_cast<void>(send_udp(viewer_server, new_route, *sent));
-                                return true;
-                            }();
-                        // Temporary, to find where a re-dress goes missing.
-                        //
-                        // An avatar that crosses off a watcher's facet arrives
-                        // on the watcher's child circuit as a cloud for a
-                        // second or two. Only a bake-rendered avatar shows it —
-                        // one wearing mesh has attachments that re-add fine and
-                        // hide the gap — and the watcher's viewer never
-                        // processes the mover's appearance at all. The three
-                        // ways that can happen here all look identical from
-                        // outside: no stored appearance to send, an encode that
-                        // yields nothing, or a send the circuit refuses.
-                        const auto seeded = avatar_appearances.find(crossing_endpoint);
-                        const bool has_appearance = seeded != avatar_appearances.end();
-                        std::size_t appearance_bytes = 0;
-                        bool appearance_sent = false;
-                        if (has_appearance) {
+                        if (const auto sent = circuits.send(new_route, update, true, now, true))
+                            static_cast<void>(send_udp(viewer_server, new_route, *sent));
+                        if (const auto seeded = avatar_appearances.find(crossing_endpoint);
+                            seeded != avatar_appearances.end()) {
                             const auto appearance = homeworldz::viewer::encode_avatar_appearance({
                                 seeded->second.agent_id, seeded->second.serial,
                                 seeded->second.texture_entry, seeded->second.visual_params,
                                 {}, seeded->second.appearance_version});
-                            appearance_bytes = appearance.size();
                             if (!appearance.empty())
                                 if (const auto dressed = circuits.send(
-                                        new_route, appearance, true, now, true)) {
+                                        new_route, appearance, true, now, true))
                                     static_cast<void>(send_udp(viewer_server, new_route, *dressed));
-                                    appearance_sent = true;
-                                }
                         }
-                        std::cout << "{\"level\":\"info\",\"message\":\"facet re-dress\",\"mover\":"
-                                  << homeworldz::api::json_string(
-                                         homeworldz::viewer::format_uuid(*crossing_agent))
-                                  << ",\"toFacet\":" << facet
-                                  << ",\"watcher\":" << homeworldz::api::json_string(new_route)
-                                  // Both ends named, because an endpoint does
-                                  // not identify anyone: two viewers behind one
-                                  // household NAT differ only by port, and
-                                  // reading identity off that is how an hour
-                                  // went into the wrong avatar's log.
-                                  << ",\"watcherAgent\":"
-                                  << homeworldz::api::json_string(recipient.user_id)
-                                  << ",\"appearanceAgent\":"
-                                  << homeworldz::api::json_string(
-                                         has_appearance
-                                             ? homeworldz::viewer::format_uuid(
-                                                   seeded->second.agent_id)
-                                             : std::string{})
-                                  << ",\"announced\":" << (announced ? "true" : "false")
-                                  << ",\"hasAppearance\":" << (has_appearance ? "true" : "false")
-                                  << ",\"cofVersion\":"
-                                  << (has_appearance ? seeded->second.serial : 0)
-                                  << ",\"appearanceBytes\":" << appearance_bytes
-                                  << ",\"appearanceSent\":" << (appearance_sent ? "true" : "false")
-                                  << "}" << std::endl;
                         // The wearer's attachments arrive as objects below.
                         for (const auto id : moved) {
                             if (id == root_id) continue;
