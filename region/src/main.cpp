@@ -16446,6 +16446,29 @@ int main(int argc, char* argv[]) {
                         crossing_endpoint = live_endpoint;
                         break;
                     }
+                // A watcher is about to be told to destroy this avatar's object
+                // and build it again on the other facet, so the appearance that
+                // follows is a first announcement to a viewer holding nothing —
+                // and it has to carry a version that viewer has not already
+                // processed. Re-sent with the stored serial it repeated a
+                // number the viewer had seen, which a viewer discards as a
+                // roll-back, and the rebuilt avatar stayed a cloud until
+                // something else resolved it.
+                //
+                // Invisible on anyone wearing mesh: their attachments re-add
+                // and draw them while the appearance is missing. It took an
+                // avatar wearing nothing to show it at all (2026-09-23).
+                //
+                // Bumped once per crossing rather than once per watcher: one
+                // move is one version, and a per-watcher bump would hand the
+                // same move a different number to each of them.
+                if (!crossing_endpoint.empty())
+                    if (const auto dressed = avatar_appearances.find(crossing_endpoint);
+                        dressed != avatar_appearances.end())
+                        if (const auto mover = avatars.find(crossing_endpoint);
+                            mover != avatars.end())
+                            dressed->second.serial =
+                                next_appearance_version(mover->second.user_id);
                 std::vector<std::uint32_t> moved_ids;
                 moved_ids.reserve(moved.size());
                 for (const auto id : moved)
