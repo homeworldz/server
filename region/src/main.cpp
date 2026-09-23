@@ -16555,6 +16555,19 @@ int main(int argc, char* argv[]) {
                                          homeworldz::viewer::format_uuid(*crossing_agent))
                                   << ",\"toFacet\":" << facet
                                   << ",\"watcher\":" << homeworldz::api::json_string(new_route)
+                                  // Both ends named, because an endpoint does
+                                  // not identify anyone: two viewers behind one
+                                  // household NAT differ only by port, and
+                                  // reading identity off that is how an hour
+                                  // went into the wrong avatar's log.
+                                  << ",\"watcherAgent\":"
+                                  << homeworldz::api::json_string(recipient.user_id)
+                                  << ",\"appearanceAgent\":"
+                                  << homeworldz::api::json_string(
+                                         has_appearance
+                                             ? homeworldz::viewer::format_uuid(
+                                                   seeded->second.agent_id)
+                                             : std::string{})
                                   << ",\"announced\":" << (announced ? "true" : "false")
                                   << ",\"hasAppearance\":" << (has_appearance ? "true" : "false")
                                   << ",\"cofVersion\":"
