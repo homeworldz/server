@@ -15696,11 +15696,30 @@ int main(int argc, char* argv[]) {
                 [](const auto& neighbor) {
                     return neighbor.online && !neighbor.session_endpoint.empty();
                 });
-            const bool has_online_neighbor = may_cross && std::any_of(
-                region_neighbors.begin(), region_neighbors.end(),
-                [](const auto& neighbor) { return neighbor.online; });
-            avatar.controller.set_border_crossing_enabled(
-                has_online_neighbor && avatar.outbound_transit_id.empty());
+            // Per edge, not per region. This asked only whether *any* neighbour
+            // was online and switched containment off on all four sides if one
+            // was, so an avatar that reached a side with nothing beyond it was
+            // neither held nor carried across: no crossing could fire that way
+            // and nothing clamped it either. It stopped being governed and
+            // stuck at the boundary, unable to move along that axis again even
+            // in flight, while the other axis stayed free — which is how it
+            // reads from in-world, and why the log said nothing (Nova 2's outer
+            // edge, 2026-09-24).
+            //
+            // A diagonal neighbour opens both of the sides it touches: leaving
+            // by either one lands in a region that exists.
+            const bool crossing_allowed = may_cross && avatar.outbound_transit_id.empty();
+            homeworldz::viewer::AvatarController::OpenBorders open;
+            if (crossing_allowed)
+                for (const auto& neighbor : region_neighbors) {
+                    if (!neighbor.online) continue;
+                    const auto& where = neighbor.direction;
+                    if (where.find("west") != std::string::npos) open.west = true;
+                    if (where.find("east") != std::string::npos) open.east = true;
+                    if (where.find("south") != std::string::npos) open.south = true;
+                    if (where.find("north") != std::string::npos) open.north = true;
+                }
+            avatar.controller.set_open_borders(open);
             if (!avatar.outbound_transit_id.empty())
                 avatar.controller.expire_transient_controls();
             avatar.controller.step(elapsed);
@@ -15800,7 +15819,11 @@ int main(int argc, char* argv[]) {
                 // region. The transit machinery below stays viewer-only.
                 if (crossing && session_avatar) {
                     if (crossing->destination.session_endpoint.empty()) {
-                        avatar.controller.set_border_crossing_enabled(false);
+                        // The neighbour is there but cannot continue a session
+                        // client, so for this avatar every side is a wall: it
+                        // is held where it stands rather than walked out of the
+                        // region into somewhere it cannot arrive.
+                        avatar.controller.set_open_borders({});
                     } else {
                         const auto arrival = crossing->position;
                         const auto& rotation = avatar.controller.state().rotation;

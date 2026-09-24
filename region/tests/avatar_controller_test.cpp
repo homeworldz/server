@@ -113,16 +113,39 @@ int main() {
     if (std::abs(edge_avatar.state().position.x - 255.7) > 1e-9 ||
         edge_avatar.state().velocity.x != 0.0)
         return 10;
+    // An eastern neighbour opens the eastern side only, so walking east leaves
+    // the region rather than stopping at it.
     homeworldz::viewer::AvatarController crossing_avatar{{255.7, 128.0, 25.0}, 25.0};
-    crossing_avatar.set_border_crossing_enabled(true);
+    crossing_avatar.set_open_borders({false, true, false, false});
     crossing_avatar.apply(update);
     crossing_avatar.step(0.25);
     if (crossing_avatar.state().position.x <= 256.0 || crossing_avatar.state().velocity.x <= 0.0)
         return 21;
+    // Closing it again is a wall, and the avatar is held at the edge.
+    crossing_avatar.set_open_borders({});
     crossing_avatar.contain_horizontal();
     if (std::abs(crossing_avatar.state().position.x - 255.7) > 1e-9 ||
         crossing_avatar.state().velocity.x != 0.0)
         return 22;
+    // The defect this replaced: one open side used to open all four, so an
+    // avatar reaching a *closed* side was neither held nor carried across.
+    // A neighbour to the south must not let anyone walk out to the east.
+    homeworldz::viewer::AvatarController penned{{255.7, 128.0, 25.0}, 25.0};
+    penned.set_open_borders({false, false, true, false}); // south only
+    penned.apply(update);                                 // walking east
+    penned.step(0.25);
+    if (std::abs(penned.state().position.x - 255.7) > 1e-9 ||
+        penned.state().velocity.x != 0.0)
+        return 47;
+    // And the open side still works for the avatar that is held on another.
+    homeworldz::viewer::AgentUpdate southward;
+    southward.control_flags = homeworldz::viewer::control_forward;
+    // Facing -y: w is derived as sqrt(1 - x² - y² - z²), so z = -sin(45°)
+    // gives forward = (0, -1). A bare {0,0,1} faces -x, not south.
+    southward.body_rotation = {0.F, 0.F, -0.70710678F};
+    penned.apply(southward);
+    penned.step(0.25);
+    if (penned.state().position.y >= 128.0) return 48;
     edge_avatar.synchronize_physics({12, 13, 30}, {1, 2, 3}, false);
     if (edge_avatar.state().position.x != 12 || edge_avatar.state().position.y != 13 ||
         edge_avatar.state().position.z != 30 || edge_avatar.state().velocity.z != 3 ||

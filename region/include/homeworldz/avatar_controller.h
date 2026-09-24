@@ -166,7 +166,20 @@ public:
     void expire_transient_controls();
     void set_avatar_geometry(double height, double hip_offset);
     void set_ground_height(double height);
-    void set_border_crossing_enabled(bool enabled) { border_crossing_enabled_ = enabled; }
+    // Which edges an avatar may leave by. Per edge, because "may cross" is a
+    // property of a direction and not of a region: asking only whether *any*
+    // neighbour was online switched containment off on all four sides, so an
+    // avatar reaching a side with nothing beyond it was neither held nor
+    // carried across — it simply stopped being governed, and stuck at the
+    // boundary (Nova 2's outer edge, 2026-09-24).
+    struct OpenBorders {
+        bool west{};
+        bool east{};
+        bool south{};
+        bool north{};
+        bool any() const { return west || east || south || north; }
+    };
+    void set_open_borders(OpenBorders open) { open_borders_ = open; }
     void contain_horizontal();
     void restore_motion(scene::Vector3 velocity, std::array<float, 3> rotation, bool flying);
     void teleport(scene::Vector3 position, bool flying);
@@ -193,7 +206,7 @@ private:
     double landing_animation_remaining_{};
     bool ignore_next_landing_{};
     bool physics_grounding_{};
-    bool border_crossing_enabled_{};
+    OpenBorders open_borders_{};
 };
 
 } // namespace homeworldz::viewer

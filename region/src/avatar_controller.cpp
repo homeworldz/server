@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace homeworldz::viewer {
 
@@ -173,10 +174,20 @@ void AvatarController::set_ground_height(double height) {
 }
 
 void AvatarController::contain_horizontal() {
-    const auto bounded_x = std::clamp(
-        state_.position.x, avatar_capsule_radius, region_width_ - avatar_capsule_radius);
-    const auto bounded_y = std::clamp(
-        state_.position.y, avatar_capsule_radius, region_height_ - avatar_capsule_radius);
+    // Each side is held only when nothing lies beyond it. A side with an online
+    // neighbour is left open for the crossing to carry the avatar over; a side
+    // without one is a wall, which is what stops an avatar walking into empty
+    // space.
+    const auto low_x = open_borders_.west ? -std::numeric_limits<double>::infinity()
+                                          : avatar_capsule_radius;
+    const auto high_x = open_borders_.east ? std::numeric_limits<double>::infinity()
+                                           : region_width_ - avatar_capsule_radius;
+    const auto low_y = open_borders_.south ? -std::numeric_limits<double>::infinity()
+                                           : avatar_capsule_radius;
+    const auto high_y = open_borders_.north ? std::numeric_limits<double>::infinity()
+                                            : region_height_ - avatar_capsule_radius;
+    const auto bounded_x = std::clamp(state_.position.x, low_x, high_x);
+    const auto bounded_y = std::clamp(state_.position.y, low_y, high_y);
     if (bounded_x != state_.position.x) state_.velocity.x = 0.0;
     if (bounded_y != state_.position.y) state_.velocity.y = 0.0;
     state_.position.x = bounded_x;
@@ -334,7 +345,11 @@ void AvatarController::step(double seconds) {
     state_.position.x += state_.velocity.x * seconds;
     state_.position.y += state_.velocity.y * seconds;
     state_.position.z += state_.velocity.z * seconds;
-    if (!border_crossing_enabled_) contain_horizontal();
+    // Always: containment now knows which sides are open, so it holds the
+    // closed ones and leaves the open ones to the crossing. Skipping it whole
+    // whenever any neighbour existed is what left an avatar ungoverned at a
+    // side with nothing beyond it.
+    contain_horizontal();
     if (!physics_grounding_ && !state_.flying && state_.position.z <= support_height) {
         if (!state_.grounded) landing_animation_remaining_ = 0.4;
         state_.position.z = support_height;
