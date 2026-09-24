@@ -325,3 +325,115 @@ it. Hair is a body part (asset type 13, wearable type 2) and body parts are
 replaced, never removed. Firestorm agrees from its own side: it offers no "Take
 Off" for the item at all, only Delete. Going bald means swapping the hair body
 part, or masking the hair region (texture 25) with an alpha.
+
+## Announcing the bakes: the deferred half (design, 2026-09-23)
+
+Phase 1 produces correct bakes and sends them as legacy (v0) appearance. This
+section designs what has never been built: telling a viewer the region bakes,
+so it stops baking for itself and fetches ours. It is written because the same
+change has been attempted twice and rolled back twice, both times by doing the
+pieces in the wrong order.
+
+### Why it is wanted
+
+Three costs are being paid today, and all three are the same missing signal.
+
+- **A crossing can arrive invisible.** A viewer holding a server-baked
+  appearance that enters a region advertising protocols `0` unwinds it
+  (`viewer_protocol.cpp`, the `RegionInfo4` comment). We claim 0 everywhere, so
+  the unwind is ours to cause.
+- **A rebuilt avatar reclouds.** An avatar whose object is destroyed and rebuilt
+  — which every facet crossing does — refetches its bakes over the legacy
+  host path. Measured 2026-09-23 at about **three seconds** for five slots on an
+  avatar with no attachments. A mesh avatar hides it; a bake-only avatar does
+  not.
+- **Every watcher decodes what we already decoded.** Legacy bakes reach a viewer
+  as ordinary textures with no statement that a region authored them.
+
+### What already exists
+
+More than the phrase "deferred half" suggests. Bakes are stored with
+`store_asset` and registered with `register_asset`, so they are **ordinary
+content-addressed assets, grid-registered and fetchable by uuid** like any other
+texture. Nothing needs to be re-plumbed to make them reachable. What is missing
+is only the signalling that tells a viewer to treat them as the region's work.
+
+### What is missing, and where each piece lives
+
+1. **The appearance service address, published at login.** The viewer reads it
+   from the login response and keeps it for the session
+   (`AgentAppearanceServiceURL`). It is not region-scoped: a viewer fetches the
+   bakes of avatars standing in regions it is not in, so this belongs to the
+   grid, not to a region. Absent today — no occurrence anywhere in `grid/`.
+2. **A route under that address serving one bake**, keyed by avatar, bake slot
+   and texture id. The bytes already exist as a registered asset; this is a
+   lookup and a redirect or a read, not new storage.
+3. **The `UpdateAvatarAppearance` capability**, region-served per session. This
+   is what a viewer calls when it would otherwise have baked: it hands over the
+   outfit state and expects the region's bake back. Absent today, and named in
+   `viewer_protocol.cpp` as the thing that must exist before the bit is set.
+4. **`appearance_version = 1`**, which must move together with visual param
+   **11000** (`llvoavatar.cpp`: `setIsUsingServerBakes(appearance_version > 0)`).
+   One line, and meaningless before the three above.
+5. **The `RegionProtocols` server-bake bit**, in a `RegionInfo4` block the
+   handshake does not currently send at all.
+
+### The order, which is the whole point
+
+The two failures were both orderings, not implementations.
+
+- **2026-08-21** set the bit with no `UpdateAvatarAppearance` to serve. The
+  viewer stopped baking locally and waited for a capability that never
+  answered: the avatar stayed a cloud permanently, and neither a rebake nor an
+  outfit change could recover it, because both had become the server's job.
+- **2026-08-22** sent `appearance_version = 1` while the region advertised no
+  bit and no service address. The viewer tried an address it was never given,
+  failed all five slots, latched the avatar as server-baked, and then discarded
+  every later legacy message for it as stale — a grey statue.
+
+Both failures share one shape: **a viewer that has been told to stop baking
+cannot be told to start again.** The switch is one-way within a session, so
+every piece it depends on must already answer before it is thrown.
+
+So the order is: publish the address, serve the bake route, serve the
+capability, prove all three answer, and only then set the version byte and the
+bit — together, since param 11000 and the byte must agree.
+
+### How each step is proven before the next
+
+Each step is observable without the next one existing, which is what makes the
+order enforceable rather than advisory.
+
+1. Address published → a login reply carries it, and Firestorm stops logging
+   `AgentAppearanceServiceURL not set`.
+2. Bake route serving → a request for a known bake returns the same bytes the
+   asset store holds. Provable with a direct request, no viewer needed.
+3. Capability serving → it answers a real viewer's call with the current bake,
+   while the region still claims protocols `0`. Nothing has been switched yet,
+   so a wrong answer here costs nothing.
+4. Byte and bit together → an avatar rezzes correctly for a *second* viewer,
+   not only for itself. The 2026-08-09 lesson applies: a wearer sees their own
+   appearance correctly no matter how wrong it is for everyone else, so this
+   step is only proven by someone else's eyes.
+
+### What to watch for when it is switched on
+
+- **The wearer is not the test.** Every failure in this area has looked correct
+  to the person wearing it.
+- **A bake-only avatar is the sensitive instrument.** Mesh attachments draw an
+  avatar while its appearance is missing and hide exactly the faults this work
+  is meant to remove. Test with an avatar wearing nothing.
+- **Deploy to the two test regions first.** A viewer that crosses from a region
+  claiming the bit into one claiming `0` unwinds its appearance, so a partial
+  rollout has a failure mode a full one does not — and the reverse is also true
+  while only some regions are updated.
+- **It does not fix the Firestorm log noise.** Ten `does not have a URL`
+  warnings per appearance change come from a fall-through in Firestorm's
+  legacy-bake patch (`LLVOAvatar::getBakedTextureImage`): it fetches by host,
+  fails to return, and re-requests the same texture by an empty URL. It is
+  cosmetic — the second call returns the texture object the first one made —
+  and it stops only because this work takes us off the legacy path entirely.
+
+### Status
+
+Designed, not built, 2026-09-23. Nothing in this section is implemented.
