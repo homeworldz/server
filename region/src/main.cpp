@@ -15706,19 +15706,44 @@ int main(int argc, char* argv[]) {
             // reads from in-world, and why the log said nothing (Nova 2's outer
             // edge, 2026-09-24).
             //
-            // A diagonal neighbour opens both of the sides it touches: leaving
-            // by either one lands in a region that exists.
+            // Openness is a property of the map cell the avatar stands on, not
+            // of the region and not of a compass word.
+            //
+            // A direction names where a neighbour lies relative to the region
+            // as a whole, which is too coarse for a rectangle: Nova B 2 is
+            // south of Nova, but only of Nova's *western* facet. South of the
+            // eastern facet is empty, and a region-wide "south is open" walked
+            // an avatar straight out of the map from there (2026-09-24). A
+            // diagonal is coarser still — Nova B lies southwest, and west of
+            // Nova is nothing at all.
+            //
+            // So ask the map directly: is there an online neighbour covering
+            // the cell immediately beyond this side, from where the avatar
+            // actually is? A corner needs no special case — it is two edges,
+            // each answered on its own when the avatar reaches it.
             const bool crossing_allowed = may_cross && avatar.outbound_transit_id.empty();
             homeworldz::viewer::AvatarController::OpenBorders open;
-            if (crossing_allowed)
-                for (const auto& neighbor : region_neighbors) {
-                    if (!neighbor.online) continue;
-                    const auto& where = neighbor.direction;
-                    if (where.find("west") != std::string::npos) open.west = true;
-                    if (where.find("east") != std::string::npos) open.east = true;
-                    if (where.find("south") != std::string::npos) open.south = true;
-                    if (where.find("north") != std::string::npos) open.north = true;
-                }
+            if (crossing_allowed) {
+                const auto& standing = avatar.controller.state().position;
+                const auto cell_x = region_grid_x +
+                    static_cast<int>(std::floor(standing.x / 256.0));
+                const auto cell_y = region_grid_y +
+                    static_cast<int>(std::floor(standing.y / 256.0));
+                const auto covered = [&](int want_x, int want_y) {
+                    return std::any_of(region_neighbors.begin(), region_neighbors.end(),
+                        [&](const auto& neighbor) {
+                            return neighbor.online &&
+                                   want_x >= neighbor.grid_x &&
+                                   want_x < neighbor.grid_x + (std::max)(neighbor.size_x, 1) &&
+                                   want_y >= neighbor.grid_y &&
+                                   want_y < neighbor.grid_y + (std::max)(neighbor.size_y, 1);
+                        });
+                };
+                open.west = covered(cell_x - 1, cell_y);
+                open.east = covered(cell_x + 1, cell_y);
+                open.south = covered(cell_x, cell_y - 1);
+                open.north = covered(cell_x, cell_y + 1);
+            }
             avatar.controller.set_open_borders(open);
             if (!avatar.outbound_transit_id.empty())
                 avatar.controller.expire_transient_controls();
