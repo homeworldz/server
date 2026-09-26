@@ -15748,6 +15748,30 @@ int main(int argc, char* argv[]) {
             if (!avatar.outbound_transit_id.empty())
                 avatar.controller.expire_transient_controls();
             avatar.controller.step(elapsed);
+            // Containment has to reach the character, or it undoes itself.
+            //
+            // The step above may have clamped the avatar back inside a closed
+            // side, but physics still holds the position that left it — and
+            // physics is read back at the top of the next tick, before the next
+            // step. So the clamp fired again, and every clamp zeroes velocity
+            // on that axis: the avatar froze on it, able to move on the other
+            // two, until a teleport reset the character. That is the "stuck at
+            // the edge" an operator sees, and it is why teleporting frees it
+            // (2026-09-26).
+            if (physics_world && avatar.physics_character != 0) {
+                const auto& corrected = avatar.controller.state().position;
+                if (auto placed = physics_world->character_state(avatar.physics_character);
+                    placed && (placed->position.x != corrected.x ||
+                               placed->position.y != corrected.y)) {
+                    placed->position.x = corrected.x;
+                    placed->position.y = corrected.y;
+                    // The velocity the clamp already zeroed; carrying the old
+                    // one back in would push straight out again next tick.
+                    placed->linear_velocity.x = avatar.controller.state().velocity.x;
+                    placed->linear_velocity.y = avatar.controller.state().velocity.y;
+                    physics_world->set_character_state(avatar.physics_character, *placed);
+                }
+            }
             // The viewer's agent parcel updates the moment a step crosses a
             // parcel line: parcel_at plus one integer compare per avatar per
             // tick, a no-op while the parcel is unchanged. It used to ride
