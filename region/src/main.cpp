@@ -15729,14 +15729,20 @@ int main(int argc, char* argv[]) {
                     static_cast<int>(std::floor(standing.x / 256.0));
                 const auto cell_y = region_grid_y +
                     static_cast<int>(std::floor(standing.y / 256.0));
+                // size_x/size_y are METRES here, not map cells — a neighbour
+                // facet reports 256x256. Read as cells they made one neighbour
+                // cover a 256-cell square, so every side of every region
+                // answered "open" and containment stopped holding anything.
                 const auto covered = [&](int want_x, int want_y) {
                     return std::any_of(region_neighbors.begin(), region_neighbors.end(),
                         [&](const auto& neighbor) {
+                            const auto cells_x = (std::max)(neighbor.size_x, 256) / 256;
+                            const auto cells_y = (std::max)(neighbor.size_y, 256) / 256;
                             return neighbor.online &&
                                    want_x >= neighbor.grid_x &&
-                                   want_x < neighbor.grid_x + (std::max)(neighbor.size_x, 1) &&
+                                   want_x < neighbor.grid_x + cells_x &&
                                    want_y >= neighbor.grid_y &&
-                                   want_y < neighbor.grid_y + (std::max)(neighbor.size_y, 1);
+                                   want_y < neighbor.grid_y + cells_y;
                         });
                 };
                 open.west = covered(cell_x - 1, cell_y);
