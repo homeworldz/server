@@ -28,6 +28,7 @@ const (
 type memoryRegistry struct {
 	blobs     map[string]assetmeta.Blob
 	locations []assetmeta.Location
+	bakes     map[string]bool
 }
 
 func (r *memoryRegistry) Register(context.Context, assetmeta.Registration) (assetmeta.Asset, error) {
@@ -40,7 +41,7 @@ func (r *memoryRegistry) Get(ctx context.Context, assetID string) (assetmeta.Ass
 		return assetmeta.Asset{}, err
 	}
 	return assetmeta.Asset{ID: assetID, SHA256: blob.Checksum, Size: blob.ByteLength,
-		Locations: r.locations}, nil
+		Locations: r.locations, Bake: r.bakes[assetID]}, nil
 }
 
 func (r *memoryRegistry) Blob(_ context.Context, assetID string) (assetmeta.Blob, error) {

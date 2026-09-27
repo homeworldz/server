@@ -17,6 +17,8 @@ func (s *memoryAssetStore) Register(_ context.Context, input assetmeta.Registrat
 		if existing.CreatorUserID != input.CreatorUserID || existing.SHA256 != input.SHA256 || existing.Size != input.Size {
 			return assetmeta.Asset{}, assetmeta.ErrConflict
 		}
+		existing.Bake = existing.Bake || input.Bake
+		s.assets[input.ID] = existing
 		for _, location := range existing.Locations {
 			if location.Endpoint == input.Endpoint {
 				return existing, nil
@@ -30,7 +32,7 @@ func (s *memoryAssetStore) Register(_ context.Context, input assetmeta.Registrat
 	}
 	asset := assetmeta.Asset{
 		ID: input.ID, CreatorUserID: input.CreatorUserID, SHA256: input.SHA256, Size: input.Size,
-		Locations: []assetmeta.Location{{Endpoint: input.Endpoint, Origin: input.Origin, VerifiedAt: time.Now()}},
+		Bake: input.Bake, Locations: []assetmeta.Location{{Endpoint: input.Endpoint, Origin: input.Origin, VerifiedAt: time.Now()}},
 	}
 	s.assets[input.ID] = asset
 	return asset, nil

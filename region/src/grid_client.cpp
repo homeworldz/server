@@ -1189,13 +1189,17 @@ bool Client::rollback_object_rez(std::string_view rez_id, std::string_view regio
 
 bool Client::register_asset(std::string_view asset_id, std::string_view creator_id,
                             std::string_view sha256, std::uint64_t size,
-                            std::string_view endpoint, bool origin) {
+                            std::string_view endpoint, bool origin, bool bake) {
+    // bake marks an avatar bake, the only asset the grid's public appearance
+    // service will serve (ADR 0029). Sent only when true: it latches on at the
+    // grid, and a registration that omits it leaves the mark as it was.
     const auto body = "{\"id\":" + api::json_string(asset_id) +
                       ",\"creatorUserId\":" + api::json_string(creator_id) +
                       ",\"sha256\":" + api::json_string(sha256) +
                       ",\"size\":" + std::to_string(size) +
                       ",\"endpoint\":" + api::json_string(endpoint) +
-                      ",\"origin\":" + (origin ? "true" : "false") + '}';
+                      ",\"origin\":" + (origin ? "true" : "false") +
+                      (bake ? ",\"bake\":true" : "") + '}';
     return transport_->send("POST", "/api/v1/assets", body).status_code == 201;
 }
 

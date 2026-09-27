@@ -207,9 +207,13 @@ type loginFields struct {
 	regionSizeX, regionSizeY     int
 	startLocation, lookAt        string
 	seedCapability               string
-	folders                      []inventory.Folder
-	libFolders                   []inventory.Folder
-	gestures                     []gestures.Gesture
+	// appearanceService is agent_appearance_service: the grid, not a region,
+	// because a viewer fetches the bakes of avatars in regions it is not in.
+	// Empty when this grid cannot serve bakes, and then omitted.
+	appearanceService string
+	folders           []inventory.Folder
+	libFolders        []inventory.Folder
+	gestures          []gestures.Gesture
 }
 
 // resolveViewerLogin performs authentication, region resolution, circuit
@@ -467,10 +471,11 @@ func (a *API) resolveViewerLogin(r *http.Request, firstRaw, lastRaw, passwd, sta
 		regionX: regionX, regionY: regionY,
 		regionSizeX: regionSizeX, regionSizeY: regionSizeY,
 		startLocation: normalizeStart(start), lookAt: lookAt,
-		seedCapability: strings.TrimRight(region.PublicEndpoint, "/") + "/caps/seed/" + session.ID,
-		folders:        folders,
-		libFolders:     inventory.LibraryFolders(),
-		gestures:       activeGestures,
+		seedCapability:    strings.TrimRight(region.PublicEndpoint, "/") + "/caps/seed/" + session.ID,
+		appearanceService: a.appearanceServiceURL(),
+		folders:           folders,
+		libFolders:        inventory.LibraryFolders(),
+		gestures:          activeGestures,
 	}, "", ""
 }
 
@@ -487,7 +492,7 @@ func (a *API) xmlrpcLoginResponse(f *loginFields) rpcOutputValue {
 		gestureValues = append(gestureValues, rpcStructValue(
 			rpcField("item_id", rpcString(g.ItemID)), rpcField("asset_id", rpcString(g.AssetID))))
 	}
-	return rpcStructValue(
+	members := []rpcOutputMember{
 		rpcField("login", rpcString("true")), rpcField("message", rpcString(a.welcomeMessage(f.first+" "+f.last))),
 		rpcField("agent_id", rpcString(f.agentID)), rpcField("session_id", rpcString(f.sessionID)),
 		rpcField("secure_session_id", rpcString(f.secureID)), rpcField("first_name", rpcString(f.first)),
@@ -503,7 +508,11 @@ func (a *API) xmlrpcLoginResponse(f *loginFields) rpcOutputValue {
 		rpcField("inventory-lib-root", rpcArrayValue(libraryRoot)), rpcField("inventory-lib-owner", rpcArrayValue(libraryOwner)),
 		rpcField("inventory-skel-lib", rpcArrayValue(librarySkeleton...)), rpcField("login-flags", rpcArrayValue()),
 		rpcField("gestures", rpcArrayValue(gestureValues...)), rpcField("buddy-list", rpcArrayValue()),
-	)
+	}
+	if f.appearanceService != "" {
+		members = append(members, rpcField("agent_appearance_service", rpcString(f.appearanceService)))
+	}
+	return rpcStructValue(members...)
 }
 
 // simulatorIPv4 resolves a region's endpoint host to a dotted-quad IPv4

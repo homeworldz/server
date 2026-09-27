@@ -352,22 +352,34 @@ Three costs are being paid today, and all three are the same missing signal.
 
 ### What already exists
 
-More than the phrase "deferred half" suggests. Bakes are stored with
-`store_asset` and registered with `register_asset`, so they are **ordinary
-content-addressed assets, grid-registered and fetchable by uuid** like any other
-texture. Nothing needs to be re-plumbed to make them reachable. What is missing
-is only the signalling that tells a viewer to treat them as the region's work.
+Less than this section first claimed. Bakes are stored with `store_asset` and
+registered with `register_asset`, but registration carries only metadata and
+the baking region's endpoint — **no bytes reach the grid**. A bake was
+reachable only through the region that made it, which is exactly the region a
+watcher elsewhere is not in. (Corrected 2026-09-27 on reading the code: the
+first draft read "registered" as "reachable".)
+
+So one piece precedes the five below: **a bake is written through to the
+vault** when it is stored, and registered as a bake. That is also the vault's
+standing rule — a bake belongs to the avatar, not to the region where it
+happened to be made — which the server-bake path had not been following.
 
 ### What is missing, and where each piece lives
 
-1. **The appearance service address, published at login.** The viewer reads it
-   from the login response and keeps it for the session
-   (`AgentAppearanceServiceURL`). It is not region-scoped: a viewer fetches the
-   bakes of avatars standing in regions it is not in, so this belongs to the
-   grid, not to a region. Absent today — no occurrence anywhere in `grid/`.
-2. **A route under that address serving one bake**, keyed by avatar, bake slot
-   and texture id. The bytes already exist as a registered asset; this is a
-   lookup and a redirect or a read, not new storage.
+1. **The appearance service address, published at login** as
+   `agent_appearance_service` (`llstartup.cpp`; `AgentAppearanceServiceURL` is
+   only the name in the viewer's warning when it is missing). It is not
+   region-scoped: a viewer fetches the bakes of avatars standing in regions it
+   is not in, so this belongs to the grid, not to a region. It is inert on its
+   own: both places the viewer reads it sit behind `isUsingServerBakes()`, so
+   publishing it while appearance is v0 changes nothing.
+2. **A route under that address serving one bake.** The viewer builds
+   `{address}texture/{avatarId}/{slot}/{textureId}` by concatenation
+   (`LLVOAvatar::getImageURL`), so the address must end in a slash; the slot is
+   one of `head upper lower eyes hair skirt leftarm leftleg aux1 aux2 aux3`.
+   The request carries no credentials, so the route is public and serves only
+   assets registered as bakes (`assets.is_bake`, migration 35) — otherwise it
+   would read any vaulted notecard or script by uuid.
 3. **The `UpdateAvatarAppearance` capability**, region-served per session. This
    is what a viewer calls when it would otherwise have baked: it hands over the
    outfit state and expects the region's bake back. Absent today, and named in
@@ -395,17 +407,18 @@ Both failures share one shape: **a viewer that has been told to stop baking
 cannot be told to start again.** The switch is one-way within a session, so
 every piece it depends on must already answer before it is thrown.
 
-So the order is: publish the address, serve the bake route, serve the
-capability, prove all three answer, and only then set the version byte and the
-bit — together, since param 11000 and the byte must agree.
+So the order is: vault the bakes, publish the address, serve the bake route,
+serve the capability, prove all of it answers, and only then set the version
+byte and the bit — together, since param 11000 and the byte must agree.
 
 ### How each step is proven before the next
 
 Each step is observable without the next one existing, which is what makes the
 order enforceable rather than advisory.
 
-1. Address published → a login reply carries it, and Firestorm stops logging
-   `AgentAppearanceServiceURL not set`.
+1. Address published → a login reply carries `agent_appearance_service`.
+   Firestorm's `AgentAppearanceServiceURL not set` warning is no witness here:
+   it is only reached under server bakes, so under v0 it is absent either way.
 2. Bake route serving → a request for a known bake returns the same bytes the
    asset store holds. Provable with a direct request, no viewer needed.
 3. Capability serving → it answers a real viewer's call with the current bake,
@@ -436,4 +449,7 @@ order enforceable rather than advisory.
 
 ### Status
 
-Designed, not built, 2026-09-23. Nothing in this section is implemented.
+Designed 2026-09-23. On 2026-09-27 the vault write-through, the login address
+and the bake route were built (grid `appearance.go`, migration 35); none of
+them changes what a viewer does while appearance is v0. The capability, the
+version byte and the bit are not built.

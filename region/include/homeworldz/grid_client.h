@@ -438,7 +438,7 @@ public:
     bool rollback_object_rez(std::string_view rez_id, std::string_view region_id);
     bool register_asset(std::string_view asset_id, std::string_view creator_id,
                         std::string_view sha256, std::uint64_t size,
-                        std::string_view endpoint, bool origin);
+                        std::string_view endpoint, bool origin, bool bake = false);
     std::optional<FederatedAsset> find_asset(std::string_view asset_id);
     // Read inventory-referenced bytes from the grid's asset vault (ADR 0026).
     // For anything inventory references this location always has the content,

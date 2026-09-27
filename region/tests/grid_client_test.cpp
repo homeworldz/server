@@ -507,7 +507,15 @@ int main() {
             332, "http://region.example:42001", true) ||
         transport->requests.back().path != "/api/v1/assets" ||
         transport->requests.back().body.find(R"("size":332)") == std::string::npos ||
-        transport->requests.back().body.find(R"("origin":true)") == std::string::npos)
+        transport->requests.back().body.find(R"("origin":true)") == std::string::npos ||
+        transport->requests.back().body.find(R"("bake")") != std::string::npos)
+        return 1;
+    if (!client.register_asset(
+            "66666666-6666-4666-8666-666666666666",
+            "77777777-7777-4777-8777-777777777777",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            332, "http://region.example:42001", true, true) ||
+        transport->requests.back().body.find(R"("bake":true)") == std::string::npos)
         return 1;
     const auto asset = client.find_asset("66666666-6666-4666-8666-666666666666");
     if (!asset || asset->creator_id != "77777777-7777-4777-8777-777777777777" ||

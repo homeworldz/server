@@ -33,6 +33,7 @@ func (a *API) assetsRoot(w http.ResponseWriter, r *http.Request) {
 	asset, err := a.assets.Register(r.Context(), assetmeta.Registration{
 		ID: request.ID, CreatorUserID: request.CreatorUserID, SHA256: request.SHA256,
 		Size: request.Size, Endpoint: strings.TrimRight(request.Endpoint, "/"), Origin: request.Origin,
+		Bake: request.Bake,
 	})
 	if errors.Is(err, assetmeta.ErrConflict) {
 		writeJSON(w, http.StatusConflict, Error{Code: "asset_registration_conflict", Message: "asset UUID is already registered with different immutable metadata"})

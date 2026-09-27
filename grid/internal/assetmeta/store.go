@@ -44,6 +44,9 @@ type Asset struct {
 	SHA256        string     `json:"sha256"`
 	Size          int64      `json:"size"`
 	Locations     []Location `json:"locations"`
+	// Bake is an avatar bake (ADR 0029): the one kind of asset the public
+	// appearance service serves. Latched on by any registration that says so.
+	Bake bool `json:"bake"`
 }
 
 type Registration struct {
@@ -53,6 +56,7 @@ type Registration struct {
 	Size          int64
 	Endpoint      string
 	Origin        bool
+	Bake          bool
 }
 
 // Blob identifies the bytes an asset names, for the vault and anything else
@@ -112,8 +116,8 @@ func (s *PostgresStore) Register(ctx context.Context, input Registration) (Asset
 			return Asset{}, fmt.Errorf("insert blob: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO assets (asset_id, blob_id, creator_user_id)
-			VALUES ($1, $2, $3)`, input.ID, blobID, input.CreatorUserID); err != nil {
+			INSERT INTO assets (asset_id, blob_id, creator_user_id, is_bake)
+			VALUES ($1, $2, $3, $4)`, input.ID, blobID, input.CreatorUserID, input.Bake); err != nil {
 			return Asset{}, fmt.Errorf("insert asset: %w", err)
 		}
 	case err != nil:
@@ -121,6 +125,13 @@ func (s *PostgresStore) Register(ctx context.Context, input Registration) (Asset
 	default:
 		if creator != input.CreatorUserID || checksum != input.SHA256 || length != input.Size {
 			return Asset{}, ErrConflict
+		}
+		if input.Bake {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE assets SET is_bake = true WHERE asset_id = $1 AND NOT is_bake`,
+				input.ID); err != nil {
+				return Asset{}, fmt.Errorf("mark asset as bake: %w", err)
+			}
 		}
 	}
 
@@ -145,10 +156,10 @@ func (s *PostgresStore) Get(ctx context.Context, id string) (Asset, error) {
 	asset := Asset{ID: id, Locations: make([]Location, 0)}
 	var blobID string
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT asset.creator_user_id, blob.checksum, blob.byte_length, blob.blob_id
+		SELECT asset.creator_user_id, blob.checksum, blob.byte_length, blob.blob_id, asset.is_bake
 		FROM assets AS asset JOIN blobs AS blob ON blob.blob_id = asset.blob_id
 		WHERE asset.asset_id = $1`, id).
-		Scan(&asset.CreatorUserID, &asset.SHA256, &asset.Size, &blobID); errors.Is(err, sql.ErrNoRows) {
+		Scan(&asset.CreatorUserID, &asset.SHA256, &asset.Size, &blobID, &asset.Bake); errors.Is(err, sql.ErrNoRows) {
 		return Asset{}, ErrNotFound
 	} else if err != nil {
 		return Asset{}, fmt.Errorf("get asset: %w", err)

@@ -342,4 +342,7 @@ type RegisterAssetRequest struct {
 	Size          int64  `json:"size"`
 	Endpoint      string `json:"endpoint"`
 	Origin        bool   `json:"origin"`
+	// Bake marks an avatar bake (ADR 0029), the only kind of asset the
+	// public appearance service will serve.
+	Bake bool `json:"bake"`
 }

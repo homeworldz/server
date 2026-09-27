@@ -2657,10 +2657,20 @@ int main(int argc, char* argv[]) {
                     std::span<const std::byte>(asset.j2c.data(), asset.j2c.size());
                 const auto record = storage->store_asset(
                     homeworldz::viewer::format_uuid(asset.id), system_creator, content);
-                if (viewer_grid)
-                    static_cast<void>(viewer_grid->register_asset(
-                        record.viewer_id, record.creator_id, record.sha256, record.size,
-                        region_public_endpoint, true));
+                // Registered as a bake and written through to the vault: a
+                // bake belongs to the avatar, not to the region that happened
+                // to make it, and the grid's appearance service (ADR 0029)
+                // serves bakes from the vault alone. A write-through that
+                // fails is logged here because to a viewer it is one grey slot
+                // and nothing else.
+                if (viewer_grid &&
+                    (!viewer_grid->register_asset(record.viewer_id, record.creator_id,
+                                                  record.sha256, record.size,
+                                                  region_public_endpoint, true, true) ||
+                     !viewer_grid->store_vault_asset(record.viewer_id, content)))
+                    std::cerr << "{\"level\":\"warning\",\"message\":\"baked texture not vaulted\","
+                                 "\"assetId\":" << homeworldz::api::json_string(record.viewer_id)
+                              << "}" << std::endl;
             } catch (const std::exception& error) {
                 std::cerr << "{\"level\":\"warning\",\"message\":\"store baked texture failed\",\"error\":"
                           << homeworldz::api::json_string(error.what()) << "}" << std::endl;

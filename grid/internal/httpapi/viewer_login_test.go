@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/homeworldz/server/grid/internal/arrival"
+	"github.com/homeworldz/server/grid/internal/assetmeta"
 	"github.com/homeworldz/server/grid/internal/inventory"
 	"github.com/homeworldz/server/grid/internal/locations"
 	"github.com/homeworldz/server/grid/internal/provisioning"
@@ -129,6 +130,18 @@ func TestViewerLoginResolvesNamedRegion(t *testing.T) {
 	wantSeed := strings.TrimRight(target.PublicEndpoint, "/") + "/caps/seed/" + fields["session_id"].text()
 	if fields["seed_capability"].text() != wantSeed {
 		t.Fatalf("seed = %q, want %q", fields["seed_capability"].text(), wantSeed)
+	}
+	// A grid with no vault cannot serve a bake, so it names no address.
+	if _, present := fields["agent_appearance_service"]; present {
+		t.Fatalf("appearance service published with no vault: %q", fields["agent_appearance_service"].text())
+	}
+	withVault := New(checker{}, "test", Options{ServiceToken: "region-secret", Identity: identities,
+		Regions: regionStore, Provisioned: provisioned, Inventory: inventories,
+		GridPublicURL: "https://grid.example/", Assets: &memoryAssetStore{assets: map[string]assetmeta.Asset{}},
+		Vault: &memoryVault{}})
+	vaulted := viewerResponse(t, withVault, viewerRequest("Test", "User", "development-password", "uri:Welcome&128&128&25"))
+	if got := vaulted["agent_appearance_service"].text(); got != "https://grid.example/appearance/" {
+		t.Fatalf("agent_appearance_service = %q", got)
 	}
 	if fields["look_at"].text() != "[r-0.995,r-0.098,r0]" {
 		t.Fatalf("look_at = %q", fields["look_at"].text())

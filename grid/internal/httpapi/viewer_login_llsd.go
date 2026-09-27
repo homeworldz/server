@@ -69,6 +69,9 @@ func (a *API) llsdLoginResponse(f *loginFields) string {
 	llsdKeyString(&b, "start_location", f.startLocation)
 	llsdKeyString(&b, "look_at", f.lookAt)
 	llsdKeyString(&b, "seed_capability", f.seedCapability)
+	if f.appearanceService != "" {
+		llsdKeyString(&b, "agent_appearance_service", f.appearanceService)
+	}
 
 	b.WriteString("<key>inventory-root</key><array><map>")
 	llsdKeyUUID(&b, "folder_id", inventoryRootID(f.folders))
