@@ -421,5 +421,62 @@ int main() {
         if (homeworldz::region::child_circuit_farewell_ids(occupants, 0, "") !=
             std::vector<std::uint32_t>{10, 20, 21}) return 34;
     }
+
+    // Which sides an avatar may leave by, shaped exactly as the grid's
+    // neighbours endpoint shapes them — sizes in METRES, one entry per facet.
+    // Four live faults in one evening came from getting this wrong, and none of
+    // them would have failed a test, because there wasn't one.
+    {
+        // Nova: 2x1 at (900,900), so facet 0 is cell (900,900) and facet 1 is
+        // (901,900). Its only neighbours are Nova B's two facets, to the south
+        // and southwest of facet 0 — nothing lies east, north, or west.
+        homeworldz::grid::RegionNeighbor south;
+        south.direction = "south";
+        south.grid_x = 900; south.grid_y = 899;
+        south.size_x = 256; south.size_y = 256; south.online = true;
+        homeworldz::grid::RegionNeighbor southwest;
+        southwest.direction = "southwest";
+        southwest.grid_x = 899; southwest.grid_y = 899;
+        southwest.size_x = 256; southwest.size_y = 256; southwest.online = true;
+        const homeworldz::grid::RegionNeighbor both[]{south, southwest};
+
+        // Standing on the western facet: south is the way to Nova B 2.
+        const auto west_facet = homeworldz::region::open_sides_at(900, 900, {128.0, 128.0}, both);
+        if (!west_facet.south) return 35;
+        // And nothing else is. "southwest" must not open the west: west of
+        // Nova is empty, and a corner is reached by two edges, not one.
+        if (west_facet.west || west_facet.east || west_facet.north) return 36;
+
+        // Standing on the eastern facet, one cell further along: the same
+        // region, and now south is empty too. A region-wide answer got this
+        // wrong and walked an avatar out of the map.
+        const auto east_facet = homeworldz::region::open_sides_at(900, 900, {384.0, 128.0}, both);
+        if (east_facet.south || east_facet.east || east_facet.north || east_facet.west)
+            return 37;
+
+        // The units. A facet reports 256x256 metres and is ONE cell; read as
+        // cells it would cover a 256-cell square and open every side there is.
+        const auto far_north = homeworldz::region::open_sides_at(900, 1050, {128.0, 128.0}, both);
+        if (far_north.south || far_north.north || far_north.east || far_north.west)
+            return 38;
+
+        // An offline neighbour is not a way out.
+        homeworldz::grid::RegionNeighbor dark = south;
+        dark.online = false;
+        const homeworldz::grid::RegionNeighbor unlit[]{dark};
+        if (homeworldz::region::open_sides_at(900, 900, {128.0, 128.0}, unlit).south)
+            return 39;
+
+        // A 2x1 neighbour announced as one entry covers both of its cells.
+        homeworldz::grid::RegionNeighbor wide;
+        wide.direction = "south";
+        wide.grid_x = 900; wide.grid_y = 899;
+        wide.size_x = 512; wide.size_y = 256; wide.online = true;
+        const homeworldz::grid::RegionNeighbor spanning[]{wide};
+        if (!homeworldz::region::open_sides_at(900, 900, {128.0, 128.0}, spanning).south)
+            return 40;
+        if (!homeworldz::region::open_sides_at(900, 900, {384.0, 128.0}, spanning).south)
+            return 41;
+    }
     return 0;
 }

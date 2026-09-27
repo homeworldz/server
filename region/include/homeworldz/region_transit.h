@@ -32,6 +32,28 @@ std::optional<BorderCrossing> plan_border_crossing(
     std::array<double, 3> source_position,
     std::span<const grid::RegionNeighbor> neighbors, double destination_inset = 0.3);
 
+// Which sides an avatar standing at `position` may leave by: is there an online
+// neighbour covering the map cell immediately beyond each one, from the cell it
+// is standing on.
+//
+// Asked per position rather than per region because a rectangle's sides are not
+// uniform — Nova B 2 lies south of Nova's western facet and nothing lies south
+// of its eastern one — and answered from map coverage rather than a neighbour's
+// compass word, which names where it sits relative to the whole region and says
+// nothing about the cell an avatar actually stands on. Four faults in one
+// evening came from those two shortcuts and from reading a neighbour's size,
+// which is METRES, as a count of cells (2026-09-26).
+struct OpenSides {
+    bool west{};
+    bool east{};
+    bool south{};
+    bool north{};
+};
+
+OpenSides open_sides_at(int region_grid_x, int region_grid_y,
+                        std::array<double, 2> position,
+                        std::span<const grid::RegionNeighbor> neighbors);
+
 std::optional<std::array<float, 3>> resolve_region_teleport_position(
     int region_grid_x, int region_grid_y, int region_size_x, int region_size_y,
     std::uint64_t requested_handle, std::array<float, 3> requested_position);

@@ -15725,30 +15725,9 @@ int main(int argc, char* argv[]) {
             homeworldz::viewer::AvatarController::OpenBorders open;
             if (crossing_allowed) {
                 const auto& standing = avatar.controller.state().position;
-                const auto cell_x = region_grid_x +
-                    static_cast<int>(std::floor(standing.x / 256.0));
-                const auto cell_y = region_grid_y +
-                    static_cast<int>(std::floor(standing.y / 256.0));
-                // size_x/size_y are METRES here, not map cells — a neighbour
-                // facet reports 256x256. Read as cells they made one neighbour
-                // cover a 256-cell square, so every side of every region
-                // answered "open" and containment stopped holding anything.
-                const auto covered = [&](int want_x, int want_y) {
-                    return std::any_of(region_neighbors.begin(), region_neighbors.end(),
-                        [&](const auto& neighbor) {
-                            const auto cells_x = (std::max)(neighbor.size_x, 256) / 256;
-                            const auto cells_y = (std::max)(neighbor.size_y, 256) / 256;
-                            return neighbor.online &&
-                                   want_x >= neighbor.grid_x &&
-                                   want_x < neighbor.grid_x + cells_x &&
-                                   want_y >= neighbor.grid_y &&
-                                   want_y < neighbor.grid_y + cells_y;
-                        });
-                };
-                open.west = covered(cell_x - 1, cell_y);
-                open.east = covered(cell_x + 1, cell_y);
-                open.south = covered(cell_x, cell_y - 1);
-                open.north = covered(cell_x, cell_y + 1);
+                const auto sides = homeworldz::region::open_sides_at(
+                    region_grid_x, region_grid_y, {standing.x, standing.y}, region_neighbors);
+                open = {sides.west, sides.east, sides.south, sides.north};
             }
             avatar.controller.set_open_borders(open);
             if (!avatar.outbound_transit_id.empty())

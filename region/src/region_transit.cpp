@@ -14,6 +14,29 @@
 
 namespace homeworldz::region {
 
+OpenSides open_sides_at(int region_grid_x, int region_grid_y,
+                        std::array<double, 2> position,
+                        std::span<const grid::RegionNeighbor> neighbors) {
+    const auto cell_x = region_grid_x +
+        static_cast<int>(std::floor(position[0] / 256.0));
+    const auto cell_y = region_grid_y +
+        static_cast<int>(std::floor(position[1] / 256.0));
+    // size_x/size_y are metres. A facet reports 256x256 and is one cell; read
+    // as cells it would cover a 256-cell square and open every side there is.
+    const auto covered = [&](int want_x, int want_y) {
+        return std::any_of(neighbors.begin(), neighbors.end(),
+            [&](const grid::RegionNeighbor& neighbor) {
+                const auto cells_x = (std::max)(neighbor.size_x, 256) / 256;
+                const auto cells_y = (std::max)(neighbor.size_y, 256) / 256;
+                return neighbor.online &&
+                       want_x >= neighbor.grid_x && want_x < neighbor.grid_x + cells_x &&
+                       want_y >= neighbor.grid_y && want_y < neighbor.grid_y + cells_y;
+            });
+    };
+    return OpenSides{covered(cell_x - 1, cell_y), covered(cell_x + 1, cell_y),
+                     covered(cell_x, cell_y - 1), covered(cell_x, cell_y + 1)};
+}
+
 std::optional<std::array<float, 3>> resolve_region_teleport_position(
     int region_grid_x, int region_grid_y, int region_size_x, int region_size_y,
     std::uint64_t requested_handle, std::array<float, 3> requested_position) {
