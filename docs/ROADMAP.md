@@ -13,8 +13,8 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="43">43%</progress>
- <strong>43%</strong>
+  <progress data-color="primary" max="100" value="45">45%</progress>
+ <strong>45%</strong>
 </label>
 </p>
 
@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="92" aria-label="Phase 2 progress: 92%">92%</progress> | 92% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="95" aria-label="Phase 2 progress: 95%">95%</progress> | 95% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -111,9 +111,10 @@ client.
 - [x] Run a rectangular region as one macro simulation presented to viewers as square facets: per-facet sockets and handles, rebased object and terrain encoding, windowed parcel views and map blocks, per-facet collision fields, and an internal-line crossing ceremony that re-tags the circuit and moves nothing else.
 - [x] Serve every facet through standing child circuits: one circuit per facet per viewer, established at arrival and backfilled at handshake, updates partitioned by the facet containing each object or avatar, an atomic kill-then-update when an entity crosses an internal line, and a crossing reduced to promoting a circuit that already exists.
 - [x] Complete live Firestorm acceptance of standing child circuits: seamless internal crossings with fast hand-off, the correct facet reported as the current region, movement live immediately after promotion, and attachments intact — after fixing five same-day live defects, including circuit correlation by session identity rather than address (symmetric NATs give each facet socket its own source port).
-- [ ] Finish the child-circuit acceptance tail: a sibling facet's objects and avatars deliberately observed before crossing, a second avatar's crossing watched from the other side, clean teardown at relog and logout, and a login through a symmetric NAT.
+- [x] Finish the child-circuit acceptance tail: a sibling facet's objects and avatars deliberately observed before crossing, a second avatar's crossing watched from the other side, clean teardown at relog and logout, and a login through a symmetric NAT. *All four proven 2026-09-27. A second avatar watched from the destination side; objects and avatars on a sibling facet seen before crossing, moving smoothly; relog and logout each released their child agents, cleared six circuits and left the other session untouched. The symmetric NAT took three attempts to arrange - a VPN gives a new address but the same mapping, and a phone relaying wifi still exits the same router; only cellular data produced one source port per destination (2119 against 16640 for two facets of one session). Under it: login, the containment wall, a facet crossing, a region crossing, and the return trip, all clean. That is the condition circuit correlation by session identity was written for, and nothing had exercised it until now.*
 - [x] Finish the rectangle-only seams: inbound position rebasing (rez rays, multi-object edits, land edits, parcel-request rectangles, Set-Home fallback), per-facet chat positions, within-macro teleports across a facet line answered as a promotion of the standing sibling circuit, and the session transport's width-by-height terrain descriptor.
-- [ ] Complete live Firestorm acceptance of a provisioned rectangle, walked end to end across its internal facet line.
+- [x] Complete live Firestorm acceptance of a provisioned rectangle, walked end to end across its internal facet line.
+- [x] Hold an avatar at a map edge it cannot leave by, and let it walk away again. *Acceptance found five faults here, none of which any test covered. Containment asked whether ANY neighbour was online and switched itself off on every side if one was, so an avatar reaching a side with nothing beyond it was neither held nor carried across. Fixing that exposed three more: a compass word opened the wrong side (a southwest neighbour is not a way west), a region-wide answer walked an avatar off the map from the facet with nothing beneath it, and a neighbour size in metres read as map cells opened every side of every region. Underneath them all, the clamp never reached the physics character, so physics handed the out-of-bounds position back each tick and the repeated clamp zeroed velocity - a wall that behaved as a trap, escapable only by teleporting. The answer is now a tested function over the neighbour list rather than a lambda in the tick loop.* *Walked 2026-09-26 in both directions across Nova's full 512 m, through the seam at 256 and out to each far edge. The seam itself was uneventful; what the walk found was the map's outer edge, where an avatar could be pinned — see the containment note below.*
 
 ### Parcels and local authority
 
