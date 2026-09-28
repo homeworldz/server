@@ -6484,6 +6484,87 @@ int main(int argc, char* argv[]) {
                 if (received_request) {
                     const std::string_view request(*received_request);
                     auto response = homeworldz::http::response_for(request, region_version);
+                    // Re-bake a server-seeded avatar's current outfit and send it
+                    // to everyone who renders it. Shared by the grid's outfit
+                    // refresh and UpdateAvatarAppearance (ADR 0029), which differ
+                    // in two things only: the version the result carries, and
+                    // whether the wearer is told.
+                    //
+                    // The version is the viewer's own COF version when it asked
+                    // (requested_serial), because it will not ask again for any
+                    // version at or below the last one it received; otherwise the
+                    // next one this region has not used.
+                    struct Rebaked {
+                        std::uint32_t serial{};
+                        std::size_t slots{};
+                        std::size_t told{};
+                    };
+                    const auto rebake_and_announce =
+                        [&](const std::string& key, std::string_view user_id,
+                            std::optional<std::uint32_t> requested_serial,
+                            bool tell_wearer) -> std::optional<Rebaked> {
+                        const auto current = avatar_appearances.find(key);
+                        if (current == avatar_appearances.end()) return std::nullopt;
+                        const auto* bake = ensure_worn_outfit_bake(user_id);
+                        if (!bake) return std::nullopt;
+                        homeworldz::viewer::AgentSetAppearance reseeded = current->second;
+                        if (requested_serial) {
+                            observe_appearance_version(user_id, *requested_serial);
+                            reseeded.serial = *requested_serial;
+                        } else {
+                            // A viewer ignores an appearance whose serial it
+                            // has already seen, so a re-bake that reuses the
+                            // old one is a re-bake nobody renders.
+                            reseeded.serial = next_appearance_version(user_id);
+                        }
+                        reseeded.texture_entry = bake->bake.texture_entry;
+                        reseeded.visual_params = bake->visual_params;
+                        // v0 to match the region's advertised protocol — see the
+                        // bake cache for why v1 greys the avatar for every
+                        // watcher. Encoded from this field below, not a literal:
+                        // a literal 1 here survived the switch to v0 for five
+                        // weeks (2aec93b).
+                        reseeded.appearance_version = 0;
+                        avatar_appearances.insert_or_assign(key, reseeded);
+                        if (const auto geometry = homeworldz::viewer::avatar_geometry(reseeded))
+                            avatar_geometries[key] = *geometry;
+                        const auto encoded = homeworldz::viewer::encode_avatar_appearance(
+                            {reseeded.agent_id, reseeded.serial, reseeded.texture_entry,
+                             reseeded.visual_params, {}, reseeded.appearance_version});
+                        Rebaked result{reseeded.serial, bake->bake.assets.size(), 0};
+                        if (encoded.empty()) return result;
+                        const auto sent_at = std::chrono::steady_clock::now();
+                        for (const auto& [recipient_endpoint, recipient] : avatars) {
+                            static_cast<void>(recipient);
+                            // The refresh leaves the wearer out, for the reason
+                            // the join seed has: a client that bakes for itself
+                            // must not be handed a server bake of its own.
+                            if (!tell_wearer && recipient_endpoint == key) continue;
+                            if (const auto outgoing =
+                                    circuits.send(recipient_endpoint, encoded, true, sent_at, true)) {
+                                static_cast<void>(
+                                    send_udp(viewer_server, recipient_endpoint, *outgoing));
+                                ++result.told;
+                            }
+                        }
+                        // Sessions watching from a neighbour (ADR 0038) render
+                        // this wearer too, and they never bake for themselves,
+                        // so the wearer-only exclusion above cannot apply.
+                        if (const auto wearer = avatars.find(key); wearer != avatars.end()) {
+                            const auto& standing = wearer->second.controller.state().position;
+                            for_each_child_circuit(
+                                facet_of_position(standing.x, standing.y), sent_at,
+                                [&](const std::string& route, const auto& child) {
+                                    if (child.session_id == wearer->second.session_id) return;
+                                    if (const auto outgoing =
+                                            circuits.send(route, encoded, true, sent_at, true)) {
+                                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                                        ++result.told;
+                                    }
+                                });
+                        }
+                        return result;
+                    };
                     if (response.path == "/map/terrain.raw") {
                         const auto authorization =
                             homeworldz::http::request_header_value(request, "Authorization");
@@ -6544,12 +6625,10 @@ int main(int argc, char* argv[]) {
                             // is what identifies it. A handful of avatars, so a
                             // scan is the whole lookup.
                             std::string key;
-                            homeworldz::viewer::AgentSetAppearance previous;
                             for (const auto& [candidate, appearance] : avatar_appearances)
                                 if (homeworldz::viewer::format_uuid(appearance.agent_id) ==
                                     requested_user) {
                                     key = candidate;
-                                    previous = appearance;
                                     break;
                                 }
                             if (key.empty()) {
@@ -6574,67 +6653,12 @@ int main(int argc, char* argv[]) {
                                 response = homeworldz::http::response_for_content(
                                     request, 200, "application/json",
                                     homeworldz::api::to_json(homeworldz::api::Status{"client_bakes"}));
-                            } else if (const auto* bake = ensure_worn_outfit_bake(requested_user)) {
-                                homeworldz::viewer::AgentSetAppearance reseeded = previous;
-                                // A viewer ignores an appearance whose serial it
-                                // has already seen, so a re-bake that reuses the
-                                // old one is a re-bake nobody renders.
-                                reseeded.serial = next_appearance_version(requested_user);
-                                reseeded.texture_entry = bake->bake.texture_entry;
-                                reseeded.visual_params = bake->visual_params;
-                                // v0 to match the region's advertised protocol
-                                // — see the bake cache for why v1 greys the
-                                // avatar for every watcher.
-                                reseeded.appearance_version = 0;
-                                avatar_appearances.insert_or_assign(key, reseeded);
-                                if (const auto geometry =
-                                        homeworldz::viewer::avatar_geometry(reseeded))
-                                    avatar_geometries[key] = *geometry;
-                                const auto encoded =
-                                    homeworldz::viewer::encode_avatar_appearance(
-                                        {reseeded.agent_id, reseeded.serial,
-                                         reseeded.texture_entry, reseeded.visual_params, {},
-                                         std::uint8_t{1}});
-                                // To everyone but the wearer, for the reason the
-                                // join seed has: a client that bakes for itself
-                                // must not be handed a server bake of its own.
-                                std::size_t told = 0;
-                                const auto sent_at = std::chrono::steady_clock::now();
-                                if (!encoded.empty()) {
-                                    for (const auto& [recipient_endpoint, recipient] : avatars) {
-                                        static_cast<void>(recipient);
-                                        if (recipient_endpoint == key) continue;
-                                        if (const auto outgoing = circuits.send(
-                                                recipient_endpoint, encoded, true, sent_at, true)) {
-                                            static_cast<void>(send_udp(
-                                                viewer_server, recipient_endpoint, *outgoing));
-                                            ++told;
-                                        }
-                                    }
-                                    // Sessions watching from a neighbour (ADR
-                                    // 0038) render this wearer too, and they
-                                    // never bake for themselves, so the
-                                    // wearer-only exclusion above cannot apply.
-                                    if (const auto wearer = avatars.find(key);
-                                        wearer != avatars.end()) {
-                                        const auto& standing = wearer->second.controller.state().position;
-                                        for_each_child_circuit(
-                                            facet_of_position(standing.x, standing.y), sent_at,
-                                            [&](const std::string& route, const auto& child) {
-                                                if (child.session_id == wearer->second.session_id) return;
-                                                if (const auto outgoing = circuits.send(
-                                                        route, encoded, true, sent_at, true)) {
-                                                    static_cast<void>(send_udp(
-                                                        viewer_server, route, *outgoing));
-                                                    ++told;
-                                                }
-                                            });
-                                    }
-                                }
+                            } else if (const auto rebaked = rebake_and_announce(
+                                           key, requested_user, std::nullopt, false)) {
                                 std::cout << "{\"level\":\"info\",\"message\":\"appearance refreshed\","
                                              "\"userId\":" << homeworldz::api::json_string(requested_user)
-                                          << ",\"serial\":" << reseeded.serial << ",\"slots\":"
-                                          << bake->bake.assets.size() << ",\"told\":" << told
+                                          << ",\"serial\":" << rebaked->serial << ",\"slots\":"
+                                          << rebaked->slots << ",\"told\":" << rebaked->told
                                           << "}" << std::endl;
                                 response = homeworldz::http::response_for_content(
                                     request, 200, "application/json",
@@ -7797,6 +7821,10 @@ int main(int argc, char* argv[]) {
                         homeworldz::caps::capability_session(response.path, "/caps/update-task-script/");
                     const bool task_script_update = !task_script_update_session.empty();
                     if (task_script_update) session_id = task_script_update_session;
+                    const auto update_avatar_appearance_session = homeworldz::caps::capability_session(
+                        response.path, "/caps/update-avatar-appearance/");
+                    const bool update_avatar_appearance = !update_avatar_appearance_session.empty();
+                    if (update_avatar_appearance) session_id = update_avatar_appearance_session;
                     const auto inventory_asset_update_data =
                         inventory_asset_update_data_request(response.path);
                     if (inventory_asset_update_data) session_id = inventory_asset_update_data->first;
@@ -7814,7 +7842,8 @@ int main(int argc, char* argv[]) {
                         baked_upload || baked_upload_data || file_upload || file_upload_data ||
                         model_upload_data || mesh_upload_flag || render_materials ||
                         notecard_update || script_update || gesture_update ||
-                        task_notecard_update || task_script_update || inventory_asset_update_data) {
+                        task_notecard_update || task_script_update || inventory_asset_update_data ||
+                        update_avatar_appearance) {
                         bool authorized = false;
                         std::string authorized_agent_id;
                         std::optional<homeworldz::grid::ViewerSession> authorized_session;
@@ -8138,6 +8167,58 @@ int main(int argc, char* argv[]) {
                                 "<?xml version=\"1.0\"?><llsd><map>"
                                 "<key>mesh_upload_status</key><string>valid</string>"
                                 "</map></llsd>");
+                        } else if (authorized && update_avatar_appearance) {
+                            // ADR 0029: a viewer that has stopped baking for
+                            // itself asks for the region's bake of its outfit
+                            // at the COF version it names, and receives it over
+                            // UDP like any other appearance — including itself,
+                            // since it no longer composites its own.
+                            //
+                            // A viewer only calls this once the region claims
+                            // the server-bake protocol. Until then the one
+                            // avatar it could be asked about bakes for itself,
+                            // and the guard below refuses rather than hand a
+                            // real baker the server's bake of it.
+                            const auto cof_version =
+                                homeworldz::viewer::parse_update_avatar_appearance_cof_version(
+                                    http_request_body(request));
+                            std::string key;
+                            for (const auto& [live_endpoint, live] : avatars)
+                                if (live.session_id == session_id) {
+                                    key = live_endpoint;
+                                    break;
+                                }
+                            std::string refusal;
+                            std::optional<Rebaked> rebaked;
+                            if (!cof_version || *cof_version < 0) {
+                                refusal = "cof_version is required";
+                            } else if (key.empty()) {
+                                refusal = "no avatar of this session is on this region";
+                            } else if (!server_seeded_appearances.contains(key)) {
+                                refusal = "this avatar bakes for itself";
+                            } else {
+                                rebaked = rebake_and_announce(
+                                    key, authorized_agent_id,
+                                    static_cast<std::uint32_t>(*cof_version), true);
+                                if (!rebaked) refusal = "the outfit could not be baked";
+                            }
+                            if (rebaked)
+                                std::cout << "{\"level\":\"info\",\"message\":\"appearance baked on "
+                                             "request\",\"userId\":"
+                                          << homeworldz::api::json_string(authorized_agent_id)
+                                          << ",\"cofVersion\":" << rebaked->serial << ",\"slots\":"
+                                          << rebaked->slots << ",\"told\":" << rebaked->told << "}"
+                                          << std::endl;
+                            else
+                                std::cout << "{\"level\":\"info\",\"message\":\"appearance bake "
+                                             "request refused\",\"userId\":"
+                                          << homeworldz::api::json_string(authorized_agent_id)
+                                          << ",\"reason\":" << homeworldz::api::json_string(refusal)
+                                          << "}" << std::endl;
+                            response = homeworldz::http::response_for_content(
+                                request, 200, "application/llsd+xml",
+                                homeworldz::viewer::update_avatar_appearance_reply_xml(
+                                    rebaked.has_value(), refusal));
                         } else if (authorized && render_materials) {
                             // Legacy Blinn-Phong materials. A viewer POSTs the
                             // definitions it wants ids for and GETs definitions

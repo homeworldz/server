@@ -421,9 +421,21 @@ order enforceable rather than advisory.
    it is only reached under server bakes, so under v0 it is absent either way.
 2. Bake route serving → a request for a known bake returns the same bytes the
    asset store holds. Provable with a direct request, no viewer needed.
-3. Capability serving → it answers a real viewer's call with the current bake,
-   while the region still claims protocols `0`. Nothing has been switched yet,
-   so a wrong answer here costs nothing.
+3. Capability serving → it answers, while the region still claims protocols
+   `0`. A real viewer cannot be the witness: Firestorm returns before calling
+   it at bake version 0 (`serverAppearanceUpdateCoro`), so the proof is a
+   direct POST of the viewer's own body, `{cof_version: N}`, to the capability
+   the seed advertises. At `0` every Firestorm avatar bakes for itself, so the
+   correct answer for one is a refusal that names that reason — the bake and
+   broadcast it would otherwise run are the outfit-refresh path's, shared.
+   Nothing has been switched yet, so a wrong answer here costs nothing.
+
+   Two things the reply must honour, from the viewer's side: it reads
+   `success` and nothing else to decide the call worked, and the appearance
+   that follows must carry the requested COF version as its serial. Firestorm
+   drops a self appearance at or below the last it received, and will not
+   *request* one at or below it either — so a serial the region chose, running
+   ahead of the COF, would stop it asking for any later outfit change.
 4. Byte and bit together → an avatar rezzes correctly for a *second* viewer,
    not only for itself. The 2026-08-09 lesson applies: a wearer sees their own
    appearance correctly no matter how wrong it is for everyone else, so this
@@ -451,5 +463,11 @@ order enforceable rather than advisory.
 
 Designed 2026-09-23. On 2026-09-27 the vault write-through, the login address
 and the bake route were built (grid `appearance.go`, migration 35); none of
-them changes what a viewer does while appearance is v0. The capability, the
-version byte and the bit are not built.
+them changes what a viewer does while appearance is v0. On 2026-09-28 the
+`UpdateAvatarAppearance` capability was built and advertised; it too is inert
+at protocols `0`. The version byte and the bit are not built.
+
+One thing step 4 must settle that step 3 does not: the serial an avatar is
+seeded with on arrival. It comes from the region's own counter, and under v1
+that number is the viewer's last-received COF version — so if it runs ahead of
+the viewer's real COF version, the viewer will never ask for a re-bake.

@@ -140,6 +140,36 @@ std::vector<std::string> parse_requested_capabilities(std::string_view xml) {
     return requested;
 }
 
+std::optional<std::int32_t> parse_update_avatar_appearance_cof_version(std::string_view xml) {
+    constexpr std::string_view key = "<key>cof_version</key>";
+    constexpr std::string_view open = "<integer>";
+    constexpr std::string_view close = "</integer>";
+    const auto at = xml.find(key);
+    if (at == std::string_view::npos) return std::nullopt;
+    auto value_start = at + key.size();
+    while (value_start < xml.size() &&
+           (xml[value_start] == ' ' || xml[value_start] == '\n' || xml[value_start] == '\r' ||
+            xml[value_start] == '\t'))
+        ++value_start;
+    if (xml.substr(value_start, open.size()) != open) return std::nullopt;
+    value_start += open.size();
+    const auto value_end = xml.find(close, value_start);
+    if (value_end == std::string_view::npos) return std::nullopt;
+    const auto digits = xml.substr(value_start, value_end - value_start);
+    std::int32_t version{};
+    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), version);
+    if (error != std::errc{} || end != digits.data() + digits.size()) return std::nullopt;
+    return version;
+}
+
+std::string update_avatar_appearance_reply_xml(bool success, std::string_view error) {
+    std::string reply = "<?xml version=\"1.0\"?><llsd><map><key>success</key><boolean>";
+    reply += success ? "1" : "0";
+    reply += "</boolean>";
+    if (!error.empty()) reply += "<key>error</key><string>" + xml_escape(error) + "</string>";
+    return reply + "</map></llsd>";
+}
+
 std::string seed_capability_xml(std::string_view public_endpoint, std::string_view grid_public_endpoint,
                                 std::string_view session_id, std::string_view visit_id,
                                 const std::vector<ExtensionCapability>& extension_capabilities) {
@@ -156,6 +186,8 @@ std::string seed_capability_xml(std::string_view public_endpoint, std::string_vi
     const auto release_notes_url =
         xml_escape(base + "/caps/server-release-notes/" + std::string(session_id));
     const auto baked_upload_url = xml_escape(base + "/caps/upload-baked/" + std::string(session_id));
+    const auto update_appearance_url =
+        xml_escape(base + "/caps/update-avatar-appearance/" + std::string(session_id));
     const auto file_upload_url = xml_escape(base + "/caps/upload-file/" + std::string(session_id));
     const auto mesh_upload_flag_url =
         xml_escape(base + "/caps/mesh-upload-flag/" + std::string(session_id));
@@ -205,6 +237,11 @@ std::string seed_capability_xml(std::string_view public_endpoint, std::string_vi
            // notes URL" instead.
            "</uri><key>ServerReleaseNotes</key><uri>" + release_notes_url +
            "</uri><key>UploadBakedTexture</key><uri>" + baked_upload_url +
+           // Consulted only once the region claims the server-bake protocol
+           // (llappearancemgr.cpp returns early at bake version 0), so it is
+           // inert until then — and must already answer when it is claimed
+           // (ADR 0029: the bit without this is a permanent cloud).
+           "</uri><key>UpdateAvatarAppearance</key><uri>" + update_appearance_url +
            "</uri><key>NewFileAgentInventory</key><uri>" + file_upload_url +
            // The per-agent upload-permission query the model uploader makes
            // before enabling its Upload button; absent, Firestorm raises

@@ -140,6 +140,14 @@ std::string seed_capability_xml(std::string_view public_endpoint, std::string_vi
 // LLSD array of strings; an absent or unparseable body yields none, so a client
 // that requests nothing negotiates nothing.
 std::vector<std::string> parse_requested_capabilities(std::string_view xml);
+// UpdateAvatarAppearance (ADR 0029): a viewer that has stopped baking for itself
+// POSTs {cof_version: N} and expects the region's bake of that outfit back over
+// UDP. The request names only the version; nullopt for a body that does not
+// carry one as an LLSD integer (Firestorm's experimental COF-dump body does not).
+std::optional<std::int32_t> parse_update_avatar_appearance_cof_version(std::string_view xml);
+// The reply is read for `success` alone (LLAppearanceMgr::serverAppearanceUpdateCoro);
+// an `error` is logged by the viewer, so a refusal says why.
+std::string update_avatar_appearance_reply_xml(bool success, std::string_view error = {});
 std::string establish_agent_communication_event_xml(const EstablishAgentCommunication& event);
 std::string enable_simulator_event_xml(std::uint64_t region_handle,
                                        const SimulatorEventEndpoint& simulator,

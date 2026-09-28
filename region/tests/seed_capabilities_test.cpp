@@ -60,6 +60,37 @@ int main() {
     advertises("UpdateNotecardAgentInventory", "update-notecard/");
     advertises("UpdateScriptAgentInventory", "update-script/");
     advertises("UpdateGestureAgentInventory", "update-gesture/");
+    // ADR 0029: must answer before the server-bake bit is ever claimed.
+    advertises("UpdateAvatarAppearance", "update-avatar-appearance/");
+
+    // Firestorm's body, as LLSD serializes it, and the shapes that are not it.
+    using homeworldz::viewer::parse_update_avatar_appearance_cof_version;
+    check(parse_update_avatar_appearance_cof_version(
+              "<?xml version=\"1.0\" ?><llsd><map><key>cof_version</key><integer>14</integer>"
+              "</map></llsd>") == 14,
+          "cof_version is read from the viewer's body");
+    check(parse_update_avatar_appearance_cof_version(
+              "<llsd><map><key>cof_version</key>\n  <integer>7</integer></map></llsd>") == 7,
+          "whitespace between key and value is tolerated");
+    check(!parse_update_avatar_appearance_cof_version(
+              "<llsd><map><key>cof_contents</key><array></array></map></llsd>"),
+          "a COF dump without cof_version is not a version");
+    check(!parse_update_avatar_appearance_cof_version(
+              "<llsd><map><key>cof_version</key><string>14</string></map></llsd>"),
+          "a version that is not an integer is refused");
+    check(!parse_update_avatar_appearance_cof_version(
+              "<llsd><map><key>cof_version</key><integer>14x</integer></map></llsd>"),
+          "trailing junk in the integer is refused");
+    check(!parse_update_avatar_appearance_cof_version(""), "an empty body is not a version");
+
+    // The viewer reads `success` and nothing else to decide the call failed.
+    const auto accepted = homeworldz::viewer::update_avatar_appearance_reply_xml(true);
+    check(accepted.find("<key>success</key><boolean>1</boolean>") != std::string::npos,
+          "an accepted request says success");
+    const auto refused = homeworldz::viewer::update_avatar_appearance_reply_xml(false, "a<b");
+    check(refused.find("<key>success</key><boolean>0</boolean>") != std::string::npos &&
+              refused.find("<key>error</key><string>a&lt;b</string>") != std::string::npos,
+          "a refusal says why, escaped");
 
     // Grid-served capabilities point at the grid, not the region. Pointing an
     // inventory capability at the region would 404 every fetch.
