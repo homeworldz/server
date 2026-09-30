@@ -467,7 +467,14 @@ them changes what a viewer does while appearance is v0. On 2026-09-28 the
 `UpdateAvatarAppearance` capability was built and advertised; it too is inert
 at protocols `0`. The version byte and the bit are not built.
 
-One thing step 4 must settle that step 3 does not: the serial an avatar is
-seeded with on arrival. It comes from the region's own counter, and under v1
-that number is the viewer's last-received COF version — so if it runs ahead of
-the viewer's real COF version, the viewer will never ask for a re-bake.
+The rule step 4 is built on: under v1 an avatar's serial **is** its COF
+version and moves only when the outfit does. Firestorm treats the last serial
+it received for its own avatar as its COF version, drops anything at or below
+it, and will not request a bake at or below it — so a serial pushed ahead of
+the real COF silently swallows the next outfit change.
+
+Two places moved it without an outfit change. The facet-crossing bump is
+removed (2026-09-30): an A/B on Nova showed a watcher accepting a repeated
+serial on six crossings running, so it had never been needed. The arrival seed
+remains — it takes the next number from a per-process counter that starts at 1
+— and step 4 must seed arrivals with the grid's COF version instead.
