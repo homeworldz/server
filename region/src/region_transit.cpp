@@ -15,12 +15,18 @@
 namespace homeworldz::region {
 
 OpenSides open_sides_at(int region_grid_x, int region_grid_y,
+                        int region_size_x, int region_size_y,
                         std::array<double, 2> position,
                         std::span<const grid::RegionNeighbor> neighbors) {
+    // Into [0, size), so the far edge's own cell is the last one inside.
+    const auto inside = [](double value, int size) {
+        const auto upper = std::nextafter(static_cast<double>((std::max)(size, 1)), 0.0);
+        return std::clamp(std::isfinite(value) ? value : 0.0, 0.0, upper);
+    };
     const auto cell_x = region_grid_x +
-        static_cast<int>(std::floor(position[0] / 256.0));
+        static_cast<int>(std::floor(inside(position[0], region_size_x) / 256.0));
     const auto cell_y = region_grid_y +
-        static_cast<int>(std::floor(position[1] / 256.0));
+        static_cast<int>(std::floor(inside(position[1], region_size_y) / 256.0));
     // size_x/size_y are metres. A facet reports 256x256 and is one cell; read
     // as cells it would cover a 256-cell square and open every side there is.
     const auto covered = [&](int want_x, int want_y) {

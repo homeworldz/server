@@ -15936,7 +15936,8 @@ int main(int argc, char* argv[]) {
             if (crossing_allowed) {
                 const auto& standing = avatar.controller.state().position;
                 const auto sides = homeworldz::region::open_sides_at(
-                    region_grid_x, region_grid_y, {standing.x, standing.y}, region_neighbors);
+                    region_grid_x, region_grid_y, region_size_x, region_size_y,
+                    {standing.x, standing.y}, region_neighbors);
                 open = {sides.west, sides.east, sides.south, sides.north};
             }
             if (!avatar.last_open_known || open.west != avatar.last_open.west ||

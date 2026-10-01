@@ -441,7 +441,7 @@ int main() {
         const homeworldz::grid::RegionNeighbor both[]{south, southwest};
 
         // Standing on the western facet: south is the way to Nova B 2.
-        const auto west_facet = homeworldz::region::open_sides_at(900, 900, {128.0, 128.0}, both);
+        const auto west_facet = homeworldz::region::open_sides_at(900, 900, 512, 256, {128.0, 128.0}, both);
         if (!west_facet.south) return 35;
         // And nothing else is. "southwest" must not open the west: west of
         // Nova is empty, and a corner is reached by two edges, not one.
@@ -450,13 +450,13 @@ int main() {
         // Standing on the eastern facet, one cell further along: the same
         // region, and now south is empty too. A region-wide answer got this
         // wrong and walked an avatar out of the map.
-        const auto east_facet = homeworldz::region::open_sides_at(900, 900, {384.0, 128.0}, both);
+        const auto east_facet = homeworldz::region::open_sides_at(900, 900, 512, 256, {384.0, 128.0}, both);
         if (east_facet.south || east_facet.east || east_facet.north || east_facet.west)
             return 37;
 
         // The units. A facet reports 256x256 metres and is ONE cell; read as
         // cells it would cover a 256-cell square and open every side there is.
-        const auto far_north = homeworldz::region::open_sides_at(900, 1050, {128.0, 128.0}, both);
+        const auto far_north = homeworldz::region::open_sides_at(900, 1050, 512, 256, {128.0, 128.0}, both);
         if (far_north.south || far_north.north || far_north.east || far_north.west)
             return 38;
 
@@ -464,7 +464,7 @@ int main() {
         homeworldz::grid::RegionNeighbor dark = south;
         dark.online = false;
         const homeworldz::grid::RegionNeighbor unlit[]{dark};
-        if (homeworldz::region::open_sides_at(900, 900, {128.0, 128.0}, unlit).south)
+        if (homeworldz::region::open_sides_at(900, 900, 512, 256, {128.0, 128.0}, unlit).south)
             return 39;
 
         // A 2x1 neighbour announced as one entry covers both of its cells.
@@ -473,10 +473,36 @@ int main() {
         wide.grid_x = 900; wide.grid_y = 899;
         wide.size_x = 512; wide.size_y = 256; wide.online = true;
         const homeworldz::grid::RegionNeighbor spanning[]{wide};
-        if (!homeworldz::region::open_sides_at(900, 900, {128.0, 128.0}, spanning).south)
+        if (!homeworldz::region::open_sides_at(900, 900, 512, 256, {128.0, 128.0}, spanning).south)
             return 40;
-        if (!homeworldz::region::open_sides_at(900, 900, {384.0, 128.0}, spanning).south)
+        if (!homeworldz::region::open_sides_at(900, 900, 512, 256, {384.0, 128.0}, spanning).south)
             return 41;
+
+        // A few centimetres past an open edge is still this region's cell. The
+        // values are the ones logged on the Nova/Lazy seam (2026-10-01): taken
+        // unclamped, y = -0.024 named Lazy's cell, so south read closed and
+        // west read open, and the avatar bounced off the border.
+        const auto stepping_south =
+            homeworldz::region::open_sides_at(900, 900, 512, 256, {235.987, -0.02071}, both);
+        if (!stepping_south.south || stepping_south.west || stepping_south.east ||
+            stepping_south.north)
+            return 42;
+
+        // The same from Lazy's side: 2x1 at (899,899), Nova's two facets to the
+        // north and northeast. At y = 256.036 north closed and east opened.
+        homeworldz::grid::RegionNeighbor north;
+        north.direction = "north";
+        north.grid_x = 900; north.grid_y = 900;
+        north.size_x = 256; north.size_y = 256; north.online = true;
+        homeworldz::grid::RegionNeighbor northeast = north;
+        northeast.direction = "northeast";
+        northeast.grid_x = 901;
+        const homeworldz::grid::RegionNeighbor above[]{north, northeast};
+        const auto stepping_north =
+            homeworldz::region::open_sides_at(899, 899, 512, 256, {490.746, 256.036}, above);
+        if (!stepping_north.north || stepping_north.east || stepping_north.west ||
+            stepping_north.south)
+            return 43;
     }
     return 0;
 }

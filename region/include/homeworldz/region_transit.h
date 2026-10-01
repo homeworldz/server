@@ -50,7 +50,15 @@ struct OpenSides {
     bool north{};
 };
 
+// `position` is clamped into the region (size in metres) before its cell is
+// taken: an avatar a few centimetres past an open edge still stands in this
+// region's cell. Taken unclamped, that position named the neighbour's cell,
+// so the edge it was crossing read as closed and an adjacent one as open —
+// containment pulled it back, the next tick reopened the edge, and the avatar
+// bounced off the border twenty times a second until a step happened to
+// overshoot by itself (the Nova/Lazy "wall", 2026-10-01).
 OpenSides open_sides_at(int region_grid_x, int region_grid_y,
+                        int region_size_x, int region_size_y,
                         std::array<double, 2> position,
                         std::span<const grid::RegionNeighbor> neighbors);
 
