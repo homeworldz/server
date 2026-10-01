@@ -3393,6 +3393,35 @@ int main(int argc, char* argv[]) {
     // running while the answer is prepared.
     std::vector<PendingUploadResponse> pending_upload_responses;
     std::vector<PendingAgentMovementComplete> pending_agent_movement_completes;
+    // An avatar that crossed or moved to a neighbour is destroyed for this
+    // region's watchers two seconds late, not at once (2026-10-01).
+    //
+    // A watcher that can see the destination is moved there by the
+    // destination's own updates: every avatar update is a full ObjectUpdate
+    // carrying the UUID, and Firestorm re-homes an object it already knows
+    // rather than building a second one. That watcher never needed this
+    // region's kill. It could only be hurt by it — when the kill was
+    // processed before the destination's create (a lost or late packet; the
+    // create was sent first every time it was measured), it destroyed the
+    // avatar, the destination's appearance then arrived for an unknown
+    // avatar and was dropped, and the rebuilt avatar stayed a cloud with no
+    // way for the watcher to ask again. Seen in both directions on the
+    // Nova/Lazy seam.
+    //
+    // Two seconds later the watcher has been re-homed, so the kill names a
+    // (region, local id) it no longer holds and does nothing. The kill still
+    // matters for a watcher that cannot see the destination, which would
+    // otherwise keep a frozen avatar at the border; it now loses it two
+    // seconds later. Local ids are never reused within a process
+    // (Scene::create), so a kill that lands late cannot hit anything else,
+    // and an avatar that comes straight back has a new id it does not name.
+    struct PendingDepartureKill {
+        std::vector<std::uint32_t> local_ids;
+        std::string spare_session;
+        std::chrono::steady_clock::time_point due;
+    };
+    constexpr auto departure_kill_delay = std::chrono::seconds(2);
+    std::vector<PendingDepartureKill> pending_departure_kills;
     std::uint64_t event_id{};
     std::uint64_t next_inventory_asset_xfer{1};
     homeworldz::script::FalconRuntime falcon([&](homeworldz::script::FalconHostMessage message) {
@@ -3701,9 +3730,13 @@ int main(int argc, char* argv[]) {
         return digest.substr(0, 8) + "-" + digest.substr(8, 4) + "-" + digest.substr(12, 4) +
                "-" + digest.substr(16, 4) + "-" + digest.substr(20, 12);
     };
+    // `defer_into`, when given, collects the viewer kill instead of sending it:
+    // a departing wearer's attachments go with its avatar's delayed kill (see
+    // pending_departure_kills). Session clients are still told at once.
     const auto remove_attachment_linkset = [&](homeworldz::scene::EntityId root_id,
                                                std::chrono::steady_clock::time_point when,
-                                               std::string_view spare = {}) {
+                                               std::string_view spare = {},
+                                               std::vector<std::uint32_t>* defer_into = nullptr) {
         std::vector<homeworldz::scene::EntityId> part_ids;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.parent_id == root_id) part_ids.push_back(candidate_id);
@@ -3712,6 +3745,11 @@ int main(int argc, char* argv[]) {
         for (const auto part : part_ids)
             if (scene.remove(part)) killed.push_back(static_cast<std::uint32_t>(part));
         if (killed.empty()) return killed;
+        if (defer_into) {
+            defer_into->insert(defer_into->end(), killed.begin(), killed.end());
+            deliver_to_embodied(session_kill_many(killed));
+            return killed;
+        }
         const auto kill = homeworldz::viewer::encode_kill_object(killed);
         for (const auto& [recipient_endpoint, recipient] : avatars) {
             static_cast<void>(recipient);
@@ -3739,14 +3777,15 @@ int main(int argc, char* argv[]) {
     };
     const auto remove_avatar_attachments = [&](homeworldz::scene::EntityId wearer_id,
                                                std::chrono::steady_clock::time_point when,
-                                               std::string_view spare = {}) {
+                                               std::string_view spare = {},
+                                               std::vector<std::uint32_t>* defer_into = nullptr) {
         std::vector<homeworldz::scene::EntityId> roots;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.attachment_point != 0 && candidate.parent_id == wearer_id)
                 roots.push_back(candidate_id);
         std::size_t removed = 0;
         for (const auto root_id : roots)
-            if (!remove_attachment_linkset(root_id, when, spare).empty()) ++removed;
+            if (!remove_attachment_linkset(root_id, when, spare, defer_into).empty()) ++removed;
         return removed;
     };
     // Persist where an avatar now is, so a later start=last returns there.
@@ -4715,7 +4754,23 @@ int main(int argc, char* argv[]) {
         // avatar has actually left this region — so it is safe for crossings and
         // teleports: a rolled-back crossing never reaches this point, and the
         // destination region independently rezzes the avatar for viewers there.
-        if (const auto departing = avatars.find(endpoint); departing != avatars.end()) {
+        if (const auto departing = avatars.find(endpoint);
+            departing != avatars.end() && demoting) {
+            // A departure to a neighbour defers the whole viewer kill, body
+            // and attachments together (pending_departure_kills says why).
+            // Session clients are told now, as before.
+            const auto kill_now = std::chrono::steady_clock::now();
+            const auto avatar_local_id = static_cast<std::uint32_t>(departing->second.entity_id);
+            PendingDepartureKill deferred{
+                {avatar_local_id}, session_id, kill_now + departure_kill_delay};
+            static_cast<void>(remove_avatar_attachments(
+                departing->second.entity_id, kill_now, endpoint, &deferred.local_ids));
+            std::cout << "{\"level\":\"info\",\"message\":\"avatar departure kill deferred\","
+                         "\"localId\":" << avatar_local_id << ",\"objects\":"
+                      << deferred.local_ids.size() << "}" << std::endl;
+            pending_departure_kills.push_back(std::move(deferred));
+            deliver_to_embodied(session_kill_envelope(departing->second.entity_id));
+        } else if (departing != avatars.end()) {
             const std::array<std::uint32_t, 1> kill_ids{
                 static_cast<std::uint32_t>(departing->second.entity_id)};
             const auto kill = homeworldz::viewer::encode_kill_object(kill_ids);
@@ -6326,6 +6381,39 @@ int main(int argc, char* argv[]) {
                 }
                 return true;
             });
+        // Departure kills whose two seconds are up, to whoever holds a circuit
+        // here now. The departed session is spared by session rather than by
+        // endpoint: it is a child here by the time this runs, and its own
+        // viewer must never be told its avatar was deleted.
+        std::erase_if(pending_departure_kills, [&](const PendingDepartureKill& pending) {
+            if (pending.due > http_now) return false;
+            const auto kill = homeworldz::viewer::encode_kill_object(pending.local_ids);
+            std::size_t kill_recipients = 0;
+            for (const auto& [recipient_endpoint, recipient] : avatars) {
+                if (recipient.session_id == pending.spare_session) continue;
+                bool killed_any = false;
+                for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                    if (const auto outgoing = circuits.send(route, kill, true, http_now, true)) {
+                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                        killed_any = true;
+                    }
+                });
+                if (killed_any) ++kill_recipients;
+            }
+            for_each_child_circuit(every_facet, http_now,
+                [&](const std::string& route, const auto& child) {
+                    if (child.session_id == pending.spare_session) return;
+                    if (const auto outgoing = circuits.send(route, kill, true, http_now, true)) {
+                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
+                        ++kill_recipients;
+                    }
+                });
+            std::cout << "{\"level\":\"info\",\"message\":\"avatar departure kill broadcast\","
+                         "\"localId\":" << pending.local_ids.front() << ",\"objects\":"
+                      << pending.local_ids.size() << ",\"recipients\":" << kill_recipients
+                      << ",\"deferred\":true}" << std::endl;
+            return true;
+        });
         fd_set readable;
         FD_ZERO(&readable);
         FD_SET(server, &readable);
