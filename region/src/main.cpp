@@ -213,6 +213,16 @@ struct LiveAvatar {
     std::string outbound_transit_id;
     std::chrono::steady_clock::time_point outbound_transit_expires{};
     std::chrono::steady_clock::time_point next_crossing_attempt{};
+    // How a border crossing held this avatar at the edge, for the one line
+    // logged when it is released: from the signal to the release, how many
+    // ticks containment had to pull it back, and how far past the edge
+    // physics had carried it. Reported because the hold is felt in-world as a
+    // wall and was otherwise invisible in the log (2026-10-01).
+    std::chrono::steady_clock::time_point crossing_signaled_at{};
+    int crossing_hold_clamps{};
+    double crossing_max_overshoot{};
+    // Rate limit for the edge-clamp line logged when no crossing is in flight.
+    std::chrono::steady_clock::time_point next_edge_clamp_log{};
     // This avatar has been told to continue somewhere else — a border crossing
     // or a teleport — and the destination is already dressing it from the
     // grid's worn list. Until it is retired here, what its viewer says about
@@ -15801,7 +15811,9 @@ int main(int argc, char* argv[]) {
                         "viewer did not activate border crossing"));
                 std::cout << "{\"level\":\"warning\",\"message\":\"avatar border crossing expired\","
                              "\"transitId\":"
-                          << homeworldz::api::json_string(avatar.outbound_transit_id) << "}" << std::endl;
+                          << homeworldz::api::json_string(avatar.outbound_transit_id)
+                          << ",\"clamps\":" << avatar.crossing_hold_clamps
+                          << ",\"maxOvershoot\":" << avatar.crossing_max_overshoot << "}" << std::endl;
                 avatar.outbound_transit_id.clear();
                 avatar.handing_off = false;
             }
@@ -15941,6 +15953,35 @@ int main(int argc, char* argv[]) {
                 if (auto placed = physics_world->character_state(avatar.physics_character);
                     placed && (placed->position.x != corrected.x ||
                                placed->position.y != corrected.y)) {
+                    // How far past the region's own edge physics had carried
+                    // it — zero for a clamp that happened inside.
+                    const double overshoot = (std::max)({0.0, -placed->position.x,
+                        placed->position.x - region_size_x, -placed->position.y,
+                        placed->position.y - region_size_y});
+                    if (!avatar.outbound_transit_id.empty()) {
+                        ++avatar.crossing_hold_clamps;
+                        avatar.crossing_max_overshoot =
+                            (std::max)(avatar.crossing_max_overshoot, overshoot);
+                    } else if (now >= avatar.next_edge_clamp_log) {
+                        // A clamp with no crossing in flight: this side was
+                        // closed, or the crossing could not be attempted yet.
+                        avatar.next_edge_clamp_log = now + std::chrono::seconds(1);
+                        std::cout << "{\"level\":\"info\",\"message\":\"avatar held at edge\""
+                                     ",\"agent\":" << homeworldz::api::json_string(avatar.user_id)
+                                  << ",\"physics\":[" << placed->position.x << ','
+                                  << placed->position.y << "],\"held\":[" << corrected.x << ','
+                                  << corrected.y << "],\"overshoot\":" << overshoot
+                                  << ",\"open\":{\"west\":" << (open.west ? "true" : "false")
+                                  << ",\"east\":" << (open.east ? "true" : "false")
+                                  << ",\"south\":" << (open.south ? "true" : "false")
+                                  << ",\"north\":" << (open.north ? "true" : "false")
+                                  << "},\"crossingDeferredMs\":"
+                                  << (avatar.next_crossing_attempt > now
+                                          ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                avatar.next_crossing_attempt - now).count()
+                                          : 0)
+                                  << "}" << std::endl;
+                    }
                     placed->position.x = corrected.x;
                     placed->position.y = corrected.y;
                     // The velocity the clamp already zeroed; carrying the old
@@ -16146,6 +16187,9 @@ int main(int argc, char* argv[]) {
                         avatar.outbound_transit_id = transit_id;
                         avatar.outbound_transit_expires = now + std::chrono::seconds(30);
                         avatar.handing_off = true;
+                        avatar.crossing_signaled_at = now;
+                        avatar.crossing_hold_clamps = 0;
+                        avatar.crossing_max_overshoot = 0.0;
                         // Ask the grid who owns this session again, soon.
                         //
                         // A departure is noticed by the ping cycle: every five
@@ -16366,6 +16410,15 @@ int main(int argc, char* argv[]) {
             std::optional<homeworldz::region::ChildAgent> demoted;
             if (departed.demote && registration) {
                 if (const auto live = avatars.find(endpoint); live != avatars.end()) {
+                    if (live->second.crossing_signaled_at != std::chrono::steady_clock::time_point{})
+                        std::cout << "{\"level\":\"info\",\"message\":\"avatar border hold\",\"agent\":"
+                                  << homeworldz::api::json_string(live->second.user_id)
+                                  << ",\"holdMs\":"
+                                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         now - live->second.crossing_signaled_at).count()
+                                  << ",\"clamps\":" << live->second.crossing_hold_clamps
+                                  << ",\"maxOvershoot\":" << live->second.crossing_max_overshoot
+                                  << "}" << std::endl;
                     homeworldz::region::ChildAgent child;
                     child.agent_id = live->second.user_id;
                     child.session_id = session_id;
