@@ -3412,9 +3412,12 @@ int main(int argc, char* argv[]) {
     // (region, local id) it no longer holds and does nothing. The kill still
     // matters for a watcher that cannot see the destination, which would
     // otherwise keep a frozen avatar at the border; it now loses it two
-    // seconds later. Local ids are never reused within a process
-    // (Scene::create), so a kill that lands late cannot hit anything else,
-    // and an avatar that comes straight back has a new id it does not name.
+    // seconds later. Attachments are rebuilt with fresh ids, but the avatar's
+    // own entity outlives its departure and is reused when the same agent
+    // arrives again — so an avatar that comes back inside the two seconds
+    // would be killed by its own pending departure. Arrival cancels it
+    // (cancel_departure_kill); twenty crossings on the seam showed the same
+    // ids, 49 and 52, on every visit.
     struct PendingDepartureKill {
         std::vector<std::uint32_t> local_ids;
         std::string spare_session;
@@ -3422,6 +3425,15 @@ int main(int argc, char* argv[]) {
     };
     constexpr auto departure_kill_delay = std::chrono::seconds(2);
     std::vector<PendingDepartureKill> pending_departure_kills;
+    const auto cancel_departure_kill = [&pending_departure_kills](std::uint64_t entity_id) {
+        const auto local_id = static_cast<std::uint32_t>(entity_id);
+        for (auto& pending : pending_departure_kills)
+            if (std::erase(pending.local_ids, local_id) != 0)
+                std::cout << "{\"level\":\"info\",\"message\":\"avatar departure kill cancelled by "
+                             "return\",\"localId\":" << local_id << "}" << std::endl;
+        std::erase_if(pending_departure_kills,
+            [](const PendingDepartureKill& pending) { return pending.local_ids.empty(); });
+    };
     std::uint64_t event_id{};
     std::uint64_t next_inventory_asset_xfer{1};
     homeworldz::script::FalconRuntime falcon([&](homeworldz::script::FalconHostMessage message) {
@@ -12485,6 +12497,7 @@ int main(int argc, char* argv[]) {
                                 }
                                 for (const auto duplicate : duplicates) scene.remove(duplicate);
                                 if (entity == 0) entity = scene.create(name, initial_spawn);
+                                cancel_departure_kill(entity);
                                 auto* persisted = scene.find(entity);
                                 // A transit's arrival position is local to the
                                 // facet the viewer was handed, since to the
@@ -15236,6 +15249,7 @@ int main(int argc, char* argv[]) {
                     }
                     for (const auto duplicate : duplicates) scene.remove(duplicate);
                     if (entity == 0) entity = scene.create(inbound.user_id, initial_spawn);
+                    cancel_departure_kill(entity);
                     auto* persisted = scene.find(entity);
                     // World entry's resolved arrival point wins — that is how
                     // a named start, and a crossing's continuation, land where
