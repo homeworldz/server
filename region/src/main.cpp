@@ -223,6 +223,11 @@ struct LiveAvatar {
     double crossing_max_overshoot{};
     // Rate limit for the edge-clamp line logged when no crossing is in flight.
     std::chrono::steady_clock::time_point next_edge_clamp_log{};
+    // The open sides last applied, so a change is logged as it happens rather
+    // than sampled: a side that closes for one tick clamps the avatar back to
+    // the capsule-radius line and is felt as a wall (2026-10-01).
+    homeworldz::viewer::AvatarController::OpenBorders last_open{};
+    bool last_open_known{};
     // This avatar has been told to continue somewhere else — a border crossing
     // or a teleport — and the destination is already dressing it from the
     // grid's worn list. Until it is retired here, what its viewer says about
@@ -15934,6 +15939,32 @@ int main(int argc, char* argv[]) {
                     region_grid_x, region_grid_y, {standing.x, standing.y}, region_neighbors);
                 open = {sides.west, sides.east, sides.south, sides.north};
             }
+            if (!avatar.last_open_known || open.west != avatar.last_open.west ||
+                open.east != avatar.last_open.east || open.south != avatar.last_open.south ||
+                open.north != avatar.last_open.north) {
+                const auto& standing = avatar.controller.state().position;
+                std::cout << "{\"level\":\"info\",\"message\":\"avatar open sides changed\",\"agent\":"
+                          << homeworldz::api::json_string(avatar.user_id) << ",\"position\":["
+                          << standing.x << ',' << standing.y << "],\"open\":{\"west\":"
+                          << (open.west ? "true" : "false") << ",\"east\":"
+                          << (open.east ? "true" : "false") << ",\"south\":"
+                          << (open.south ? "true" : "false") << ",\"north\":"
+                          << (open.north ? "true" : "false") << "},\"crossingAllowed\":"
+                          << (crossing_allowed ? "true" : "false") << ",\"outboundTransit\":"
+                          << (avatar.outbound_transit_id.empty() ? "false" : "true")
+                          << ",\"neighbors\":[";
+                for (std::size_t index = 0; index < region_neighbors.size(); ++index) {
+                    const auto& neighbor = region_neighbors[index];
+                    std::cout << (index ? "," : "") << "{\"name\":"
+                              << homeworldz::api::json_string(neighbor.name) << ",\"grid\":["
+                              << neighbor.grid_x << ',' << neighbor.grid_y << "],\"size\":["
+                              << neighbor.size_x << ',' << neighbor.size_y << "],\"online\":"
+                              << (neighbor.online ? "true" : "false") << "}";
+                }
+                std::cout << "]}" << std::endl;
+                avatar.last_open = open;
+                avatar.last_open_known = true;
+            }
             avatar.controller.set_open_borders(open);
             if (!avatar.outbound_transit_id.empty())
                 avatar.controller.expire_transient_controls();
@@ -15962,9 +15993,16 @@ int main(int argc, char* argv[]) {
                         ++avatar.crossing_hold_clamps;
                         avatar.crossing_max_overshoot =
                             (std::max)(avatar.crossing_max_overshoot, overshoot);
-                    } else if (now >= avatar.next_edge_clamp_log) {
-                        // A clamp with no crossing in flight: this side was
-                        // closed, or the crossing could not be attempted yet.
+                    } else if (const double inset = 0.3 - 1e-6;
+                               now >= avatar.next_edge_clamp_log &&
+                               ((!open.west && corrected.x <= inset) ||
+                                (!open.east && corrected.x >= region_size_x - inset) ||
+                                (!open.south && corrected.y <= inset) ||
+                                (!open.north && corrected.y >= region_size_y - inset))) {
+                        // A clamp with no crossing in flight, against a side
+                        // the map says is closed: held on the capsule-radius
+                        // line. Physics/controller differences elsewhere are
+                        // ordinary and not logged.
                         avatar.next_edge_clamp_log = now + std::chrono::seconds(1);
                         std::cout << "{\"level\":\"info\",\"message\":\"avatar held at edge\""
                                      ",\"agent\":" << homeworldz::api::json_string(avatar.user_id)
