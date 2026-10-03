@@ -2754,17 +2754,31 @@ int main(int argc, char* argv[]) {
     // Falls back to the default outfit, and says which of the two reasons it
     // is: a grid that would not answer is not a wearer who owns nothing, and
     // reading the first as the second is how an outfit silently disappears.
+    // The COF version read with each worn-outfit bake, keyed by user. Under
+    // server-side baking an avatar's appearance serial IS its COF version
+    // (ADR 0029): Firestorm drops its own appearance at or below the last one
+    // it received and will not ask for a bake at or below it, so a serial the
+    // region invented could only run ahead of the COF and swallow the next
+    // outfit change. Read here because the bake already reads this folder.
+    std::unordered_map<std::string, std::uint32_t> outfit_versions;
     const auto ensure_worn_outfit_bake =
         [&](std::string_view user_id) -> const CachedOutfitBake* {
         if (!viewer_grid) return ensure_default_outfit_bake();
-        const auto current_outfit = viewer_grid->find_system_inventory_folder(user_id, 46);
+        const auto current_outfit = viewer_grid->system_inventory_folder(user_id, 46);
         if (!current_outfit) {
             std::cerr << "{\"level\":\"warning\",\"message\":\"current outfit folder could not be "
                          "read, wearing the default outfit\",\"userId\":"
                       << homeworldz::api::json_string(user_id) << "}" << std::endl;
             return ensure_default_outfit_bake();
         }
-        const auto contents = viewer_grid->list_inventory_folder_items(user_id, *current_outfit);
+        {
+            std::string key{user_id};
+            std::transform(key.begin(), key.end(), key.begin(),
+                           [](unsigned char letter) { return static_cast<char>(std::tolower(letter)); });
+            outfit_versions[key] = current_outfit->version;
+        }
+        const auto contents =
+            viewer_grid->list_inventory_folder_items(user_id, current_outfit->id);
         if (!contents) {
             std::cerr << "{\"level\":\"warning\",\"message\":\"current outfit could not be listed, "
                          "wearing the default outfit\",\"userId\":"
@@ -3357,6 +3371,23 @@ int main(int argc, char* argv[]) {
             auto& highest = highest_appearance_versions[appearance_version_key(user_id)];
             if (version > highest) highest = version;
         };
+    // The serial for an appearance this region seeds: the COF version read by
+    // the bake just made (outfit_versions), so it never runs ahead of the
+    // viewer's own. Only when the grid could not be read — the bake then fell
+    // back to the default outfit — does it come from the region's counter,
+    // and that is said, because under server-side baking it is a number the
+    // wearer's viewer may later treat as a COF version it already has.
+    const auto seed_serial = [&](std::string_view user_id) -> std::uint32_t {
+        const auto key = appearance_version_key(user_id);
+        if (const auto known = outfit_versions.find(key); known != outfit_versions.end()) {
+            observe_appearance_version(user_id, known->second);
+            return known->second;
+        }
+        std::cerr << "{\"level\":\"warning\",\"message\":\"appearance seeded without a COF "
+                     "version, serial from the region counter\",\"userId\":"
+                  << homeworldz::api::json_string(user_id) << "}" << std::endl;
+        return next_appearance_version(user_id);
+    };
     std::unordered_map<std::string, std::vector<homeworldz::viewer::AvatarAnimationEntry>> avatar_animations;
     std::unordered_map<std::string, std::int32_t> next_animation_sequences;
     std::unordered_map<std::string, homeworldz::viewer::MovementAnimation> movement_animations;
@@ -6627,10 +6658,11 @@ int main(int argc, char* argv[]) {
                             observe_appearance_version(user_id, *requested_serial);
                             reseeded.serial = *requested_serial;
                         } else {
-                            // A viewer ignores an appearance whose serial it
-                            // has already seen, so a re-bake that reuses the
-                            // old one is a re-bake nobody renders.
-                            reseeded.serial = next_appearance_version(user_id);
+                            // The COF version the bake just read: an outfit
+                            // change has moved it on, and under server-side
+                            // baking the wearer's viewer takes this number as
+                            // the COF version it now holds.
+                            reseeded.serial = seed_serial(user_id);
                         }
                         reseeded.texture_entry = bake->bake.texture_entry;
                         reseeded.visual_params = bake->visual_params;
@@ -12994,7 +13026,7 @@ int main(int argc, char* argv[]) {
                                     homeworldz::viewer::AgentSetAppearance seeded;
                                     seeded.agent_id = identity->agent_id;
                                     seeded.session_id = identity->session_id;
-                                    seeded.serial = next_appearance_version(agent_id);
+                                    seeded.serial = seed_serial(agent_id);
                                     seeded.texture_entry = bake->bake.texture_entry;
                                     seeded.visual_params = bake->visual_params;
                                     // v0 to match the region's advertised
@@ -15287,7 +15319,7 @@ int main(int argc, char* argv[]) {
                         if (const auto* bake = ensure_worn_outfit_bake(inbound.user_id)) {
                             homeworldz::viewer::AgentSetAppearance seeded;
                             seeded.agent_id = *session_agent;
-                            seeded.serial = next_appearance_version(inbound.user_id);
+                            seeded.serial = seed_serial(inbound.user_id);
                             seeded.texture_entry = bake->bake.texture_entry;
                             seeded.visual_params = bake->visual_params;
                             // v0 to match the region's advertised protocol —

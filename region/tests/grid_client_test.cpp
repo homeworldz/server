@@ -463,6 +463,11 @@ int main() {
         transport->requests.back().method != "GET" ||
         transport->requests.back().path != "/api/v1/inventory/" + session->agent_id + "/system-folders/6")
         return 1;
+    // The version is what a server-baked appearance states as its COF version.
+    const auto objects_with_version = client.system_inventory_folder(session->agent_id, 6);
+    if (!objects_with_version || objects_with_version->version != 1 ||
+        objects_with_version->id != "22222222-2222-4222-8222-222222222222")
+        return 1;
     const auto found_object = client.find_inventory_item(
         session->agent_id, "44444444-4444-4444-8444-444444444444");
     if (!found_object || found_object->name != "Prim2" || found_object->asset_type != 6 ||

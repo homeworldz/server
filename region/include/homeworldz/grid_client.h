@@ -282,6 +282,14 @@ struct FolderEntry {
     int asset_type{};
 };
 
+// A system folder and its version. For the Current Outfit folder the version
+// is the COF version: the grid serves every inventory fetch from the same
+// column, so it is the number a viewer holds as its own COF version.
+struct SystemFolder {
+    std::string id;
+    std::uint32_t version{};
+};
+
 // One worn item, as the grid records it: the inventory item and the point. The
 // object asset is resolved through inventory at attach time rather than stored,
 // so a worn item that changed comes back as it is now.
@@ -410,6 +418,8 @@ public:
                                                      std::string_view item_id);
     std::optional<std::string> find_system_inventory_folder(std::string_view user_id,
                                                             int folder_type);
+    std::optional<SystemFolder> system_inventory_folder(std::string_view user_id,
+                                                        int folder_type);
     // The contents of one folder, each link already followed. Written for the
     // Current Outfit folder, whose entries are links (asset type 24) naming
     // items elsewhere in inventory, so `asset_id` and `asset_type` describe

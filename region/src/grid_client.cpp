@@ -1033,13 +1033,23 @@ std::optional<InventoryItem> Client::find_inventory_item(std::string_view user_i
 
 std::optional<std::string> Client::find_system_inventory_folder(std::string_view user_id,
                                                                  int folder_type) {
+    auto folder = system_inventory_folder(user_id, folder_type);
+    if (!folder) return std::nullopt;
+    return std::move(folder->id);
+}
+
+std::optional<SystemFolder> Client::system_inventory_folder(std::string_view user_id,
+                                                            int folder_type) {
     const auto response = transport_->send(
         "GET", "/api/v1/inventory/" + std::string(user_id) +
                    "/system-folders/" + std::to_string(folder_type), {});
     if (response.status_code != 200) return std::nullopt;
-    const auto folder_id = json_field(response.body, "id");
-    if (folder_id.empty()) return std::nullopt;
-    return folder_id;
+    auto folder_id = json_field(response.body, "id");
+    // A folder with no version is not one this region can state a COF
+    // version from, so it is refused rather than read as version 0.
+    const auto version = json_u32(response.body, "version");
+    if (folder_id.empty() || !version) return std::nullopt;
+    return SystemFolder{std::move(folder_id), *version};
 }
 
 bool Client::create_texture_inventory_item(std::string_view user_id, const TextureInventoryItem& item) {
