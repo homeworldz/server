@@ -239,6 +239,7 @@ confirm registration at the assigned coordinates before inviting viewers.
 
 | `region.release_notes_url` | Where the viewer's ServerReleaseNotes capability redirects. Answered as a 302 rather than a body | `https://homeworldz.com/roadmaps/server` |
 | `region.child_agents` | Set to `off` to stop this region announcing itself to neighbouring viewers and holding standing child circuits ([ADR 0038](adr/0038-cross-region-child-agents.md)). Any other value leaves it on. Until 2026-08-23 the code read this as a bare `child_agents`, which the parser can never produce — the switch was unreachable and writing it in an ini killed the region at startup | `on` |
+| `region.server_side_baking` | Set to `on` to tell viewers this region bakes appearances server-side: the handshake claims RegionProtocols bit 0 and appearances go out as version 1 ([ADR 0029](adr/0029-server-side-appearance-baking.md)). A viewer that has been told this cannot go back to baking for itself within the session, so turn it on for regions whose neighbours are on too — a crossing between a region claiming it and one that does not unwinds the viewer's appearance | `off` |
 
 Every setting in this table is accepted by the region config parser, and an
 unrecognised key is a **fatal** startup error rather than a warning. Six of

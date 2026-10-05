@@ -2627,6 +2627,16 @@ int main(int argc, char* argv[]) {
         if (!input) return std::nullopt;
         return out;
     };
+    // Whether this region claims server-side baking (ADR 0029, step 4), and the
+    // appearance version that follows from it — one value so the claim and the
+    // byte cannot disagree. On: the handshake sets RegionProtocols bit 0 and
+    // every appearance this region makes goes out as version 1. A viewer told
+    // this cannot go back to baking for itself within the session, so it is a
+    // per-region switch, turned on only where every neighbour is on too.
+    const std::uint8_t server_bake_version =
+        configured_value("region.server_side_baking", "off") == "on" ? 1 : 0;
+    std::cout << "{\"level\":\"info\",\"message\":\"server-side baking\",\"claimed\":"
+              << (server_bake_version ? "true" : "false") << "}" << std::endl;
     // A bake belongs to an outfit, not to a wearer: two avatars in the same
     // clothes composite to identical images, and the default outfit is just the
     // outfit most of them are in. Keyed by the worn asset ids, sorted so the
@@ -2692,19 +2702,15 @@ int main(int argc, char* argv[]) {
             }
         }
         CachedOutfitBake cached;
-        // Legacy (v0) on purpose, though this is a server-side bake. This
-        // region advertises no RegionProtocols server-bake bit, so a viewer
-        // told v1 tries the AgentAppearanceServiceURL it was never given,
-        // fails all five slots, latches the avatar as server-baked, and then
-        // discards every later legacy message for it as stale — a grey
-        // statue (Spicy watching Jim, 2026-08-22; the bot-as-cloud report has
-        // the same shape). Under v0 a watcher fetches the baked ids as
-        // ordinary textures, which is the path a viewer's own uploaded bakes
-        // already take, and these assets are registered in the same store.
-        // When the bit and its UpdateAvatarAppearance capability ship (ADR
-        // 0029's deferred half), this becomes 1 with them — the byte and
-        // visual param 11000 must move together.
-        cached.visual_params = homeworldz::viewer::build_visual_params(baked->worn, 0);
+        // The version follows the region's claim. Version 1 without the claim
+        // was a grey statue (Spicy watching Jim, 2026-08-22): a viewer told v1
+        // fetched from an appearance service it was never given, failed all
+        // five slots, latched the avatar as server-baked and discarded every
+        // later legacy message as stale. Unclaimed, a watcher fetches the
+        // baked ids as ordinary textures. The byte and visual param 11000 must
+        // move together; the encoder writes both from appearance_version.
+        cached.visual_params =
+            homeworldz::viewer::build_visual_params(baked->worn, server_bake_version);
         cached.bake = std::move(*baked);
         // A mask the bake could not fetch means a body region the wearer asked
         // to hide is still showing. The bake otherwise succeeds, so without
@@ -5487,6 +5493,9 @@ int main(int argc, char* argv[]) {
         handshake.is_estate_owner =
             is_estate_manager(homeworldz::viewer::format_uuid(agent_id));
         handshake.region_flags = region_flags();
+        // Bit 0 only: server-side baking. Bakes-on-Mesh (bit 63) stays as it
+        // has always been here, unclaimed.
+        handshake.region_protocols = server_bake_version ? 1 : 0;
         handshake.water_height = static_cast<float>(region_settings.water_height);
         // One definition, shared with the session hello, so a viewer and a client
         // are told the same ids (homeworldz/terrain_layers.h).
@@ -6666,12 +6675,12 @@ int main(int argc, char* argv[]) {
                         }
                         reseeded.texture_entry = bake->bake.texture_entry;
                         reseeded.visual_params = bake->visual_params;
-                        // v0 to match the region's advertised protocol — see the
-                        // bake cache for why v1 greys the avatar for every
-                        // watcher. Encoded from this field below, not a literal:
-                        // a literal 1 here survived the switch to v0 for five
-                        // weeks (2aec93b).
-                        reseeded.appearance_version = 0;
+                        // The version the region claims (server_bake_version) —
+                        // see the bake cache for why an unclaimed v1 greys the
+                        // avatar for every watcher. Encoded from this field
+                        // below, not a literal: a literal 1 here survived the
+                        // switch to v0 for five weeks (2aec93b).
+                        reseeded.appearance_version = server_bake_version;
                         avatar_appearances.insert_or_assign(key, reseeded);
                         if (const auto geometry = homeworldz::viewer::avatar_geometry(reseeded))
                             avatar_geometries[key] = *geometry;
@@ -8341,9 +8350,17 @@ int main(int argc, char* argv[]) {
                                 refusal = "cof_version is required";
                             } else if (key.empty()) {
                                 refusal = "no avatar of this session is on this region";
-                            } else if (!server_seeded_appearances.contains(key)) {
+                            } else if (!server_seeded_appearances.contains(key) &&
+                                       !server_bake_version) {
                                 refusal = "this avatar bakes for itself";
                             } else {
+                                // On a region claiming server-side baking, the
+                                // call is itself the proof the viewer stopped
+                                // baking: it asks only when told the region
+                                // bakes. An AgentSetAppearance that slipped in
+                                // before the handshake must not lock it out,
+                                // or it is a cloud to itself for the session.
+                                server_seeded_appearances.insert(key);
                                 rebaked = rebake_and_announce(
                                     key, authorized_agent_id,
                                     static_cast<std::uint32_t>(*cof_version), true);
@@ -13029,10 +13046,10 @@ int main(int argc, char* argv[]) {
                                     seeded.serial = seed_serial(agent_id);
                                     seeded.texture_entry = bake->bake.texture_entry;
                                     seeded.visual_params = bake->visual_params;
-                                    // v0 to match the region's advertised
-                                    // protocol — see the bake cache for why v1
-                                    // greys the avatar for every watcher.
-                                    seeded.appearance_version = 0;
+                                    // The version the region claims — see the
+                                    // bake cache for why an unclaimed v1 greys
+                                    // the avatar for every watcher.
+                                    seeded.appearance_version = server_bake_version;
                                     avatar_appearances.insert_or_assign(endpoint, seeded);
                                     server_seeded_appearances.insert(endpoint);
                                     // LMV never sends AgentSetAppearance, so derive
@@ -15322,10 +15339,10 @@ int main(int argc, char* argv[]) {
                             seeded.serial = seed_serial(inbound.user_id);
                             seeded.texture_entry = bake->bake.texture_entry;
                             seeded.visual_params = bake->visual_params;
-                            // v0 to match the region's advertised protocol —
-                            // see the bake cache for why v1 greys the avatar
+                            // The version the region claims — see the bake
+                            // cache for why an unclaimed v1 greys the avatar
                             // for every watcher.
-                            seeded.appearance_version = 0;
+                            seeded.appearance_version = server_bake_version;
                             avatar_appearances.insert_or_assign(participant_key, seeded);
                             server_seeded_appearances.insert(participant_key);
                             const auto geometry = homeworldz::viewer::avatar_geometry(seeded);

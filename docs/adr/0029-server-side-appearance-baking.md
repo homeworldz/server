@@ -465,7 +465,14 @@ Designed 2026-09-23. On 2026-09-27 the vault write-through, the login address
 and the bake route were built (grid `appearance.go`, migration 35); none of
 them changes what a viewer does while appearance is v0. On 2026-09-28 the
 `UpdateAvatarAppearance` capability was built and advertised; it too is inert
-at protocols `0`. The version byte and the bit are not built.
+at protocols `0`. On 2026-10-03 arrivals and re-bakes were seeded with the COF
+version read from the grid rather than a region counter, and a facet crossing
+stopped moving the serial. On 2026-10-04 the byte and the bit were built behind
+a per-region switch, `region.server_side_baking`: on, the handshake sends
+`RegionInfo4` with RegionProtocols bit 0 and every appearance the region makes
+is version 1. A call to `UpdateAvatarAppearance` on such a region marks the
+caller as server-baked rather than refusing it, since a viewer asks only once
+told the region bakes. Switched on first for Nova and Lazy.
 
 The rule step 4 is built on: under v1 an avatar's serial **is** its COF
 version and moves only when the outfit does. Firestorm treats the last serial
@@ -476,5 +483,5 @@ the real COF silently swallows the next outfit change.
 Two places moved it without an outfit change. The facet-crossing bump is
 removed (2026-09-30): an A/B on Nova showed a watcher accepting a repeated
 serial on six crossings running, so it had never been needed. The arrival seed
-remains — it takes the next number from a per-process counter that starts at 1
-— and step 4 must seed arrivals with the grid's COF version instead.
+took the next number from a per-process counter that started at 1; it now
+takes the grid's COF version (2026-10-03).

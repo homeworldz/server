@@ -704,6 +704,10 @@ struct RegionHandshake {
     // indra RegionFlags. Default advertises region-wide landmark creation and
     // "Set Home to Here" so those viewer menu items activate everywhere.
     std::uint32_t region_flags{(1U << 1) | (1U << 2)};
+    // RegionInfo4.RegionProtocols. Bit 0 tells a viewer the region bakes
+    // appearances server-side (ADR 0029); bit 63 is Bakes-on-Mesh support.
+    // Zero sends no RegionInfo4 block at all, which a viewer reads as 0.
+    std::uint64_t region_protocols{};
 };
 
 // ParcelPropertiesRequest (Medium 11): a (west,south,east,north) metre rectangle query.

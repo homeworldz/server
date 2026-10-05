@@ -823,20 +823,22 @@ std::vector<std::byte> encode_region_handshake(const RegionHandshake& message) {
     append_le_u32(output, 1); // CPU ratio
     if (!append_variable1(output, "") || !append_variable1(output, "homeworldz") ||
         !append_variable1(output, "Homeworldz Region")) return {};
-    // No RegionInfo4 block, and not by oversight. RegionProtocols lives here,
-    // and bit 0 tells a viewer the region bakes appearances server-side. Setting
-    // it (tried live, 2026-08-21) makes the viewer stop baking locally and wait
-    // for an UpdateAvatarAppearance capability to hand it the result — which
-    // this region does not serve, so the avatar stays a cloud permanently and
-    // neither a rebake nor an outfit change can recover it, because both are now
-    // the server's job. Sending no block reads as protocols 0, which keeps the
-    // viewer baking for itself.
-    //
-    // The cost of that is real and is not this function's to pay: on a region
-    // transition a viewer holding a server-baked appearance that lands in a
-    // region claiming 0 unwinds it, so a crossing arrives invisible. Closing
-    // that means serving UpdateAvatarAppearance first, then setting this bit.
-    output.push_back(std::byte{}); // no RegionInfo4 blocks
+    // RegionInfo4 carries RegionProtocols, whose bit 0 tells a viewer the region
+    // bakes appearances server-side. Setting it makes the viewer stop baking
+    // locally and ask UpdateAvatarAppearance instead, so it is an obligation:
+    // set without that capability (tried live, 2026-08-21) the avatar stayed a
+    // cloud permanently, since neither a rebake nor an outfit change could
+    // recover it once both were the server's job. The capability, the bake
+    // route and the login address now exist (ADR 0029), and the region sets
+    // the bit only where it is switched on. With no protocols the block is
+    // omitted, as it always was: a viewer reads that as 0 and bakes for itself.
+    if (message.region_protocols == 0) {
+        output.push_back(std::byte{}); // no RegionInfo4 blocks
+        return output;
+    }
+    output.push_back(std::byte{1});
+    append_le_u64(output, message.region_flags); // RegionFlagsExtended
+    append_le_u64(output, message.region_protocols);
     return output;
 }
 

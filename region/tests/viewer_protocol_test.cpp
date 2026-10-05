@@ -305,6 +305,20 @@ bool message_codecs() {
     // which leaves a viewer a permanent cloud (see encode_region_handshake).
     // Asserted on the tail, where the block would be.
     if (encoded_handshake.back() != std::byte{}) return false;
+    // Switched on, the block is one entry of two little-endian u64s:
+    // RegionFlagsExtended (the region flags) then RegionProtocols.
+    {
+        auto baking = handshake;
+        baking.region_protocols = 1;
+        const auto encoded_baking = encode_region_handshake(baking);
+        if (encoded_baking.size() != encoded_elevations.size() + 16) return false;
+        const auto tail = encoded_baking.end() - 17;
+        if (*tail != std::byte{1}) return false;
+        std::uint64_t flags_extended{}, protocols{};
+        std::memcpy(&flags_extended, &*(tail + 1), sizeof(flags_extended));
+        std::memcpy(&protocols, &*(tail + 9), sizeof(protocols));
+        if (flags_extended != baking.region_flags || protocols != 1) return false;
+    }
     AgentMovementComplete complete;
     complete.agent_id = expected.agent_id;
     complete.session_id = expected.session_id;
