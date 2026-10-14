@@ -5126,6 +5126,20 @@ int main(int argc, char* argv[]) {
         queued_viewer_events[session_id].push_back(std::move(event));
         flush_pending_viewer_events(session_id);
     };
+    // Events that must reach the viewer in this order, queued together and
+    // flushed once so they leave in one response. Enqueued one at a time,
+    // each flushes on its own, and a viewer can have several polls waiting at
+    // once — the region it was standing in before, a sibling facet — so
+    // EnableSimulator and its EstablishAgentCommunication left on two responses
+    // that arrived in either order. Seed first, Firestorm discards it as "for
+    // unknown region", the neighbour never gets its capabilities, and the
+    // child expires under a viewer still showing it (2026-10-14).
+    const auto enqueue_viewer_events_together =
+        [&](const std::string& session_id, std::vector<std::string> events) {
+            auto& queued = queued_viewer_events[session_id];
+            for (auto& event : events) queued.push_back(std::move(event));
+            flush_pending_viewer_events(session_id);
+        };
 
     // A facet's child seed for one session is DETERMINISTIC: the same session
     // and facet always name the same visit id, so a repeated offer and every
@@ -5186,12 +5200,11 @@ int main(int argc, char* argv[]) {
         const auto edge = static_cast<std::uint32_t>(facet_edge_metres);
         auto facet_seed = facet_child_seed(session_id, facet);
         session_facet_seeds[session_id][facet] = facet_seed;
-        enqueue_viewer_event(session_id,
+        enqueue_viewer_events_together(session_id, {
             homeworldz::viewer::enable_simulator_event_xml(
-                facet_handle(facet), *simulator, edge, edge));
-        enqueue_viewer_event(session_id,
+                facet_handle(facet), *simulator, edge, edge),
             homeworldz::viewer::establish_agent_communication_event_xml({
-                agent_id, simulator_endpoint(*simulator), facet_seed}));
+                agent_id, simulator_endpoint(*simulator), facet_seed})});
         return facet_seed;
     };
 
@@ -5434,14 +5447,13 @@ int main(int argc, char* argv[]) {
                 const auto announced_handle =
                     (static_cast<std::uint64_t>(neighbor.grid_x * 256) << 32) |
                     static_cast<std::uint32_t>(neighbor.grid_y * 256);
-                enqueue_viewer_event(live.session_id,
+                enqueue_viewer_events_together(live.session_id, {
                     homeworldz::viewer::enable_simulator_event_xml(
                         announced_handle, *simulator,
                         static_cast<std::uint32_t>(neighbor.size_x),
-                        static_cast<std::uint32_t>(neighbor.size_y)));
-                enqueue_viewer_event(live.session_id,
+                        static_cast<std::uint32_t>(neighbor.size_y)),
                     homeworldz::viewer::establish_agent_communication_event_xml({
-                        child.agent_id, simulator_endpoint(*simulator), seed}));
+                        child.agent_id, simulator_endpoint(*simulator), seed})});
                 announced_child_seeds[live.session_id + '|' + neighbor.id + '|' +
                     std::to_string(neighbor.grid_x) + ',' +
                     std::to_string(neighbor.grid_y)] = seed;
@@ -6016,6 +6028,28 @@ int main(int argc, char* argv[]) {
                 cleared += farewell_child_circuit(*route, session_id, when);
         return cleared;
     };
+    // Tell a viewer to drop this region on every facet it holds for a session,
+    // and close those circuits. For a session that is only a child here; a
+    // root avatar's circuit must never be sent DisableSimulator, which makes
+    // the viewer log out of the region it is standing in. Returns how many
+    // circuits were closed.
+    const auto close_child_circuits = [&](const std::string& session_id) {
+        const auto session_uuid = homeworldz::viewer::parse_uuid(session_id);
+        if (!session_uuid) return std::size_t{0};
+        std::size_t closed = 0;
+        for (int facet = 0; facet < facet_count; ++facet) {
+            const auto key = circuits.session_endpoint_for_facet(*session_uuid, facet);
+            if (!key) continue;
+            homeworldz::viewer::Packet disable_packet;
+            disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
+            static_cast<void>(send_udp(viewer_server, *key,
+                homeworldz::viewer::encode_packet(disable_packet)));
+            child_backfilled.erase(*key);
+            static_cast<void>(circuits.remove(*key));
+            ++closed;
+        }
+        return closed;
+    };
     // Return one root object (and its linkset) to its owner's inventory: serialize
     // the linkset, store and register the asset, create an object item in the
     // owner's Lost and Found (or Objects) folder, and remove the parts from the
@@ -6529,20 +6563,7 @@ int main(int argc, char* argv[]) {
                 return true;
             }
             child_agents.remove(pending.session_id);
-            std::size_t closed = 0;
-            if (const auto session_uuid = homeworldz::viewer::parse_uuid(pending.session_id)) {
-                for (int facet = 0; facet < facet_count; ++facet) {
-                    const auto key = circuits.session_endpoint_for_facet(*session_uuid, facet);
-                    if (!key) continue;
-                    homeworldz::viewer::Packet disable_packet;
-                    disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
-                    static_cast<void>(send_udp(viewer_server, *key,
-                        homeworldz::viewer::encode_packet(disable_packet)));
-                    child_backfilled.erase(*key);
-                    static_cast<void>(circuits.remove(*key));
-                    ++closed;
-                }
-            }
+            const auto closed = close_child_circuits(pending.session_id);
             std::cout << "{\"level\":\"info\",\"message\":\"far departure circuit closed\","
                          "\"session\":" << homeworldz::api::json_string(pending.session_id)
                       << ",\"destination\":" << homeworldz::api::json_string(pending.destination_region_id)
@@ -7527,23 +7548,7 @@ int main(int argc, char* argv[]) {
                                 // stale copy, which a later teleport here
                                 // reuses with its capabilities emptied.
                                 child_agents.remove(release->session_id);
-                                std::size_t closed = 0;
-                                if (const auto session_uuid =
-                                        homeworldz::viewer::parse_uuid(release->session_id)) {
-                                    for (int facet = 0; facet < facet_count; ++facet) {
-                                        const auto key =
-                                            circuits.session_endpoint_for_facet(*session_uuid, facet);
-                                        if (!key) continue;
-                                        homeworldz::viewer::Packet disable_packet;
-                                        disable_packet.payload =
-                                            homeworldz::viewer::encode_disable_simulator();
-                                        static_cast<void>(send_udp(viewer_server, *key,
-                                            homeworldz::viewer::encode_packet(disable_packet)));
-                                        child_backfilled.erase(*key);
-                                        static_cast<void>(circuits.remove(*key));
-                                        ++closed;
-                                    }
-                                }
+                                const auto closed = close_child_circuits(release->session_id);
                                 std::cout << "{\"level\":\"info\",\"message\":\"child circuit closed on release\""
                                              ",\"session\":" << homeworldz::api::json_string(release->session_id)
                                           << ",\"destination\":" << homeworldz::api::json_string(destination)
@@ -17404,10 +17409,17 @@ int main(int argc, char* argv[]) {
             for (const auto& session : watched_child_sessions) {
                 if (still_children.contains(session)) continue;
                 if (!session_is_gone(session + "|")) continue;
-                if (const auto cleared = farewell_child_session(session, now); cleared > 0)
+                const auto cleared = farewell_child_session(session, now);
+                // And drop the circuits themselves. The farewell above only
+                // removes what this region drew; the viewer otherwise keeps the
+                // region as a dead neighbour for the rest of its session, and
+                // a later arrival here reuses it with its capabilities emptied.
+                const auto closed = close_child_circuits(session);
+                if (cleared > 0 || closed > 0)
                     std::cout << "{\"level\":\"info\",\"message\":\"child circuit cleared\""
                                  ",\"session\":" << homeworldz::api::json_string(session)
-                              << ",\"cleared\":" << cleared << "}" << std::endl;
+                              << ",\"cleared\":" << cleared << ",\"closed\":" << closed
+                              << "}" << std::endl;
             }
             watched_child_sessions = std::move(still_children);
         }
