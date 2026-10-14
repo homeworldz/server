@@ -371,4 +371,38 @@ std::map<BakeSlot, image::Image> bake_outfit(const std::vector<Wearable>& worn,
     return baked;
 }
 
+std::optional<image::Image> clothing_morph_mask(const std::vector<Wearable>& worn,
+                                                BakeSlot slot, const MaskFetch& mask_fetch) {
+    if (slot != BakeSlot::Upper && slot != BakeSlot::Lower) return std::nullopt;
+    const BakeSlotLayout* layout = nullptr;
+    for (const BakeSlotLayout& candidate : bake_slot_layouts())
+        if (candidate.slot == slot) layout = &candidate;
+    if (layout == nullptr) return std::nullopt;
+
+    // gatherMorphMaskAlpha: start fully covered and multiply in the coverage
+    // of every masked layer in the set, so a sleeve flare reaches the forearm
+    // only where the shirt is.
+    image::Image mask;
+    mask.width = layout->resolution;
+    mask.height = layout->resolution;
+    mask.channels = 1;
+    mask.pixels.assign(mask.pixel_count(), 255);
+    for (const Wearable& w : worn) {
+        bool in_slot = false;
+        for (const auto& [index, id] : w.textures)
+            for (std::uint32_t source : layout->source_texture_indices)
+                if (index == source) in_slot = true;
+        if (!in_slot) continue;
+        auto coverage = clothing_alpha(w, mask_fetch);
+        if (!coverage) continue;
+        const image::Image sized =
+            image::resize_nearest(*coverage, layout->resolution, layout->resolution);
+        if (sized.pixels.size() != mask.pixels.size()) continue;
+        for (std::size_t i = 0; i < mask.pixels.size(); ++i)
+            mask.pixels[i] = static_cast<std::uint8_t>(
+                (static_cast<std::uint32_t>(mask.pixels[i]) * (sized.pixels[i] + 1u)) >> 8);
+    }
+    return mask;
+}
+
 }  // namespace homeworldz::viewer

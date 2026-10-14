@@ -106,6 +106,14 @@ std::map<BakeSlot, image::Image> bake_outfit(const std::vector<Wearable>& worn,
                                              const MaskFetch& mask_fetch = {},
                                              std::vector<Uuid>* unfetchable_masks = nullptr);
 
+// Where clothing covers the body in the upper or lower bake (255 covered, 0
+// bare), at the slot's resolution; nullopt for every other slot. A viewer reads
+// this as a bake's fifth channel and applies clothing morphs - sleeve and cuff
+// flare, loose shirt and pants - only where it is set. Without it they apply
+// everywhere, and bare forearms and shins take the shape of a flared sleeve.
+std::optional<image::Image> clothing_morph_mask(const std::vector<Wearable>& worn,
+                                                BakeSlot slot, const MaskFetch& mask_fetch);
+
 }  // namespace homeworldz::viewer
 
 #endif  // HOMEWORLDZ_BAKE_H

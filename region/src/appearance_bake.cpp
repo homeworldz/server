@@ -62,12 +62,6 @@ std::optional<OutfitBake> bake_worn_outfit(const std::vector<Uuid>& wearable_ass
     result.unfetchable_masks = std::move(unfetchable_masks);
     result.faces.fill(default_id);
     for (auto& [slot, slot_image] : baked) {
-        auto encoded = image::encode_j2c(slot_image);
-        if (!encoded) continue;
-        std::vector<std::byte> j2c = to_bytes_std(*encoded);
-        const Uuid id = content_uuid(j2c);
-        const auto index = static_cast<std::uint8_t>(baked_texture_index(slot));
-        result.faces[index] = id;
         double hidden = 0.0;
         if (slot_image.channels == 4 && slot_image.pixel_count() != 0) {
             std::size_t transparent = 0;
@@ -76,6 +70,28 @@ std::optional<OutfitBake> bake_worn_outfit(const std::vector<Uuid>& wearable_ass
             hidden = static_cast<double>(transparent) /
                      static_cast<double>(slot_image.pixel_count());
         }
+        // The clothing morph mask travels as a fifth channel, the layout a
+        // viewer's own bake upload uses (red, green, blue, alpha, mask).
+        if (const auto mask = clothing_morph_mask(worn, slot, mask_fetch);
+            mask && slot_image.channels == 4 && mask->pixel_count() == slot_image.pixel_count()) {
+            image::Image with_mask;
+            with_mask.width = slot_image.width;
+            with_mask.height = slot_image.height;
+            with_mask.channels = 5;
+            with_mask.pixels.resize(with_mask.expected_size());
+            for (std::size_t pixel = 0; pixel < slot_image.pixel_count(); ++pixel) {
+                for (std::size_t c = 0; c < 4; ++c)
+                    with_mask.pixels[pixel * 5 + c] = slot_image.pixels[pixel * 4 + c];
+                with_mask.pixels[pixel * 5 + 4] = mask->pixels[pixel];
+            }
+            slot_image = std::move(with_mask);
+        }
+        auto encoded = image::encode_j2c(slot_image);
+        if (!encoded) continue;
+        std::vector<std::byte> j2c = to_bytes_std(*encoded);
+        const Uuid id = content_uuid(j2c);
+        const auto index = static_cast<std::uint8_t>(baked_texture_index(slot));
+        result.faces[index] = id;
         result.assets.push_back(OutfitBake::BakedAsset{id, index, std::move(j2c), hidden});
     }
     if (result.assets.empty()) return std::nullopt;

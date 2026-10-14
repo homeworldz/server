@@ -35,7 +35,9 @@ struct Image {
 std::optional<Image> decode_j2c(const std::vector<std::uint8_t>& data);
 
 // Encode an Image as a lossless JPEG2000 codestream (.j2c). Returns nullopt on
-// invalid input or encoder failure.
+// invalid input or encoder failure. Five channels is the one exception to the
+// 1..4 above: an avatar bake carrying its clothing morph mask after RGBA,
+// which decode_j2c drops again.
 std::optional<std::vector<std::uint8_t>> encode_j2c(const Image& image);
 
 // Decode a PNG or JPEG blob into an Image, keeping the channel count the file

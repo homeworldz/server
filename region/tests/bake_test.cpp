@@ -184,6 +184,47 @@ int main() {
                      "an iris alone leaves the eyes bake transparent");
     }
 
+    // The clothing morph mask: covered where the shirt is, bare where it is
+    // not, so a viewer flares a sleeve and leaves the forearm alone. A 2x1
+    // grayscale sleeve mask, 0 on the left and 255 on the right, at a sleeve
+    // length that keeps only the right.
+    {
+        const char* const kShirtTex = "eeeeeeee-0000-0000-0000-000000000001";
+        Wearable shirt = make_wearable(WearableType::Shirt, {{tx::kUpperShirt, kShirtTex}});
+        shirt.parameters[800] = 0.5;
+        auto shirt_worn = worn;
+        shirt_worn.push_back(shirt);
+        std::vector<std::uint8_t> sleeve_tga(18, 0);
+        sleeve_tga[2] = 3;
+        sleeve_tga[12] = 2;
+        sleeve_tga[14] = 1;
+        sleeve_tga[16] = 8;
+        sleeve_tga.push_back(0);
+        sleeve_tga.push_back(255);
+        auto mask_fetch = [&](std::string_view name) -> std::optional<std::vector<std::uint8_t>> {
+            if (name == "shirt_sleeve_alpha") return sleeve_tga;
+            return std::nullopt;
+        };
+        const auto upper = homeworldz::viewer::clothing_morph_mask(shirt_worn, BakeSlot::Upper,
+                                                                   mask_fetch);
+        ok &= expect(upper.has_value() && upper->channels == 1 && upper->width == 512 &&
+                         upper->height == 512,
+                     "the upper morph mask is one channel at the bake's size");
+        if (upper && upper->pixels.size() == 512u * 512u) {
+            ok &= expect(upper->pixels[0] == 0, "bare where the shirt does not reach");
+            ok &= expect(upper->pixels[511] == 255, "covered where the shirt is");
+        }
+        // No masked clothing in the lower set: covered everywhere, as the
+        // viewer's own bake starts.
+        const auto lower = homeworldz::viewer::clothing_morph_mask(worn, BakeSlot::Lower, {});
+        bool all_covered = lower.has_value();
+        for (std::size_t i = 0; all_covered && i < lower->pixels.size(); ++i)
+            all_covered = lower->pixels[i] == 255;
+        ok &= expect(all_covered, "a lower bake with no masked clothing is covered everywhere");
+        ok &= expect(!homeworldz::viewer::clothing_morph_mask(worn, BakeSlot::Head, {}),
+                     "only the upper and lower bakes carry a morph mask");
+    }
+
     // The alpha above is an in-memory image. What a region actually masks with
     // is IMG_INVISIBLE, and the region synthesizes it as a J2C at startup
     // (main.cpp) rather than bundling one, so the mask only reaches the bake if

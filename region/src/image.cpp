@@ -169,8 +169,10 @@ std::optional<Image> decode_j2c(const std::vector<std::uint8_t>& data) {
     std::optional<Image> result;
     if (opj_setup_decoder(codec, &dparams) && opj_read_header(stream, codec, &img) &&
         opj_decode(codec, stream, img) && opj_end_decompress(codec, stream)) {
-        const OPJ_UINT32 n = img->numcomps;
-        if (n >= 1 && n <= 4 && img->comps[0].data) {
+        // A fifth component is a bake's clothing morph mask (red, green,
+        // blue, alpha, mask), which only a viewer reads; keep the first four.
+        const OPJ_UINT32 n = std::min<OPJ_UINT32>(img->numcomps, 4);
+        if (n >= 1 && img->numcomps <= 5 && img->comps[0].data) {
             const OPJ_UINT32 w = img->comps[0].w;
             const OPJ_UINT32 h = img->comps[0].h;
             bool ok = w > 0 && h > 0;
@@ -213,7 +215,7 @@ std::optional<Image> decode_j2c(const std::vector<std::uint8_t>& data) {
 }
 
 std::optional<std::vector<std::uint8_t>> encode_j2c(const Image& image) {
-    if (image.empty() || image.channels < 1 || image.channels > 4) return std::nullopt;
+    if (image.empty() || image.channels < 1 || image.channels > 5) return std::nullopt;
     if (image.pixels.size() != image.expected_size()) return std::nullopt;
 
     const OPJ_UINT32 n = image.channels;

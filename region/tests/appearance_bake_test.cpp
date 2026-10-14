@@ -109,6 +109,16 @@ int main() {
         // The stored id must be the face at its texture index.
         ok &= expect(bake->faces[asset.texture_index] == asset.id,
                      "asset id matches its face slot");
+        // The SIZ marker's component count (Csiz, bytes 40-41 of the
+        // codestream): the upper and lower bakes carry the clothing morph mask
+        // as a fifth component, which a viewer reads to place clothing morphs.
+        // Without it, a sleeve flare reshaped bare forearms in-world.
+        const bool body = asset.texture_index == 9 || asset.texture_index == 10;
+        const int components = raw.size() > 41 ? (raw[40] << 8) | raw[41] : 0;
+        ok &= expect(components == (body ? 5 : 4),
+                     body ? "upper and lower bakes carry a fifth, mask component"
+                          : "other bakes stay four components");
+        ok &= expect(!decoded || decoded->channels == 4, "decoding keeps red, green, blue, alpha");
     }
 
     if (!ok) return 1;
