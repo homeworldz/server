@@ -4,6 +4,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using homeworldz::image::Image;
@@ -141,6 +142,46 @@ int main() {
                      "the skirt has no alpha channel");
         ok &= expect(homeworldz::viewer::alpha_texture_index(BakeSlot::Head) == tx::kHeadAlpha,
                      "head -> TEX_HEAD_ALPHA");
+    }
+
+    // The eyes bake has eyewhite.tga beneath the iris, as avatar_lad.xml does.
+    // An iris texture is transparent outside the iris; composited alone it left
+    // 85% of the bake transparent and the eye sockets see-through in-world.
+    {
+        const char* const kIris = "dddddddd-0000-0000-0000-000000000001";
+        auto eyes_worn = worn;
+        eyes_worn.push_back(make_wearable(WearableType::Eyes, {{tx::kEyesIris, kIris}}));
+        auto eyes_fetch = [&](const homeworldz::viewer::Uuid& id) -> std::optional<Image> {
+            if (format_uuid(id) == kIris) return solid(64, {0, 0, 255, 0});
+            return fetch(id);
+        };
+        // An uncompressed 24-bit 2x2 TGA of grey 180: opaque, like eyewhite.tga.
+        std::vector<std::uint8_t> whites_tga(18, 0);
+        whites_tga[2] = 2;
+        whites_tga[12] = 2;
+        whites_tga[14] = 2;
+        whites_tga[16] = 24;
+        whites_tga.insert(whites_tga.end(), 2 * 2 * 3, 180);
+        auto mask_fetch = [&](std::string_view name) -> std::optional<std::vector<std::uint8_t>> {
+            if (name == "eyewhite") return whites_tga;
+            return std::nullopt;
+        };
+        const auto with_whites = bake_outfit(eyes_worn, eyes_fetch, mask_fetch);
+        ok &= expect(with_whites.count(BakeSlot::Eyes) == 1, "eyes bake with an iris worn");
+        if (with_whites.count(BakeSlot::Eyes)) {
+            const Image& eyes = with_whites.at(BakeSlot::Eyes);
+            bool opaque = true;
+            for (std::size_t i = 0; opaque && i < eyes.pixel_count(); ++i)
+                opaque = eyes.pixels[i * 4 + 3] == 255;
+            ok &= expect(opaque, "the eye whites make the whole eyes bake opaque");
+            ok &= expect(eyes.pixels[0] == 180, "the whites show where the iris is transparent");
+        }
+        // And without the base the same iris leaves holes, so the check above
+        // can fail.
+        const auto without = bake_outfit(eyes_worn, eyes_fetch);
+        ok &= expect(without.count(BakeSlot::Eyes) == 1 &&
+                         without.at(BakeSlot::Eyes).pixels[3] == 0,
+                     "an iris alone leaves the eyes bake transparent");
     }
 
     // The alpha above is an in-memory image. What a region actually masks with

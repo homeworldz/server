@@ -317,6 +317,17 @@ std::map<BakeSlot, image::Image> bake_outfit(const std::vector<Wearable>& worn,
             layers.push_back(std::move(layer));
         }
         if (layers.empty()) continue;
+        // The eyes layer set starts from a bundled image, not a worn texture:
+        // avatar_lad.xml paints eyewhite.tga beneath the iris. An iris texture
+        // is transparent outside the iris, so without this base the bake is
+        // mostly holes and the eye sockets render see-through. A base that
+        // cannot be loaded still shows, as the eyes slot in hiddenBySlot.
+        if (layout.slot == BakeSlot::Eyes && mask_fetch) {
+            if (const auto bytes = mask_fetch("eyewhite"); bytes && !bytes->empty()) {
+                if (auto whites = image::decode_tga(*bytes); whites && !whites->empty())
+                    layers.insert(layers.begin(), image::Layer{std::move(*whites), {255, 255, 255}});
+            }
+        }
         image::Image slot_image =
             image::composite_rgba(layout.resolution, layout.resolution, layers);
         if (slot_image.empty()) continue;
