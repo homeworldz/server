@@ -542,7 +542,9 @@ std::string establish_child_agent(Transport& destination, std::string_view docum
 // Tell a neighbour that a session it holds as a child is finished. Best
 // effort: a neighbour that cannot be reached releases the child on its own
 // expiry, which is the behaviour this replaces rather than depends on.
-bool release_child_agent(Transport& destination, std::string_view session_id);
+// `target` is the session id, or region::child_release_target() when the
+// session moved on rather than ended.
+bool release_child_agent(Transport& destination, std::string_view target);
 
 // Tell the region an avatar just left that the avatar is here now, so it can
 // stop being their home without waiting to be told by the grid.

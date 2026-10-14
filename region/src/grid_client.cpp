@@ -1289,9 +1289,9 @@ std::string establish_child_agent(Transport& destination, std::string_view docum
     return response.body;
 }
 
-bool release_child_agent(Transport& destination, std::string_view session_id) {
+bool release_child_agent(Transport& destination, std::string_view target) {
     const auto status = destination.send(
-        "DELETE", "/api/v1/child-agents/" + std::string(session_id), {}).status_code;
+        "DELETE", "/api/v1/child-agents/" + std::string(target), {}).status_code;
     return status == 204 || status == 200;
 }
 

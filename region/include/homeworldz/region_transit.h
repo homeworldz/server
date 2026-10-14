@@ -338,6 +338,51 @@ private:
     std::unordered_map<std::string, Entry> entries_;
 };
 
+// Whether `region_id` is one of `neighbors`. A departure keeps its viewer
+// circuit here, as a child, only when the avatar went next door: a child
+// circuit exists so a neighbour's viewer can see across the line, and a
+// viewer that teleported away holds the region it left as a stale copy. On a
+// return, Firestorm reuses that copy, clears its capabilities for the new seed
+// but leaves them marked received, and its first appearance request finds
+// nothing (2026-10-14).
+bool region_borders(const std::vector<grid::RegionNeighbor>& neighbors,
+                    std::string_view region_id);
+
+// A home region telling a neighbour that a session's child there is finished.
+// `home_region_id` and `destination_region_id` are empty when the session
+// ended, as on logout; both are set when it moved somewhere that does not
+// border the home.
+struct ChildRelease {
+    std::string session_id;
+    std::string home_region_id;
+    std::string destination_region_id;
+};
+
+// The target after "/api/v1/child-agents/": a session id, optionally followed
+// by "?home=<region id>&destination=<region id>". Nullopt for an empty session.
+std::optional<ChildRelease> parse_child_release_target(std::string_view target);
+std::string child_release_target(const ChildRelease& release);
+
+enum class ChildReleaseAction {
+    // The session ended: drop the record, as a release always did.
+    forget,
+    // Not this home's to release: nothing held, the avatar is here, or another
+    // region has claimed the child since.
+    ignore,
+    // The avatar's new region borders this one, or is this one, and is about
+    // to claim the child. Closing it would hand the viewer a second seed for a
+    // region it already holds when that claim arrives.
+    keep,
+    // Nothing that borders here holds the avatar any more: tell the viewer to
+    // drop this region, and drop the circuit.
+    close,
+};
+
+// `destination_borders_here` is whether the release's destination is this
+// region or one of its neighbours; the caller holds the neighbour list.
+ChildReleaseAction decide_child_release(const ChildRelease& release, const ChildAgent* held,
+                                        bool avatar_here, bool destination_borders_here);
+
 class CapabilityArrivalGate {
 public:
     bool mark_seed_served(std::string_view session_id, std::string_view visit_id);

@@ -706,4 +706,49 @@ std::string CapabilityArrivalGate::key(
     return std::string(session_id) + '|' + std::string(visit_id);
 }
 
+bool region_borders(const std::vector<grid::RegionNeighbor>& neighbors,
+                    std::string_view region_id) {
+    if (region_id.empty()) return false;
+    return std::any_of(neighbors.begin(), neighbors.end(),
+                       [&](const grid::RegionNeighbor& neighbor) { return neighbor.id == region_id; });
+}
+
+std::optional<ChildRelease> parse_child_release_target(std::string_view target) {
+    ChildRelease release;
+    const auto query_at = target.find('?');
+    release.session_id = std::string(target.substr(0, query_at));
+    if (release.session_id.empty()) return std::nullopt;
+    if (query_at == std::string_view::npos) return release;
+    auto query = target.substr(query_at + 1);
+    while (!query.empty()) {
+        const auto amp = query.find('&');
+        const auto pair = query.substr(0, amp);
+        const auto eq = pair.find('=');
+        if (eq != std::string_view::npos) {
+            const auto name = pair.substr(0, eq);
+            const auto value = std::string(pair.substr(eq + 1));
+            if (name == "home") release.home_region_id = value;
+            else if (name == "destination") release.destination_region_id = value;
+        }
+        if (amp == std::string_view::npos) break;
+        query = query.substr(amp + 1);
+    }
+    return release;
+}
+
+std::string child_release_target(const ChildRelease& release) {
+    if (release.home_region_id.empty()) return release.session_id;
+    return release.session_id + "?home=" + release.home_region_id +
+           "&destination=" + release.destination_region_id;
+}
+
+ChildReleaseAction decide_child_release(const ChildRelease& release, const ChildAgent* held,
+                                        bool avatar_here, bool destination_borders_here) {
+    if (release.home_region_id.empty()) return ChildReleaseAction::forget;
+    if (held == nullptr || avatar_here) return ChildReleaseAction::ignore;
+    if (held->home_region_id != release.home_region_id) return ChildReleaseAction::ignore;
+    if (destination_borders_here) return ChildReleaseAction::keep;
+    return ChildReleaseAction::close;
+}
+
 } // namespace homeworldz::region

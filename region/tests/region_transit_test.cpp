@@ -504,5 +504,76 @@ int main() {
             stepping_north.south)
             return 43;
     }
+
+    // A teleport away from a region keeps its viewer circuit there only when the
+    // destination borders it. Kept for a far teleport, the viewer held a stale
+    // Nova, and on the return its first appearance request found no capability
+    // (2026-10-14).
+    {
+        homeworldz::grid::RegionNeighbor lazy;
+        lazy.id = "4aa21394-7aa9-4294-bf3b-584dca7a62a3";
+        const std::vector<homeworldz::grid::RegionNeighbor> nova_neighbors{lazy};
+        if (!homeworldz::region::region_borders(nova_neighbors, lazy.id)) return 44;
+        if (homeworldz::region::region_borders(nova_neighbors,
+                                               "6720c401-788d-4d1a-b97c-e193c42e39b9"))
+            return 45;  // Welcome
+        if (homeworldz::region::region_borders(nova_neighbors, "")) return 46;  // logged out
+    }
+
+    // The release a neighbour receives, round-tripped through its URL target.
+    {
+        using homeworldz::region::ChildRelease;
+        const ChildRelease moved{"s-1", "home-a", "dest-c"};
+        const auto parsed =
+            homeworldz::region::parse_child_release_target(homeworldz::region::child_release_target(moved));
+        if (!parsed || parsed->session_id != "s-1" || parsed->home_region_id != "home-a" ||
+            parsed->destination_region_id != "dest-c")
+            return 47;
+        // A logout names only the session, as every release did before.
+        const auto ended = homeworldz::region::parse_child_release_target("s-1");
+        if (!ended || ended->session_id != "s-1" || !ended->home_region_id.empty() ||
+            homeworldz::region::child_release_target(*ended) != "s-1")
+            return 48;
+        if (homeworldz::region::parse_child_release_target("") ||
+            homeworldz::region::parse_child_release_target("?home=a"))
+            return 49;
+    }
+
+    // Three regions in a row, A B C. The avatar stands in A, so B holds it as a
+    // child, homed at A. It teleports to C. A closes its own circuit and tells B
+    // where the avatar went; B borders C, so C is about to claim the child, and
+    // closing it would hand the viewer a second seed for a region it holds.
+    {
+        using homeworldz::region::ChildReleaseAction;
+        using homeworldz::region::decide_child_release;
+        homeworldz::region::ChildAgent held;
+        held.session_id = "s-1";
+        held.home_region_id = "region-a";
+        const homeworldz::region::ChildRelease to_c{"s-1", "region-a", "region-c"};
+        // B, beside C: kept.
+        if (decide_child_release(to_c, &held, false, true) != ChildReleaseAction::keep) return 50;
+        // A region beside A but not C: closed.
+        if (decide_child_release(to_c, &held, false, false) != ChildReleaseAction::close) return 51;
+        // C already re-announced the child before A's release arrived, so it is
+        // C's now, and A's release is not A's to act on.
+        auto claimed = held;
+        claimed.home_region_id = "region-c";
+        if (decide_child_release(to_c, &claimed, false, false) != ChildReleaseAction::ignore)
+            return 52;
+        // The teleport was to B itself and has already arrived: never close the
+        // circuit the avatar is standing on.
+        const homeworldz::region::ChildRelease to_b{"s-1", "region-a", "region-b"};
+        if (decide_child_release(to_b, nullptr, true, true) != ChildReleaseAction::ignore)
+            return 53;
+        // To B, still in flight: the arrival will promote this child.
+        if (decide_child_release(to_b, &held, false, true) != ChildReleaseAction::keep) return 54;
+        // Nothing held: nothing to do.
+        if (decide_child_release(to_c, nullptr, false, false) != ChildReleaseAction::ignore)
+            return 55;
+        // A logout still forgets the child, as it always did.
+        const homeworldz::region::ChildRelease ended{"s-1", "", ""};
+        if (decide_child_release(ended, &held, false, false) != ChildReleaseAction::forget)
+            return 56;
+    }
     return 0;
 }
