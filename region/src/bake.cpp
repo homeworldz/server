@@ -75,27 +75,37 @@ std::array<std::uint8_t, 3> hair_tint(const Wearable& w) {
 // 806/807/808 = .8/.2/.2). Hair uses the global-color ramp above; other body
 // parts (skin/shape/eyes) carry no such params and render untinted.
 // Clothing alpha masks. The default shirt/pants use the opaque Blank texture,
-// so their coverage is defined entirely by parametrized alpha masks (from
-// avatar_lad.xml). Each entry names a TGA mask resource, the wearable param
-// whose value thresholds it, and whether it multiplies (carves) rather than
-// unions. Mirrors LibreMetaverse's bake: normal masks union their coverage,
-// multiply masks remove it; the threshold per texel is
-// mask <= (1-value)*255 -> transparent, else opaque.
+// so their coverage is defined entirely by parametrized alpha masks, and this
+// reproduces how a viewer renders them (avatar_lad.xml, the shirt layer of
+// upper_body and the pants layer of lower_body).
+//
+// A wearable carries the slider a creator moved, which is a driver: Sleeve
+// Length (800) drives Sleeve Length Cloth (600), whose range is 0..0.85, and
+// the mask is rendered at the driven weight. Thresholding on the slider made a
+// 0.73 sleeve render at 0.73 rather than 0.62 - three-quarter length to every
+// watcher, half length to its wearer.
 struct ClothingMask {
-    const char* name;
-    std::uint32_t param;
-    bool multiply;
+    const char* name;      // TGA in the default-avatar asset directory
+    std::uint32_t driver;  // the wearable's slider
+    double driver_default; // its value_default, when the wearable omits it
+    double max1;           // the driven entry's max1: driver weight at full drive
+    double driven_max;     // the driven param's value_max (value_min is 0)
+    double domain;         // the param_alpha domain: width of the soft edge
+    bool multiply;         // multiply_blend: carve coverage rather than add it
 };
 
 const std::vector<ClothingMask>* clothing_masks(WearableType type) {
+    // In layer order, which matters: an added mask unions coverage and a
+    // multiplied one carves what has accumulated so far.
     static const std::vector<ClothingMask> shirt = {
-        {"shirt_sleeve_alpha", 800, false},  // Sleeve Length: base upper coverage
-        {"shirt_bottom_alpha", 801, true},   // Shirt Bottom: carve the hem
-        {"shirt_collar_alpha", 802, true},   // Collar Front: carve the neck
+        {"shirt_sleeve_alpha", 800, 0.89, 1.0, 0.85, 0.01, false},      // 600
+        {"shirt_bottom_alpha", 801, 1.0, 1.0, 1.0, 0.05, true},         // 601
+        {"shirt_collar_alpha", 802, 0.78, 1.0, 1.0, 0.05, true},        // 602
+        {"shirt_collar_back_alpha", 781, 0.78, 1.0, 1.0, 0.05, true},   // 778
     };
     static const std::vector<ClothingMask> pants = {
-        {"pants_length_alpha", 815, false},  // Pants Length: base lower coverage
-        {"pants_waist_alpha", 814, false},   // Waist Height
+        {"pants_waist_alpha", 814, 1.0, 1.0, 1.0, 0.05, false},   // 614
+        {"pants_length_alpha", 815, 0.8, 0.9, 1.0, 0.01, false},  // 615
     };
     switch (type) {
         case WearableType::Shirt: return &shirt;
@@ -104,39 +114,43 @@ const std::vector<ClothingMask>* clothing_masks(WearableType type) {
     }
 }
 
-// Threshold a grayscale mask by a param value into 0/255 (LMV ApplyAlpha).
-std::uint8_t threshold_texel(std::uint8_t texel, double value) {
-    return (static_cast<double>(texel) <= (1.0 - value) * 255.0) ? std::uint8_t{0}
-                                                                  : std::uint8_t{255};
+// LLDriverParam::getDrivenWeight for a 0..1 driver and a driven param whose
+// minimum is 0, with min1 = 0 and max2 = min2 = 1 as every entry above has.
+double driven_weight(const ClothingMask& e, double driver) {
+    if (driver <= 0.0) return 0.0;
+    if (driver >= e.max1) return e.driven_max;
+    return driver / e.max1 * e.driven_max;
+}
+
+// LLImageTGA::decodeAndProcess: a ramp one domain wide, placed by the weight.
+std::array<std::uint8_t, 256> mask_ramp(double domain, double weight) {
+    const double scale = 1.0 / domain;
+    const double bias = -scale * (1.0 - domain) * std::clamp(1.0 - weight, 0.0, 1.0);
+    std::array<std::uint8_t, 256> lut{};
+    for (int i = 0; i < 256; ++i) {
+        const double v = std::clamp(255.0 * (i / 255.0 * scale + bias), 0.0, 255.0);
+        lut[i] = static_cast<std::uint8_t>(v);
+    }
+    return lut;
 }
 
 // Build the combined alpha mask (1-channel L Image) for a clothing wearable, or
-// nullopt if it has no masks defined or none could be loaded.
+// nullopt if it has no masks defined or none could be loaded. LLTexLayer::
+// renderMorphMasks: coverage starts empty, added masks sum (saturating) and
+// multiplied ones scale what is there.
 std::optional<image::Image> clothing_alpha(const Wearable& w, const MaskFetch& mask_fetch) {
     if (!mask_fetch) return std::nullopt;
     const std::vector<ClothingMask>* entries = clothing_masks(w.type);
     if (entries == nullptr) return std::nullopt;
 
-    const auto load = [&](const char* name) -> std::optional<image::Image> {
-        auto bytes = mask_fetch(name);
-        if (!bytes || bytes->empty()) return std::nullopt;
-        auto img = image::decode_tga(*bytes);
-        if (!img || img->empty()) return std::nullopt;
-        return img;
-    };
-
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> combined;
-    int normal_added = 0;
-
-    // Pass 1: normal-blend masks union their coverage.
-    for (const auto& e : *entries) {
-        if (e.multiply) continue;
-        const auto it = w.parameters.find(e.param);
-        if (it == w.parameters.end()) continue;
-        auto img = load(e.name);
-        if (!img) continue;
+    for (const ClothingMask& e : *entries) {
+        auto bytes = mask_fetch(e.name);
+        if (!bytes || bytes->empty()) continue;
+        auto img = image::decode_tga(*bytes);
+        if (!img || img->empty()) continue;
         if (combined.empty()) {
             width = img->width;
             height = img->height;
@@ -144,33 +158,18 @@ std::optional<image::Image> clothing_alpha(const Wearable& w, const MaskFetch& m
         } else if (img->width != width || img->height != height) {
             *img = image::resize_nearest(*img, width, height);
         }
-        const double v = std::clamp(it->second, 0.0, 1.0);
+        const auto it = w.parameters.find(e.driver);
+        const double driver = it == w.parameters.end() ? e.driver_default : it->second;
+        const auto lut = mask_ramp(e.domain, driven_weight(e, std::clamp(driver, 0.0, 1.0)));
         const std::uint8_t ch = img->channels;
-        const std::size_t n = static_cast<std::size_t>(width) * height;
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::uint8_t a = threshold_texel(img->pixels[i * ch], v);
-            if (a > combined[i]) combined[i] = a;
+        for (std::size_t i = 0; i < combined.size(); ++i) {
+            const std::uint32_t texel = lut[img->pixels[i * ch]];
+            combined[i] = e.multiply
+                              ? static_cast<std::uint8_t>(combined[i] * texel / 255)
+                              : static_cast<std::uint8_t>(std::min<std::uint32_t>(255, combined[i] + texel));
         }
-        ++normal_added;
     }
     if (combined.empty()) return std::nullopt;
-    if (normal_added == 0) std::fill(combined.begin(), combined.end(), 255);
-
-    // Pass 2: multiply-blend masks carve coverage away.
-    for (const auto& e : *entries) {
-        if (!e.multiply) continue;
-        const auto it = w.parameters.find(e.param);
-        if (it == w.parameters.end()) continue;
-        auto img = load(e.name);
-        if (!img) continue;
-        if (img->width != width || img->height != height)
-            *img = image::resize_nearest(*img, width, height);
-        const double v = std::clamp(it->second, 0.0, 1.0);
-        const std::uint8_t ch = img->channels;
-        const std::size_t n = static_cast<std::size_t>(width) * height;
-        for (std::size_t i = 0; i < n; ++i)
-            if (threshold_texel(img->pixels[i * ch], v) == 0) combined[i] = 0;
-    }
 
     image::Image mask;
     mask.width = width;

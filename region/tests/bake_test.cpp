@@ -185,21 +185,24 @@ int main() {
     }
 
     // The clothing morph mask: covered where the shirt is, bare where it is
-    // not, so a viewer flares a sleeve and leaves the forearm alone. A 2x1
-    // grayscale sleeve mask, 0 on the left and 255 on the right, at a sleeve
-    // length that keeps only the right.
+    // not, so a viewer flares a sleeve and leaves the forearm alone. A 3x1
+    // grayscale sleeve mask of 0, 80 and 255, at Spicy's sleeve length of
+    // 0.73. The mask is rendered at the driven weight, 0.73 x 0.85 = 0.62,
+    // which leaves texel 80 bare; thresholding on the slider itself covered
+    // it, and drew her half-length sleeve three-quarter length to watchers.
     {
         const char* const kShirtTex = "eeeeeeee-0000-0000-0000-000000000001";
         Wearable shirt = make_wearable(WearableType::Shirt, {{tx::kUpperShirt, kShirtTex}});
-        shirt.parameters[800] = 0.5;
+        shirt.parameters[800] = 0.73;
         auto shirt_worn = worn;
         shirt_worn.push_back(shirt);
         std::vector<std::uint8_t> sleeve_tga(18, 0);
         sleeve_tga[2] = 3;
-        sleeve_tga[12] = 2;
+        sleeve_tga[12] = 3;
         sleeve_tga[14] = 1;
         sleeve_tga[16] = 8;
         sleeve_tga.push_back(0);
+        sleeve_tga.push_back(80);
         sleeve_tga.push_back(255);
         auto mask_fetch = [&](std::string_view name) -> std::optional<std::vector<std::uint8_t>> {
             if (name == "shirt_sleeve_alpha") return sleeve_tga;
@@ -212,6 +215,8 @@ int main() {
                      "the upper morph mask is one channel at the bake's size");
         if (upper && upper->pixels.size() == 512u * 512u) {
             ok &= expect(upper->pixels[0] == 0, "bare where the shirt does not reach");
+            ok &= expect(upper->pixels[256] == 0,
+                         "the sleeve ends where the driven weight puts it, not the slider");
             ok &= expect(upper->pixels[511] == 255, "covered where the shirt is");
         }
         // No masked clothing in the lower set: covered everywhere, as the
