@@ -570,6 +570,27 @@ int main() {
         // Nothing held: nothing to do.
         if (decide_child_release(to_c, nullptr, false, false) != ChildReleaseAction::ignore)
             return 55;
+        // A region's own far departure, closed a minute later. Not at once: the
+        // viewer still stands in this region until its teleport completes, and
+        // closing then logged Jim out mid-teleport.
+        homeworldz::grid::RegionNeighbor beside;
+        beside.id = "region-b";
+        const std::vector<homeworldz::grid::RegionNeighbor> a_neighbors{beside};
+        homeworldz::region::ChildAgent left_for_c = held;
+        left_for_c.home_region_id = "region-c";
+        if (!homeworldz::region::far_departure_closes(&left_for_c, "region-c", false, a_neighbors))
+            return 57;
+        // Back in A within the minute.
+        if (homeworldz::region::far_departure_closes(nullptr, "region-c", true, a_neighbors))
+            return 58;
+        // Moved on from C into B, which borders A, and B claimed A's child.
+        auto moved_beside = left_for_c;
+        moved_beside.home_region_id = "region-b";
+        if (homeworldz::region::far_departure_closes(&moved_beside, "region-c", false, a_neighbors))
+            return 59;
+        // The child already went (expired or released): nothing to close.
+        if (homeworldz::region::far_departure_closes(nullptr, "region-c", false, a_neighbors))
+            return 60;
         // A logout still forgets the child, as it always did.
         const homeworldz::region::ChildRelease ended{"s-1", "", ""};
         if (decide_child_release(ended, &held, false, false) != ChildReleaseAction::forget)

@@ -3478,6 +3478,21 @@ int main(int argc, char* argv[]) {
     };
     constexpr auto departure_kill_delay = std::chrono::seconds(2);
     std::vector<PendingDepartureKill> pending_departure_kills;
+    // A viewer that teleported somewhere not bordering here, whose circuit is
+    // closed once it has surely arrived. Kept, the viewer holds this region as
+    // a stale copy, and a later teleport back reuses it with its capabilities
+    // emptied (2026-10-14). Closed at once, the viewer is told to drop the
+    // region it is still standing in: Firestorm changes region only when the
+    // move completes, after it has fetched the destination's capabilities, and
+    // the grid moves the session when the transit activates, before that. The
+    // first deploy did exactly this, and logged Jim out mid-teleport.
+    struct PendingFarClose {
+        std::string session_id;
+        std::string destination_region_id;
+        std::chrono::steady_clock::time_point due;
+    };
+    constexpr auto far_close_delay = std::chrono::seconds(60);
+    std::vector<PendingFarClose> pending_far_closes;
     const auto cancel_departure_kill = [&pending_departure_kills](std::uint64_t entity_id) {
         const auto local_id = static_cast<std::uint32_t>(entity_id);
         for (auto& pending : pending_departure_kills)
@@ -6497,6 +6512,41 @@ int main(int argc, char* argv[]) {
                          "\"localId\":" << pending.local_ids.front() << ",\"objects\":"
                       << pending.local_ids.size() << ",\"recipients\":" << kill_recipients
                       << ",\"deferred\":true}" << std::endl;
+            return true;
+        });
+        // Far departures whose viewer has had time to arrive: drop the child
+        // and tell the viewer to forget this region, unless it has come back.
+        std::erase_if(pending_far_closes, [&](const PendingFarClose& pending) {
+            if (pending.due > http_now) return false;
+            const bool avatar_here = std::any_of(avatars.begin(), avatars.end(),
+                [&](const auto& entry) { return entry.second.session_id == pending.session_id; });
+            if (!homeworldz::region::far_departure_closes(
+                    child_agents.find(pending.session_id, http_now),
+                    pending.destination_region_id, avatar_here, region_neighbors)) {
+                std::cout << "{\"level\":\"info\",\"message\":\"far departure close skipped\","
+                             "\"session\":" << homeworldz::api::json_string(pending.session_id)
+                          << ",\"returned\":" << (avatar_here ? "true" : "false") << "}" << std::endl;
+                return true;
+            }
+            child_agents.remove(pending.session_id);
+            std::size_t closed = 0;
+            if (const auto session_uuid = homeworldz::viewer::parse_uuid(pending.session_id)) {
+                for (int facet = 0; facet < facet_count; ++facet) {
+                    const auto key = circuits.session_endpoint_for_facet(*session_uuid, facet);
+                    if (!key) continue;
+                    homeworldz::viewer::Packet disable_packet;
+                    disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
+                    static_cast<void>(send_udp(viewer_server, *key,
+                        homeworldz::viewer::encode_packet(disable_packet)));
+                    child_backfilled.erase(*key);
+                    static_cast<void>(circuits.remove(*key));
+                    ++closed;
+                }
+            }
+            std::cout << "{\"level\":\"info\",\"message\":\"far departure circuit closed\","
+                         "\"session\":" << homeworldz::api::json_string(pending.session_id)
+                      << ",\"destination\":" << homeworldz::api::json_string(pending.destination_region_id)
+                      << ",\"circuits\":" << closed << "}" << std::endl;
             return true;
         });
         fd_set readable;
@@ -15690,14 +15740,12 @@ int main(int argc, char* argv[]) {
         struct DepartedAvatar {
             std::string endpoint;
             std::string session_id;
-            // A move next door, rather than a logout, a lost connection or a
-            // teleport somewhere that does not border here: the avatar can walk
-            // back, and its viewer keeps this region as a neighbour.
+            // A crossing or teleport, rather than a logout or a lost connection:
+            // the avatar is somewhere else on this grid and can come back.
             bool demote{};
-            // Where the grid says it went, or empty when the session ended.
-            // Carried rather than re-derived: this is the one place that
-            // knows, and a child agent whose home region is a guess is a child
-            // agent that cannot be told from a stale one.
+            // Where the grid says it went. Carried rather than re-derived: this
+            // is the one place that knows, and a child agent whose home region
+            // is a guess is a child agent that cannot be told from a stale one.
             std::string home_region_id;
         };
         std::vector<DepartedAvatar> departed_avatars;
@@ -15981,16 +16029,15 @@ int main(int argc, char* argv[]) {
                     if (!session || !registration ||
                         session->destination_region_id != registration->region_id()) {
                         // The grid says this session belongs to another region
-                        // now. If that region borders this one, the avatar
-                        // crossed or teleported next door and this region
-                        // becomes a child of it; if it is further away, the
-                        // circuit is closed rather than kept; if the session is
-                        // gone entirely, it logged out.
-                        const auto destination = session.has_value() ?
-                            session->destination_region_id : std::string{};
-                        const bool next_door =
-                            homeworldz::region::region_borders(region_neighbors, destination);
-                        departed_avatars.push_back({endpoint, session_id, next_door, destination});
+                        // now. If it named one, the avatar crossed or teleported
+                        // and this region becomes a child of it; if the session
+                        // is gone entirely, it logged out. A destination that
+                        // does not border here is closed later, not now
+                        // (pending_far_closes says why).
+                        const bool crossed = session.has_value() &&
+                            !session->destination_region_id.empty();
+                        departed_avatars.push_back({endpoint, session_id, crossed,
+                            crossed ? session->destination_region_id : std::string{}});
                         continue;
                     }
                 } catch (const std::exception& error) {
@@ -16660,26 +16707,20 @@ int main(int argc, char* argv[]) {
                           << ",\"worn\":" << child.worn.size()
                           << ",\"appearance\":" << (child.has_appearance() ? "true" : "false")
                           << ",\"children\":" << child_agents.size(now) << "}" << std::endl;
-            } else {
-                // Moved somewhere that does not border here. The session lives
-                // on, so the viewer would keep this region as a stale copy
-                // unless told to drop it; clear_viewer_endpoint has already
-                // done so for the other facets. Neighbours holding this
-                // session as a child are told where it went, so each can keep
-                // its child if the new region borders it too.
-                const auto& destination = departed.home_region_id;
-                if (!destination.empty()) {
-                    homeworldz::viewer::Packet disable_packet;
-                    disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
-                    static_cast<void>(send_udp(viewer_server, endpoint,
-                        homeworldz::viewer::encode_packet(disable_packet)));
-                    release_child_agents_for(session_id, destination);
+                // Somewhere that does not border here: this circuit is closed
+                // once the viewer has had time to arrive. The neighbours are
+                // told now, since a viewer can drop a region that is not its
+                // own mid-teleport, and the 30-second sweep would otherwise
+                // forget which of them it told about this session.
+                if (!homeworldz::region::region_borders(region_neighbors, departed.home_region_id)) {
+                    pending_far_closes.push_back(
+                        {session_id, departed.home_region_id, now + far_close_delay});
+                    release_child_agents_for(session_id, departed.home_region_id);
                 }
+            } else {
                 circuits.remove(endpoint);
                 std::cout << "{\"level\":\"info\",\"message\":\"departed avatar retired\",\"sessionId\":"
-                          << homeworldz::api::json_string(session_id)
-                          << ",\"destination\":" << homeworldz::api::json_string(destination)
-                          << "}" << std::endl;
+                          << homeworldz::api::json_string(session_id) << "}" << std::endl;
             }
         }
         for (const auto& participant_key : crossing_session_avatars)

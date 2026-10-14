@@ -383,6 +383,13 @@ enum class ChildReleaseAction {
 ChildReleaseAction decide_child_release(const ChildRelease& release, const ChildAgent* held,
                                         bool avatar_here, bool destination_borders_here);
 
+// Whether the delayed close of a far departure goes ahead. Not if the avatar is
+// back, and not if the child here has been claimed since by a region other than
+// the one the avatar left for, or by one that borders here: either way this
+// region is somewhere the viewer should still see.
+bool far_departure_closes(const ChildAgent* held, std::string_view destination_region_id,
+                          bool avatar_here, const std::vector<grid::RegionNeighbor>& neighbors);
+
 class CapabilityArrivalGate {
 public:
     bool mark_seed_served(std::string_view session_id, std::string_view visit_id);

@@ -751,4 +751,11 @@ ChildReleaseAction decide_child_release(const ChildRelease& release, const Child
     return ChildReleaseAction::close;
 }
 
+bool far_departure_closes(const ChildAgent* held, std::string_view destination_region_id,
+                          bool avatar_here, const std::vector<grid::RegionNeighbor>& neighbors) {
+    if (avatar_here || held == nullptr) return false;
+    if (held->home_region_id != destination_region_id) return false;
+    return !region_borders(neighbors, held->home_region_id);
+}
+
 } // namespace homeworldz::region
