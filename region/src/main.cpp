@@ -6033,7 +6033,17 @@ int main(int argc, char* argv[]) {
     // root avatar's circuit must never be sent DisableSimulator, which makes
     // the viewer log out of the region it is standing in. Returns how many
     // circuits were closed.
+    //
+    // Switched off. Firestorm crashed both times it was told to drop Welcome
+    // while standing on Nova (2026-10-15, 02:18:57 and 02:23:48), each within a
+    // second of this helper's DisableSimulator; dropping Nova, Lazy, Beta,
+    // Sandbox and Strait the same way did not. Until whatever in Welcome makes
+    // its removal fatal is found, no region tells a viewer to drop it on a
+    // release, an expiry or a far departure — which is how every region behaved
+    // before these closes existed.
+    constexpr bool disable_simulator_on_close = false;
     const auto close_child_circuits = [&](const std::string& session_id) {
+        if (!disable_simulator_on_close) return std::size_t{0};
         const auto session_uuid = homeworldz::viewer::parse_uuid(session_id);
         if (!session_uuid) return std::size_t{0};
         std::size_t closed = 0;
@@ -16717,7 +16727,10 @@ int main(int argc, char* argv[]) {
                 // told now, since a viewer can drop a region that is not its
                 // own mid-teleport, and the 30-second sweep would otherwise
                 // forget which of them it told about this session.
-                if (!homeworldz::region::region_borders(region_neighbors, departed.home_region_id)) {
+                // Off with disable_simulator_on_close: a release would remove the
+                // neighbours' children under a viewer still polling them.
+                if (disable_simulator_on_close &&
+                    !homeworldz::region::region_borders(region_neighbors, departed.home_region_id)) {
                     pending_far_closes.push_back(
                         {session_id, departed.home_region_id, now + far_close_delay});
                     release_child_agents_for(session_id, departed.home_region_id);
