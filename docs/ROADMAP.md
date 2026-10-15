@@ -13,8 +13,8 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="45">45%</progress>
- <strong>45%</strong>
+  <progress data-color="primary" max="100" value="46">46%</progress>
+ <strong>46%</strong>
 </label>
 </p>
 
@@ -55,7 +55,7 @@ client.
 - [x] Provide default body parts, clothing, Current Outfit links, legacy avatar baking, and persistent appearance across relogs.
 - [x] Provide a read-only system Library with default avatar and terrain content.
 - [x] Synchronize nearby avatar presence, movement, appearance rebakes, and animation changes between concurrently connected viewers.
-- [x] Bake avatar appearance **server-side**, so thin and headless clients rez correctly with no client-side baking; SSB delivery to full viewers remains.
+- [x] Bake avatar appearance **server-side**, so thin and headless clients rez correctly with no client-side baking. *Delivery to full viewers — telling Firestorm the region bakes, so it stops baking for itself — is built and proven in Firestorm on the Nova/Lazy pair (2026-10-14): login, outfit changes, crossings, and teleports out and back. Proving it found three places the bake differed from a viewer's own, each invisible while viewers baked for themselves: the eyes lacked the white beneath the iris, the clothing morph mask (a bake's fifth channel) was missing so sleeve and cuff flare reshaped bare forearms, and clothing masks were sized by the slider rather than the parameter it drives. It is not yet switched on for the other six regions, and must be switched on for all of them together: a viewer carrying server bakes into a region that does not claim them cannot send its next outfit change.*
 - [x] Bake the wearer's own Current Outfit rather than one fixed outfit, cached per outfit.
 - [x] Broadcast `KillObject` for a departing avatar through the one teardown point every removal path funnels into, so it stops lingering in other viewers' views.
 - [x] Support alpha layers for viewers, so a mesh body hides the default body.
@@ -188,7 +188,7 @@ processes rather than within one, and the same three problems have to be
 solved again across a boundary where the neighbour is another server that can
 be slow, restarting, or gone.
 
-- [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it. *Announcement and establishment are proven — 94 child agents established on the cloud grid and none refused. A neighbour that was still starting used to refuse the one offer it was ever made; refusals are retried, a child is renewed by its session's own traffic instead of expiring under a viewer still holding it, and a session's home region releases its children when it ends. Telling a viewer a neighbour has gone is now built and proven: a region clears what it showed each watching circuit before it restarts, and again when a child expires.*
+- [ ] Advertise every online neighbour to a viewer on arrival and as neighbours appear or go offline, so it establishes a standing child circuit to each rather than learning of one only by crossing into it. *Announcement and establishment are proven — 94 child agents established on the cloud grid and none refused. A neighbour that was still starting used to refuse the one offer it was ever made; refusals are retried, a child is renewed by its session's own traffic instead of expiring under a viewer still holding it, and a session's home region releases its children when it ends. Telling a viewer a neighbour has gone is now built and proven: a region clears what it showed each watching circuit before it restarts, and again when a child expires. A neighbour's EnableSimulator and its seed now leave in one response (2026-10-14): a viewer with several event polls open could receive the seed first and discard it, leaving that neighbour without capabilities. Closing the regions a viewer leaves behind on a far teleport is built and was proven live, but is switched off: Firestorm crashed both times it was told to drop Welcome, and until the cause is found every region behaves as before, leaving the viewer a stale copy that costs one failed appearance request on return.*
 - [ ] Serve objects to a viewer whose avatar stands in a neighbouring region, interest-filtered by that viewer's camera and draw distance rather than by which region it belongs to.
 - [ ] Serve avatars the same way, so a resident is visible to people standing across the line and their movement is continuous rather than appearing only on arrival. *Built 2026-08-22 — movement, animations, arrivals, departures, and appearance changes all reach standing child circuits; awaiting live proof.*
 - [ ] Say out loud when something leaves a neighbouring viewer's interest, since a viewer keeps what it was told about and a silent departure strands an object at a stale position forever. *The departures that do not depend on interest are done and proven live (2026-08-27): a region names everything it showed a watching circuit before it restarts, and again when a child expires, rather than falling silent and leaving a frozen copy on screen until logout. The interest half waits on the filtering above, which does not exist yet — nothing can leave a filter there is none of.*
