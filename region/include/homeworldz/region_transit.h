@@ -338,6 +338,14 @@ private:
     std::unordered_map<std::string, Entry> entries_;
 };
 
+// Which facet holds a region-local position in metres, for a region of
+// `columns` x `rows` 256 m tiles whose facets are numbered row by row from its
+// corner (ADR 0036). Each axis is clamped onto the region, so a position a
+// little outside it still names the nearest facet, and the result is never
+// beyond `facet_count - 1`. Choosing by one axis only — what this replaced —
+// put every point of a 4x2's northern row in its southern row.
+int facet_at_position(double x, double y, int columns, int rows, int facet_count);
+
 // Whether `region_id` is one of `neighbors`. A departure keeps its viewer
 // circuit here, as a child, only when the avatar went next door: a child
 // circuit exists so a neighbour's viewer can see across the line, and a

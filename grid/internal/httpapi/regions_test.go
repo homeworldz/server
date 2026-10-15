@@ -550,12 +550,14 @@ func TestRegionLookupResolvesDestinationsAnywhereOnTheGrid(t *testing.T) {
 		t.Fatalf("live lookup = %#v", live)
 	}
 
-	// A var region answers for every square it covers, not only its corner,
-	// and an offline one is reported as placed-but-down rather than absent.
+	// A large region answers for every tile it covers, not only its corner —
+	// with the 256 m facet on that tile — and an offline one is reported as
+	// placed-but-down rather than absent.
 	inner := requestRegion[RegionTopology](t, handler, http.MethodGet,
 		"/api/v1/regions/lookup?gridX=1005&gridY=1001", "", http.StatusOK)
-	if inner.Name != "Gamma" || inner.Online || inner.SizeX != 512 || inner.SizeY != 512 {
-		t.Fatalf("var-region lookup = %#v", inner)
+	if inner.Name != "Gamma 4" || inner.Facet != 3 || inner.Online ||
+		inner.GridX != 1005 || inner.GridY != 1001 || inner.SizeX != 256 || inner.SizeY != 256 {
+		t.Fatalf("large-region lookup = %#v", inner)
 	}
 	byID := requestRegion[RegionTopology](t, handler, http.MethodGet,
 		"/api/v1/regions/lookup?id=22222222-2222-4222-8222-222222222222", "", http.StatusOK)

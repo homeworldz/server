@@ -2,6 +2,7 @@
 #include "homeworldz/region_transit.h"
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -228,33 +229,52 @@ int main() {
                 std::make_shared<CannedTransport>(200, body));
             return rectangle_client.register_provisioned_region("Shore", provisioned_settings);
         };
-        const auto shore = register_with(rectangle_reply(
-            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012},)"
-            R"({"index":1,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":512,"viewerPort":42013}])"));
+        // Eight 256 m facets, row by row from the corner, as the grid sends
+        // them. `edit` lets a case corrupt one facet before it is rendered.
+        const auto shore_facets = [](const std::function<void(int, std::string&, int&, int&, int&, int&)>& edit,
+                                     int count = 8) {
+            std::string list = "[";
+            for (int index = 0; index < count; ++index) {
+                std::string name = index == 0 ? "Shore" : index == 1 ? "Cliffs" : "Shore " + std::to_string(index + 1);
+                int listed_index = index, grid_x = 1000 + index % 4, grid_y = 1000 + index / 4, edge = 256;
+                if (edit) edit(index, name, listed_index, grid_x, grid_y, edge);
+                if (index != 0) list += ",";
+                list += R"({"index":)" + std::to_string(listed_index) + R"(,"name":")" + name +
+                        R"(","gridX":)" + std::to_string(grid_x) + R"(,"gridY":)" + std::to_string(grid_y) +
+                        R"(,"edge":)" + std::to_string(edge) + R"(,"viewerPort":)" +
+                        std::to_string(42012 + index) + "}";
+            }
+            return list + "]";
+        };
+        const auto shore = register_with(rectangle_reply(shore_facets({})));
         if (!shore || shore->size_x != 1024 || shore->size_y != 512 ||
-            shore->facets.size() != 2 ||
+            shore->facets.size() != 8 ||
             shore->facets[0].index != 0 || shore->facets[0].name != "Shore" ||
             shore->facets[0].grid_x != 1000 || shore->facets[0].grid_y != 1000 ||
-            shore->facets[0].edge != 512 || shore->facets[0].viewer_port != 42012 ||
-            shore->facets[1].index != 1 || shore->facets[1].name != "Cliffs" ||
-            shore->facets[1].grid_x != 1002 || shore->facets[1].grid_y != 1000 ||
-            shore->facets[1].edge != 512 || shore->facets[1].viewer_port != 42013) return 1;
+            shore->facets[0].edge != 256 || shore->facets[0].viewer_port != 42012 ||
+            shore->facets[1].name != "Cliffs" || shore->facets[1].grid_x != 1001 ||
+            shore->facets[4].grid_x != 1000 || shore->facets[4].grid_y != 1001 ||
+            shore->facets[7].grid_x != 1003 || shore->facets[7].grid_y != 1001 ||
+            shore->facets[7].viewer_port != 42019) return 1;
         // A rectangle without a facet list cannot be presented — the process
-        // has no names or ports for its squares. Refused, never guessed.
+        // has no names or ports for its tiles. Refused, never guessed.
         if (register_with(rectangle_reply({}))) return 1;
-        // A list that skips an index, uses the wrong edge, is short one facet,
-        // or opens with a facet that is not the region itself is refused whole.
-        if (register_with(rectangle_reply(
-            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012},)"
-            R"({"index":2,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":512,"viewerPort":42013}])"))) return 1;
-        if (register_with(rectangle_reply(
-            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":256,"viewerPort":42012},)"
-            R"({"index":1,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":256,"viewerPort":42013}])"))) return 1;
-        if (register_with(rectangle_reply(
-            R"([{"index":0,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012}])"))) return 1;
-        if (register_with(rectangle_reply(
-            R"([{"index":0,"name":"Cliffs","gridX":1002,"gridY":1000,"edge":512,"viewerPort":42013},)"
-            R"({"index":1,"name":"Shore","gridX":1000,"gridY":1000,"edge":512,"viewerPort":42012}])"))) return 1;
+        // A list that skips an index, uses a 512 m edge, is short one facet,
+        // places a facet off its tile, or opens with a facet that is not the
+        // region itself is refused whole.
+        if (register_with(rectangle_reply(shore_facets(
+                [](int index, std::string&, int& listed, int&, int&, int&) { if (index == 3) listed = 9; }))))
+            return 1;
+        if (register_with(rectangle_reply(shore_facets(
+                [](int, std::string&, int&, int&, int&, int& edge) { edge = 512; }))))
+            return 1;
+        if (register_with(rectangle_reply(shore_facets({}, 7)))) return 1;
+        if (register_with(rectangle_reply(shore_facets(
+                [](int index, std::string&, int&, int&, int& grid_y, int&) { if (index == 5) grid_y = 1000; }))))
+            return 1;
+        if (register_with(rectangle_reply(shore_facets(
+                [](int index, std::string& name, int&, int&, int&, int&) { if (index == 0) name = "Cliffs"; }))))
+            return 1;
     }
     const auto neighbors = client.find_region_neighbors(provisioned->id);
     if (!neighbors || neighbors->size() != 1 || neighbors->front().direction != "west" ||

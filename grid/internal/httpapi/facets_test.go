@@ -57,43 +57,51 @@ func TestRectangularRegionPresentsAsFacets(t *testing.T) {
 	if registered.SizeX != 1024 || registered.SizeY != 512 {
 		t.Fatalf("macro extent = %dx%d, want 1024x512", registered.SizeX, registered.SizeY)
 	}
-	if len(registered.Facets) != 2 ||
+	// Eight 256 m facets, row by row from the corner: Firestorm keeps one
+	// region width for the whole world, so every facet is a 256 m region.
+	if len(registered.Facets) != 8 ||
 		registered.Facets[0].Name != "Shore" || registered.Facets[0].GridX != 1000 ||
-		registered.Facets[0].ViewerPort != 42012 || registered.Facets[0].Edge != 512 ||
-		registered.Facets[1].Name != "Cliffs" || registered.Facets[1].GridX != 1002 ||
-		registered.Facets[1].GridY != 1000 || registered.Facets[1].ViewerPort != 42013 {
+		registered.Facets[0].ViewerPort != 42012 || registered.Facets[0].Edge != 256 ||
+		registered.Facets[1].Name != "Cliffs" || registered.Facets[1].GridX != 1001 ||
+		registered.Facets[1].GridY != 1000 || registered.Facets[1].ViewerPort != 42013 ||
+		registered.Facets[4].Name != "Shore 5" || registered.Facets[4].GridX != 1000 ||
+		registered.Facets[4].GridY != 1001 || registered.Facets[7].ViewerPort != 42019 {
 		t.Fatalf("facet list = %#v", registered.Facets)
 	}
 
 	// Topology: one square entry per facet, sharing the region's id.
 	topology := requestRegion[RegionTopologyList](t, handler, http.MethodGet,
 		"/api/v1/regions/topology", "", http.StatusOK)
-	if len(topology.Regions) != 3 {
-		t.Fatalf("topology entries = %d, want 3 (two facets + Uplands)", len(topology.Regions))
+	if len(topology.Regions) != 9 {
+		t.Fatalf("topology entries = %d, want 9 (eight facets + Uplands)", len(topology.Regions))
 	}
 	first, second := topology.Regions[0], topology.Regions[1]
-	if first.Name != "Shore" || first.Facet != 0 || first.SizeX != 512 || first.SizeY != 512 ||
-		second.Name != "Cliffs" || second.Facet != 1 || second.GridX != 1002 ||
+	if first.Name != "Shore" || first.Facet != 0 || first.SizeX != 256 || first.SizeY != 256 ||
+		second.Name != "Cliffs" || second.Facet != 1 || second.GridX != 1001 ||
 		second.ViewerPort != 42013 || second.ID != first.ID || !second.Online {
 		t.Fatalf("facet topology = %#v, %#v", first, second)
 	}
 
-	// Lookup by point: a tile inside the far facet answers with that facet's
+	// Lookup by point: a tile in the far corner answers with that facet's
 	// name, corner, and port — an ordinary square region to the caller.
 	facet := requestRegion[RegionTopology](t, handler, http.MethodGet,
 		"/api/v1/regions/lookup?gridX=1003&gridY=1001", "", http.StatusOK)
-	if facet.Name != "Cliffs" || facet.GridX != 1002 || facet.GridY != 1000 ||
-		facet.SizeX != 512 || facet.ViewerPort != 42013 {
+	if facet.Name != "Shore 8" || facet.GridX != 1003 || facet.GridY != 1001 ||
+		facet.SizeX != 256 || facet.ViewerPort != 42019 {
 		t.Fatalf("facet lookup = %#v", facet)
 	}
 
-	// Neighbors: Uplands sits east of the rectangle, which makes the facet
-	// beside it — Cliffs, not Shore — its western neighbor.
+	// Neighbors: Uplands sits east of the rectangle's southern row, so the
+	// facet beside it — Shore 4 — is its western neighbor, and the one above
+	// that, Shore 8, its north-western.
 	neighbors := requestRegion[RegionNeighborList](t, handler, http.MethodGet,
 		"/api/v1/regions/22222222-2222-4222-8222-222222222222/neighbors", "", http.StatusOK)
-	if len(neighbors.Neighbors) != 1 || neighbors.Neighbors[0].Direction != "west" ||
-		neighbors.Neighbors[0].Region.Name != "Cliffs" ||
-		neighbors.Neighbors[0].Region.ViewerPort != 42013 {
+	west := map[string]RegionNeighbor{}
+	for _, neighbor := range neighbors.Neighbors {
+		west[neighbor.Direction] = neighbor
+	}
+	if len(neighbors.Neighbors) != 2 || west["west"].Region.Name != "Shore 4" ||
+		west["west"].Region.ViewerPort != 42015 || west["northwest"].Region.Name != "Shore 8" {
 		t.Fatalf("neighbors of Uplands = %#v", neighbors.Neighbors)
 	}
 }

@@ -706,6 +706,16 @@ std::string CapabilityArrivalGate::key(
     return std::string(session_id) + '|' + std::string(visit_id);
 }
 
+int facet_at_position(double x, double y, int columns, int rows, int facet_count) {
+    const auto tile = [](double metres, int tiles) {
+        if (tiles <= 1 || !(metres > 0.0)) return 0;
+        return (std::min)(static_cast<int>(metres / 256.0), tiles - 1);
+    };
+    const auto columns_or_one = (std::max)(columns, 1);
+    const auto facet = tile(y, rows) * columns_or_one + tile(x, columns_or_one);
+    return (std::min)(facet, (std::max)(facet_count, 1) - 1);
+}
+
 bool region_borders(const std::vector<grid::RegionNeighbor>& neighbors,
                     std::string_view region_id) {
     if (region_id.empty()) return false;

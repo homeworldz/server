@@ -19,6 +19,25 @@ session transport's hello describes terrain as width by height; the
 transport itself is macro-native and needs no facets. Still open: live
 viewer acceptance of a provisioned rectangle.
 
+**Revised 2026-10-15: every facet is 256 m.** The rule below — the facet is
+the largest square that tiles the shape — gave Homeworldz Strait and Delta
+(both 4x2) two 512 m facets each, beside 256 m regions. Firestorm cannot hold
+regions of different sizes at once: `LLWorld` keeps a single world-wide region
+width, set by whichever region it added last and read by agent, camera,
+minimap, object, manipulator and wind code; and `LLSurface` keeps one neighbour
+slot per side, overwritten by each connection, so a 512 m Strait could
+remember only one of the two 256 m regions on its northern edge. Dropped after
+Sandbox, Strait never told Welcome it was gone, and Firestorm crashed when it
+next dropped Welcome — twice, deterministically. Placement rules could keep
+equal-sized facets together, but not keep a travelling viewer from holding two
+sizes at once. So a region of W x H tiles is now W x H facets of 256 m, numbered
+row by row from its map corner (eastward along the southern row, then the row
+north of it); a one-tile-high rectangle numbers its facets as before. Region
+size and shape are unchanged; only their presentation is. Facets without a
+provisioned name take "<region name> <facet number>". The shape rule still
+limits which shapes may be provisioned, and the text below is kept as written
+where it describes the earlier rule.
+
 ## The problem
 
 A region larger than one tile is desirable for the same reason variable-size

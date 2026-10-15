@@ -24,55 +24,95 @@ func TestShapeRule(t *testing.T) {
 }
 
 func TestFacetMathHorizontal(t *testing.T) {
-	region := Region{Name: "West End", MapX: 1000, MapY: 2000, SizeX: 8, SizeY: 4,
+	// One tile high: facets run eastward exactly as they always have.
+	region := Region{Name: "West End", MapX: 1000, MapY: 2000, SizeX: 4, SizeY: 1,
 		FacetNames: []string{"East End"}, ViewerPort: 42002}
-	if region.FacetEdge() != 4 || region.FacetCount() != 2 {
-		t.Fatalf("edge/count = %d/%d, want 4/2", region.FacetEdge(), region.FacetCount())
+	if region.FacetEdge() != 1 || region.FacetCount() != 4 {
+		t.Fatalf("edge/count = %d/%d, want 1/4", region.FacetEdge(), region.FacetCount())
 	}
-	x0, y0 := region.FacetOrigin(0)
 	x1, y1 := region.FacetOrigin(1)
-	if x0 != 1000 || y0 != 2000 || x1 != 1004 || y1 != 2000 {
-		t.Fatalf("origins = (%d,%d),(%d,%d)", x0, y0, x1, y1)
+	x3, y3 := region.FacetOrigin(3)
+	if x1 != 1001 || y1 != 2000 || x3 != 1003 || y3 != 2000 {
+		t.Fatalf("origins = (%d,%d),(%d,%d)", x1, y1, x3, y3)
 	}
-	if region.FacetNameAt(0) != "West End" || region.FacetNameAt(1) != "East End" {
-		t.Fatalf("names = %q,%q", region.FacetNameAt(0), region.FacetNameAt(1))
+	if region.FacetNameAt(0) != "West End" || region.FacetNameAt(1) != "East End" ||
+		region.FacetNameAt(2) != "West End 3" {
+		t.Fatalf("names = %q,%q,%q", region.FacetNameAt(0), region.FacetNameAt(1), region.FacetNameAt(2))
 	}
-	if region.FacetViewerPort(1) != 42003 {
-		t.Fatalf("facet 1 port = %d", region.FacetViewerPort(1))
+	if region.FacetViewerPort(3) != 42005 {
+		t.Fatalf("facet 3 port = %d", region.FacetViewerPort(3))
 	}
-	if facet, ok := region.FacetAtTile(1005, 2003); !ok || facet != 1 {
-		t.Fatalf("tile (1005,2003) facet = %d/%v", facet, ok)
+	if facet, ok := region.FacetAtTile(1002, 2000); !ok || facet != 2 {
+		t.Fatalf("tile (1002,2000) facet = %d/%v", facet, ok)
 	}
-	if _, ok := region.FacetAtTile(1008, 2000); ok {
+	if _, ok := region.FacetAtTile(1004, 2000); ok {
 		t.Fatal("tile east of the region resolved to a facet")
 	}
-	if facet := region.FacetAtPosition(1023.9, 100); facet != 0 {
-		t.Fatalf("position x=1023.9 facet = %d", facet)
+	if facet := region.FacetAtPosition(255.9, 100); facet != 0 {
+		t.Fatalf("position x=255.9 facet = %d", facet)
 	}
-	if facet := region.FacetAtPosition(1024, 100); facet != 1 {
-		t.Fatalf("position x=1024 facet = %d", facet)
+	if facet := region.FacetAtPosition(256, 100); facet != 1 {
+		t.Fatalf("position x=256 facet = %d", facet)
 	}
 	// Out-of-bounds positions clamp onto the nearest facet, never out of range.
 	if facet := region.FacetAtPosition(-5, 0); facet != 0 {
 		t.Fatalf("clamped west facet = %d", facet)
 	}
-	if facet := region.FacetAtPosition(99999, 0); facet != 1 {
+	if facet := region.FacetAtPosition(99999, 0); facet != 3 {
 		t.Fatalf("clamped east facet = %d", facet)
 	}
 }
 
+func TestFacetMathGrid(t *testing.T) {
+	// A 4x2 - Homeworldz Strait's shape - is eight 256 m facets, row by row
+	// from the map corner. As two 512 m facets it crashed Firestorm, which
+	// keeps one region width for the whole world and one neighbour per side.
+	region := Region{Name: "Strait", MapX: 1000, MapY: 998, SizeX: 4, SizeY: 2,
+		FacetNames: []string{"Strait 2"}, ViewerPort: 42042}
+	if region.FacetCount() != 8 {
+		t.Fatalf("count = %d, want 8", region.FacetCount())
+	}
+	for index, want := range [][2]int{{1000, 998}, {1001, 998}, {1002, 998}, {1003, 998},
+		{1000, 999}, {1001, 999}, {1002, 999}, {1003, 999}} {
+		if x, y := region.FacetOrigin(index); x != want[0] || y != want[1] {
+			t.Fatalf("facet %d origin = (%d,%d), want %v", index, x, y, want)
+		}
+		if facet, ok := region.FacetAtTile(want[0], want[1]); !ok || facet != index {
+			t.Fatalf("tile %v facet = %d/%v, want %d", want, facet, ok, index)
+		}
+	}
+	// A point in the northern row is in a northern facet. With the old
+	// single-axis rule every northern point fell into the southern row, and a
+	// login there would start on the wrong facet.
+	if facet := region.FacetAtPosition(300, 400); facet != 5 {
+		t.Fatalf("position (300,400) facet = %d, want 5", facet)
+	}
+	if facet := region.FacetAtPosition(1023, 511); facet != 7 {
+		t.Fatalf("north-east corner facet = %d, want 7", facet)
+	}
+	if facet := region.FacetAtPosition(5000, 5000); facet != 7 {
+		t.Fatalf("clamped beyond the north-east facet = %d", facet)
+	}
+	if region.FacetNameAt(1) != "Strait 2" || region.FacetNameAt(7) != "Strait 8" {
+		t.Fatalf("names = %q,%q", region.FacetNameAt(1), region.FacetNameAt(7))
+	}
+	if region.FacetViewerPort(7) != 42049 {
+		t.Fatalf("facet 7 port = %d", region.FacetViewerPort(7))
+	}
+}
+
 func TestFacetMathVertical(t *testing.T) {
-	region := Region{Name: "South", MapX: 50, MapY: 60, SizeX: 2, SizeY: 6,
+	region := Region{Name: "South", MapX: 50, MapY: 60, SizeX: 1, SizeY: 3,
 		FacetNames: []string{"Middle", "North"}}
-	if region.FacetCount() != 3 || region.FacetEdge() != 2 {
-		t.Fatalf("count/edge = %d/%d", region.FacetCount(), region.FacetEdge())
+	if region.FacetCount() != 3 {
+		t.Fatalf("count = %d", region.FacetCount())
 	}
 	x2, y2 := region.FacetOrigin(2)
-	if x2 != 50 || y2 != 64 {
+	if x2 != 50 || y2 != 62 {
 		t.Fatalf("facet 2 origin = (%d,%d)", x2, y2)
 	}
-	if facet := region.FacetAtPosition(100, 1200); facet != 2 {
-		t.Fatalf("position y=1200 facet = %d", facet)
+	if facet := region.FacetAtPosition(100, 600); facet != 2 {
+		t.Fatalf("position y=600 facet = %d", facet)
 	}
 	if region.FacetNameAt(2) != "North" {
 		t.Fatalf("facet 2 name = %q", region.FacetNameAt(2))
@@ -81,9 +121,10 @@ func TestFacetMathVertical(t *testing.T) {
 
 func TestFacetNamesValidated(t *testing.T) {
 	base := Region{ID: "11111111-1111-4111-8111-111111111111", Name: "Long Field",
-		MapX: 10, MapY: 10, SizeX: 4, SizeY: 8, AccessKey: "key"}
-	if err := validate(base); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("missing facet name accepted: %v", err)
+		MapX: 10, MapY: 10, SizeX: 2, SizeY: 1, AccessKey: "key"}
+	// A facet without a name takes its derived one.
+	if err := validate(base); err != nil {
+		t.Fatalf("unnamed facet rejected: %v", err)
 	}
 	base.FacetNames = []string{"Long Field II"}
 	if err := validate(base); err != nil {
@@ -93,11 +134,15 @@ func TestFacetNamesValidated(t *testing.T) {
 	if err := validate(base); !errors.Is(err, ErrConflict) {
 		t.Fatalf("self-colliding facet name accepted: %v", err)
 	}
-	square := base
-	square.SizeY = 4
-	square.FacetNames = []string{"Extra"}
-	if err := validate(square); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("square with a facet name accepted: %v", err)
+	base.FacetNames = []string{"One", "Two"}
+	if err := validate(base); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("more names than facets accepted: %v", err)
+	}
+	single := base
+	single.SizeX = 1
+	single.FacetNames = []string{"Extra"}
+	if err := validate(single); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("one-tile region with a facet name accepted: %v", err)
 	}
 }
 

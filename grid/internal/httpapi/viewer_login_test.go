@@ -124,7 +124,7 @@ func TestViewerLoginResolvesNamedRegion(t *testing.T) {
 	}
 	if fields["sim_ip"].text() != "127.0.0.1" || fields["sim_port"].text() != "43002" ||
 		fields["region_x"].text() != "256256" || fields["region_y"].text() != "256512" ||
-		fields["region_size_x"].text() != "512" || fields["region_size_y"].text() != "512" {
+		fields["region_size_x"].text() != "256" || fields["region_size_y"].text() != "256" {
 		t.Fatalf("unexpected destination: %#v", fields)
 	}
 	wantSeed := strings.TrimRight(target.PublicEndpoint, "/") + "/caps/seed/" + fields["session_id"].text()

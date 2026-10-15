@@ -459,12 +459,13 @@ func validateShape(sizeX, sizeY int) error {
 	return nil
 }
 
-// validateFacetNames requires exactly one name per facet beyond the first,
-// each shaped like a region name; uniqueness against other regions is the
-// store's job, but a region may not collide with itself.
+// validateFacetNames allows at most one name per facet beyond the first, each
+// shaped like a region name; a facet without one takes its derived name
+// (FacetNameAt). Uniqueness against other regions is the store's job, but a
+// region may not collide with itself.
 func validateFacetNames(item Region) error {
-	if len(item.FacetNames) != item.FacetCount()-1 {
-		return fmt.Errorf("%w: a %dx%d region has %d facets and needs %d facet names beyond its own",
+	if len(item.FacetNames) > item.FacetCount()-1 {
+		return fmt.Errorf("%w: a %dx%d region has %d facets and takes at most %d facet names beyond its own",
 			ErrInvalid, item.SizeX, item.SizeY, item.FacetCount(), item.FacetCount()-1)
 	}
 	seen := map[string]bool{strings.ToLower(item.Name): true}

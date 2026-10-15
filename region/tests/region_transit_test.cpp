@@ -505,6 +505,28 @@ int main() {
             return 43;
     }
 
+    // Facets are 256 m tiles numbered row by row from the corner. A 4x2 -
+    // Homeworldz Strait - is eight of them; as two 512 m facets it crashed
+    // Firestorm. A northern point is in a northern facet: choosing by the
+    // longer axis alone put the whole northern row in the southern one.
+    {
+        using homeworldz::region::facet_at_position;
+        if (facet_at_position(10, 10, 4, 2, 8) != 0) return 61;
+        if (facet_at_position(300, 10, 4, 2, 8) != 1) return 62;
+        if (facet_at_position(300, 400, 4, 2, 8) != 5) return 63;
+        if (facet_at_position(1023.9, 511.9, 4, 2, 8) != 7) return 64;
+        // Clamped on both axes.
+        if (facet_at_position(-50, -50, 4, 2, 8) != 0) return 65;
+        if (facet_at_position(5000, 5000, 4, 2, 8) != 7) return 66;
+        if (facet_at_position(5000, -50, 4, 2, 8) != 3) return 67;
+        // A one-tile-high rectangle numbers its facets as it always has, and
+        // a one-tile-wide one counts northward.
+        if (facet_at_position(600, 100, 2, 1, 2) != 1) return 68;
+        if (facet_at_position(100, 300, 1, 2, 2) != 1) return 69;
+        // A single tile is always facet 0.
+        if (facet_at_position(255, 255, 1, 1, 1) != 0) return 70;
+    }
+
     // A teleport away from a region keeps its viewer circuit there only when the
     // destination borders it. Kept for a far teleport, the viewer held a stale
     // Nova, and on the return its first appearance request found no capability

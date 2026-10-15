@@ -666,12 +666,14 @@ std::optional<RegisteredRegion> Client::register_provisioned_region(
         region.public_endpoint.empty() || !viewer_port || *viewer_port < 1 || *viewer_port > 65535 ||
         region.grid_name.empty() || region.grid_public_url.empty() ||
         !grid_protocol || *grid_protocol < 1) return std::nullopt;
-    // The ADR 0036 shape rule, in metres: the shorter side is a viewer-square
-    // edge and tiles the longer side exactly.
-    const auto shorter = (std::min)(*size_x, *size_y);
-    const auto longer = (std::max)(*size_x, *size_y);
-    if ((shorter != 256 && shorter != 512 && shorter != 1024) || longer % shorter != 0)
+    // ADR 0036, in metres: a region is whole 256 m tiles, and each tile is one
+    // facet. Firestorm keeps one region width for the whole world and one
+    // neighbour per side, so a 512 m facet beside 256 m regions crashed it
+    // (2026-10-15); every facet a viewer sees is 256 m.
+    if (*size_x <= 0 || *size_y <= 0 || *size_x % 256 != 0 || *size_y % 256 != 0)
         return std::nullopt;
+    const auto columns = *size_x / 256;
+    const auto rows = *size_y / 256;
     region.grid_region_protocol = *grid_protocol;
     region.grid_x = *grid_x;
     region.grid_y = *grid_y;
@@ -681,23 +683,29 @@ std::optional<RegisteredRegion> Client::register_provisioned_region(
 	region.maturity = *maturity;
     const auto parsed_facets = facets_from_json(response.body);
     if (!parsed_facets.present) {
-        // A reply without facets is an old grid speaking squares. A square is
-        // its own single facet; a rectangle cannot be presented without the
-        // grid naming its facets and ports, so it is a refused registration.
-        if (*size_x != *size_y) return std::nullopt;
+        // A reply without facets is an old grid speaking squares. A single
+        // tile is its own facet; anything larger cannot be presented without
+        // the grid naming its facets and ports, so it is a refused
+        // registration.
+        if (columns != 1 || rows != 1) return std::nullopt;
         region.facets.push_back(RegionFacet{
-            0, region.name, region.grid_x, region.grid_y, shorter, region.viewer_port});
+            0, region.name, region.grid_x, region.grid_y, 256, region.viewer_port});
     } else {
         if (!parsed_facets.facets) return std::nullopt;
         region.facets = *parsed_facets.facets;
-        // Exactly one facet per viewer square, in index order, each the
-        // shorter edge; facet 0 is the region itself — same name, corner, and
-        // base port.
-        if (region.facets.size() != static_cast<std::size_t>(longer / shorter))
+        // Exactly one 256 m facet per tile, in index order, row by row from
+        // the region's corner; facet 0 is the region itself — same name,
+        // corner, and base port.
+        if (region.facets.size() != static_cast<std::size_t>(columns * rows))
             return std::nullopt;
-        for (std::size_t position = 0; position < region.facets.size(); ++position)
-            if (region.facets[position].index != static_cast<int>(position) ||
-                region.facets[position].edge != shorter) return std::nullopt;
+        for (std::size_t position = 0; position < region.facets.size(); ++position) {
+            const auto& facet = region.facets[position];
+            const auto column = static_cast<int>(position) % columns;
+            const auto row = static_cast<int>(position) / columns;
+            if (facet.index != static_cast<int>(position) || facet.edge != 256 ||
+                facet.grid_x != region.grid_x + column || facet.grid_y != region.grid_y + row)
+                return std::nullopt;
+        }
         if (region.facets.front().name != region.name ||
             region.facets.front().grid_x != region.grid_x ||
             region.facets.front().grid_y != region.grid_y ||

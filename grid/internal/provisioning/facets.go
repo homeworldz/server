@@ -1,49 +1,52 @@
 package provisioning
 
-// Facet math for ADR 0036. A rectangular region is presented to viewers as a
-// row of square facets whose edge is the shorter dimension; the shape rule
-// (shorter divides longer, shorter is a proven square size) guarantees the row
-// tiles the rectangle exactly. Facets are ordered in map-coordinate order:
-// eastward along a horizontal row, northward along a vertical one, so facet 0
-// always sits at the region's own map corner.
+import "strconv"
 
-// FacetEdge is the edge of each square facet in tiles: the shorter dimension.
+// Facet math for ADR 0036. A region of any shape is presented to viewers as a
+// grid of 256 m facets, one per map tile. Firestorm keeps a single world-wide
+// region width, set by whichever region it added last, and one neighbour slot
+// per side; a 512 m facet beside 256 m regions broke both, and a viewer told
+// to drop Welcome after dropping its 512 m neighbour crashed (2026-10-15). A
+// world of 256 m regions is the only one every viewer agrees about.
+//
+// Facets are ordered row by row from the region's map corner: eastward along
+// the southern row, then the row north of it. Facet 0 is always the corner
+// tile, and a one-tile-high rectangle numbers its facets as it always has.
+
+// FacetEdge is the edge of each facet in tiles.
 func (r Region) FacetEdge() int {
-	if r.SizeX < r.SizeY {
-		return r.SizeX
-	}
-	return r.SizeY
+	return 1
 }
 
-// FacetCount is how many facets tile the region. A square region is one facet.
+// FacetCount is how many facets tile the region.
 func (r Region) FacetCount() int {
-	edge := r.FacetEdge()
-	if edge <= 0 {
+	if r.SizeX <= 0 || r.SizeY <= 0 {
 		return 1
 	}
-	longer := r.SizeX
-	if r.SizeY > longer {
-		longer = r.SizeY
-	}
-	return longer / edge
+	return r.SizeX * r.SizeY
 }
 
 // FacetOrigin is the map-tile coordinate of facet index's southwest corner.
 func (r Region) FacetOrigin(index int) (int, int) {
-	edge := r.FacetEdge()
-	if r.SizeX >= r.SizeY {
-		return r.MapX + index*edge, r.MapY
+	columns := r.SizeX
+	if columns <= 0 {
+		columns = 1
 	}
-	return r.MapX, r.MapY + index*edge
+	return r.MapX + index%columns, r.MapY + index/columns
 }
 
 // FacetNameAt names a facet. Facet 0 carries the region's own name; the rest
-// were named at provisioning, in facet order.
+// use the names given at provisioning, in facet order, and any facet beyond
+// those is the region's name and its facet number, the pattern every
+// provisioned rectangle has used.
 func (r Region) FacetNameAt(index int) string {
-	if index <= 0 || index > len(r.FacetNames) {
+	if index <= 0 {
 		return r.Name
 	}
-	return r.FacetNames[index-1]
+	if index <= len(r.FacetNames) {
+		return r.FacetNames[index-1]
+	}
+	return r.Name + " " + strconv.Itoa(index+1)
 }
 
 // FacetViewerPort is the viewer UDP port of a facet: consecutive ports upward
@@ -59,39 +62,28 @@ func (r Region) FacetAtTile(gridX, gridY int) (int, bool) {
 		gridY < r.MapY || gridY >= r.MapY+r.SizeY {
 		return 0, false
 	}
-	edge := r.FacetEdge()
-	if edge <= 0 {
-		return 0, true
-	}
-	if r.SizeX >= r.SizeY {
-		return (gridX - r.MapX) / edge, true
-	}
-	return (gridY - r.MapY) / edge, true
+	return (gridY-r.MapY)*r.SizeX + (gridX - r.MapX), true
 }
 
 // FacetAtPosition reports which facet contains a region-local position in
 // metres, clamping positions outside the region onto its nearest facet so a
 // caller resolving a slightly out-of-bounds arrival point still gets a facet.
+// Both axes are clamped: a position north of the southern row is in a northern
+// facet, and choosing wrongly starts a login on a facet that does not hold the
+// spawn point, which crossed the viewer mid-login (2026-08-20).
 func (r Region) FacetAtPosition(x, y float64) int {
-	along := x
-	extent := float64(r.SizeX * 256)
-	if r.SizeY > r.SizeX {
-		along = y
-		extent = float64(r.SizeY * 256)
-	}
-	if along < 0 {
-		along = 0
-	}
-	if along >= extent {
-		along = extent - 1
-	}
-	edgeMetres := float64(r.FacetEdge() * 256)
-	if edgeMetres <= 0 {
+	column := clampTile(x, r.SizeX)
+	row := clampTile(y, r.SizeY)
+	return row*r.SizeX + column
+}
+
+func clampTile(metres float64, tiles int) int {
+	if tiles <= 1 || metres < 0 {
 		return 0
 	}
-	index := int(along / edgeMetres)
-	if index >= r.FacetCount() {
-		index = r.FacetCount() - 1
+	tile := int(metres / 256)
+	if tile >= tiles {
+		return tiles - 1
 	}
-	return index
+	return tile
 }

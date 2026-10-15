@@ -1396,9 +1396,9 @@ int main(int argc, char* argv[]) {
 	int region_size_x{256};
 	int region_size_y{256};
 	// The square viewer-facing regions this process presents (ADR 0036), from
-	// the registration reply. A square region is exactly one facet at its own
-	// corner, name, and port; a rectangle is a row of them along its longer
-	// axis. Everything a viewer is sent is scoped to one of these.
+	// the registration reply: one 256 m facet per tile, row by row from the
+	// region's corner, facet 0 at its own corner, name, and port. Everything a
+	// viewer is sent is scoped to one of these.
 	std::vector<homeworldz::grid::RegionFacet> region_facets;
     auto region_public_endpoint = configured_value(
         "region.public_endpoint", "http://localhost:" + std::to_string(configured_port()));
@@ -1802,7 +1802,7 @@ int main(int argc, char* argv[]) {
     // assume at least one.
     if (region_facets.empty())
         region_facets.push_back({0, region_name, region_grid_x, region_grid_y,
-                                 region_size_x, region_viewer_port});
+                                 256, region_viewer_port});
     const auto facet_count = static_cast<int>(region_facets.size());
     const auto facet_edge_metres = region_facets.front().edge;
     // A facet's origin within the macro region, in metres.
@@ -1820,14 +1820,12 @@ int main(int argc, char* argv[]) {
         return (static_cast<std::uint64_t>(entry.grid_x * 256) << 32) |
                static_cast<std::uint32_t>(entry.grid_y * 256);
     };
-    // Which facet contains a macro position, clamped so a position slightly
-    // out of bounds still resolves to the nearest facet.
+    // Which facet contains a macro position, clamped on both axes so a
+    // position slightly out of bounds still resolves to the nearest facet.
+    // Facets are 256 m tiles, row by row from the region's corner.
     const auto facet_of_position = [&](double x, double y) {
-        const auto along = region_size_x >= region_size_y ? x : y;
-        const auto edge = static_cast<double>(facet_edge_metres);
-        auto facet = static_cast<int>((std::max)(0.0, along) / edge);
-        if (facet >= facet_count) facet = facet_count - 1;
-        return facet;
+        return homeworldz::region::facet_at_position(
+            x, y, region_size_x / 256, region_size_y / 256, facet_count);
     };
     // The facet an endpoint-keyed viewer is connected to.
     const auto endpoint_facet_of = [&](std::string_view endpoint) {
