@@ -6034,14 +6034,17 @@ int main(int argc, char* argv[]) {
     // the viewer log out of the region it is standing in. Returns how many
     // circuits were closed.
     //
-    // Switched off. Firestorm crashed both times it was told to drop Welcome
-    // while standing on Nova (2026-10-15, 02:18:57 and 02:23:48), each within a
-    // second of this helper's DisableSimulator; dropping Nova, Lazy, Beta,
-    // Sandbox and Strait the same way did not. Until whatever in Welcome makes
-    // its removal fatal is found, no region tells a viewer to drop it on a
+    // Off unless a region's ini says `close_departed_circuits = on`. Firestorm
+    // crashed both times it was told to drop Welcome while standing on Nova
+    // (2026-10-15, 02:18:57 and 02:23:48), each within a second of this
+    // helper's DisableSimulator; dropping Nova, Lazy, Beta, Sandbox and Strait
+    // the same way did not. Until whatever in Welcome makes its removal fatal
+    // is found, a region left at the default tells no viewer to drop it on a
     // release, an expiry or a far departure — which is how every region behaved
-    // before these closes existed.
-    constexpr bool disable_simulator_on_close = false;
+    // before these closes existed. Per region so the cause can be reproduced
+    // on the test pair alone.
+    const bool disable_simulator_on_close =
+        configured_value("region.close_departed_circuits", "off") == "on";
     const auto close_child_circuits = [&](const std::string& session_id) {
         if (!disable_simulator_on_close) return std::size_t{0};
         const auto session_uuid = homeworldz::viewer::parse_uuid(session_id);

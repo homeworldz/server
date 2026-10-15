@@ -36,7 +36,7 @@ const std::unordered_set<std::string> setting_names{
     "region.welcome_message", "region.smooth_strength_percent",
     "region.walkable_slope_degrees", "region.water_height",
     "region.release_notes_url", "region.child_agents", "region.server_side_baking",
-    "grid.url",
+    "region.close_departed_circuits", "grid.url",
     "grid.public_url", "grid.service_token"};
 
 } // namespace
