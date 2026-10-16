@@ -61,7 +61,7 @@ client.
 - [x] Support alpha layers for viewers, so a mesh body hides the default body.
 - [x] Apply alpha layers in the server-side bake.
 - [x] Re-bake a wearer automatically when their Current Outfit changes mid-session.
-- [ ] Deliver server-side bakes to full viewers on every region, so Firestorm stops baking for itself.
+- [x] Deliver server-side bakes to full viewers on every region, so Firestorm stops baking for itself.
 
 ### Authoritative avatar movement
 
