@@ -5014,6 +5014,18 @@ int main(int argc, char* argv[]) {
         if (const auto migrated = avatars.find(to); migrated != avatars.end()) {
             migrated->second.has_agent_update = false;
             migrated->second.last_agent_update_sequence = 0;
+            // The viewer has arrived on the facet it was crossed to, so the
+            // two-second hold set when the crossing was signalled — the
+            // fallback for a viewer that never arrives — has done its job.
+            // Left in place it delayed the second hop of a diagonal step that
+            // clipped a middle facet by the rest of those two seconds
+            // (Strait, 2026-10-15). A quarter second still keeps an avatar
+            // standing on a line from bouncing between facets.
+            if (endpoint_facet_of(from) != endpoint_facet_of(to)) {
+                const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+                if (migrated->second.next_crossing_attempt > settle)
+                    migrated->second.next_crossing_attempt = settle;
+            }
         }
         if (server_seeded_appearances.erase(from)) server_seeded_appearances.insert(to);
         handshake_replies.erase(from);
