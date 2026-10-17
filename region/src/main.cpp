@@ -4069,8 +4069,11 @@ int main(int argc, char* argv[]) {
         // tells a viewer it sits, from whichever site the update is sent.
         for (const auto& [live_key, live] : avatars) {
             static_cast<void>(live_key);
+            // Not while riding: the seat has crossed ahead and viewers here
+            // have dropped it, so a pose relative to it reads as a region
+            // position - Nova (2, -1, 2) for a rider of a child prim.
             if (static_cast<std::uint32_t>(live.entity_id) != local_id || !live.seat ||
-                live.seat->prim == 0)
+                live.seat->prim == 0 || live.seat->riding)
                 continue;
             const auto& pose = live.seat->pose;
             return homeworldz::viewer::encode_avatar_object_update(
@@ -4172,6 +4175,17 @@ int main(int argc, char* argv[]) {
     // Nothing is announced until the scene is persisted. A crossing that told
     // the source "landed", showed the object to viewers, and then lost it to a
     // restart would be worse than one that refused.
+    // Closures of objects that crossed in, fetched on the tick rather than
+    // while answering the activation. Their assets usually live only on the
+    // source, and the source cannot answer while it waits for that
+    // activation: fetched inline, the two regions waited on each other until
+    // the source gave up, rolled back, and left a copy on both sides
+    // (2026-10-17).
+    std::vector<std::vector<std::pair<std::string, int>>> pending_crossing_closures;
+    // Prims that crossed in carrying scripts, started on the tick after their
+    // closure for the same reason. A script's state does not cross yet, so
+    // it starts afresh from state_entry, as after a restart.
+    std::vector<homeworldz::scene::EntityId> pending_crossing_scripts;
     const auto materialize_object_transit =
         [&](const homeworldz::region::ObjectTransit& transit,
             std::chrono::steady_clock::time_point when) -> bool {
@@ -4275,7 +4289,9 @@ int main(int argc, char* argv[]) {
                 for (const auto& item : entity->task_inventory)
                     if (!item.asset_id.empty())
                         closure.emplace_back(item.asset_id, item.asset_type);
-        if (!closure.empty()) materialize_asset_closure(std::move(closure), "object crossing");
+        if (!closure.empty()) pending_crossing_closures.push_back(std::move(closure));
+        pending_crossing_scripts.insert(
+            pending_crossing_scripts.end(), created.begin(), created.end());
         return true;
     };
     // The source half of an object crossing.
@@ -16771,6 +16787,29 @@ int main(int argc, char* argv[]) {
             next_terrain_persist = now + std::chrono::seconds(3);
         }
 
+        for (auto& closure : pending_crossing_closures)
+            materialize_asset_closure(std::move(closure), "object crossing");
+        pending_crossing_closures.clear();
+        for (const auto entity_id : pending_crossing_scripts) {
+            const auto* entity = scene.find(entity_id);
+            if (!entity) continue;
+            bool started = false;
+            for (const auto& item : entity->task_inventory) {
+                if (item.asset_type != 10) continue; // LSL script asset type
+                const auto result = rez_task_script(*entity, item, true);
+                started = started || result.compiled;
+                if (!result.compiled)
+                    std::cerr << "{\"level\":\"warning\",\"message\":\"crossed script "
+                                 "not started\",\"objectId\":"
+                              << homeworldz::api::json_string(entity->object_id)
+                              << ",\"diagnostic\":"
+                              << homeworldz::api::json_string(result.diagnostic) << "}"
+                              << std::endl;
+            }
+            // The scripted and touch flags are on the object update.
+            if (started) broadcast_object_update(*entity, now);
+        }
+        pending_crossing_scripts.clear();
         // Session avatars that crossed a border this tick; retired after the
         // loop so the map is not mutated while iterating.
         std::vector<std::string> crossing_session_avatars;
