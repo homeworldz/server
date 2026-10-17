@@ -22,6 +22,10 @@ TokenKind keyword_kind(const std::string& word) {
         {"default", TokenKind::KwDefault},
         {"integer", TokenKind::KwInteger},
         {"string", TokenKind::KwString},
+        {"key", TokenKind::KwKey},
+        {"vector", TokenKind::KwVector},
+        {"rotation", TokenKind::KwRotation},
+        {"quaternion", TokenKind::KwRotation}, // LSL's other spelling
         {"while", TokenKind::KwWhile},
         {"if", TokenKind::KwIf},
         {"else", TokenKind::KwElse},
@@ -191,6 +195,30 @@ std::vector<Token> tokenize(const std::string& source) {
                 ++i;
             } else {
                 token.kind = TokenKind::Assign;
+            }
+            break;
+        case '!':
+            if (i + 1 < n && source[i + 1] == '=') {
+                token.kind = TokenKind::BangEqual;
+                ++i;
+            } else {
+                token.kind = TokenKind::Bang;
+            }
+            break;
+        case '&':
+            if (i + 1 < n && source[i + 1] == '&') {
+                token.kind = TokenKind::AmpAmp;
+                ++i;
+            } else {
+                token.kind = TokenKind::Amp;
+            }
+            break;
+        case '|':
+            if (i + 1 < n && source[i + 1] == '|') {
+                token.kind = TokenKind::PipePipe;
+                ++i;
+            } else {
+                token.kind = TokenKind::Pipe;
             }
             break;
         default:

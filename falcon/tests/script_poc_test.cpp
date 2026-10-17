@@ -254,6 +254,139 @@ int main() {
         require(out == expected, "globals survive a mid-event crossing");
     }
 
+    // 8. A typical pose-ball script (ADR 0040) compiles and runs: keys and their
+    //    truth, named constants, vector and rotation globals, `&` against
+    //    CHANGED_LINK, `!=` against NULL_KEY, and the permission round trip.
+    {
+        const std::string pose_ball = R"(
+            vector SEAT = <0.0, 0.0, 0.45>;
+            rotation FACING = ZERO_ROTATION;
+            key sitter = NULL_KEY;
+            integer link = -4;
+            default {
+                state_entry() {
+                    llSitTarget(SEAT, FACING);
+                    llSetLinkSitTarget(2, <0.25, 0.0, 0.6>, <0.0, 0.0, 0.707107, 0.707107>);
+                    llSetSitText("Relax");
+                    llSetClickAction(CLICK_ACTION_SIT);
+                }
+                changed(integer change) {
+                    if (change & CHANGED_LINK) {
+                        key av = llAvatarOnSitTarget();
+                        if (av) {
+                            sitter = av;
+                            llRequestPermissions(av, PERMISSION_TRIGGER_ANIMATION);
+                        } else if (sitter != NULL_KEY) {
+                            sitter = NULL_KEY;
+                            llOwnerSay("stood");
+                        }
+                    }
+                }
+                run_time_permissions(integer perm) {
+                    if (perm & PERMISSION_TRIGGER_ANIMATION && !(link == 0)) {
+                        llStopAnimation("sit");
+                        llStartAnimation(llGetInventoryName(INVENTORY_ANIMATION, 0));
+                    }
+                }
+            }
+        )";
+        std::vector<std::string> calls;
+        std::vector<Value> seat_args;
+        std::string seated = "11111111-2222-4333-8444-555555555555";
+        const HostFunction host = [&](const std::string& name,
+                                      const std::vector<Value>& args) -> std::optional<Value> {
+            calls.push_back(name);
+            if (name == "llSitTarget" || name == "llSetLinkSitTarget") {
+                seat_args.insert(seat_args.end(), args.begin(), args.end());
+            }
+            if (name == "llAvatarOnSitTarget") return Value::make_string(seated);
+            if (name == "llGetInventoryName") return Value::make_string("relax pose");
+            if (name == "llStartAnimation") calls.push_back("start:" + args[0].str);
+            if (name == "llOwnerSay") calls.push_back("say:" + args[0].str);
+            return std::nullopt;
+        };
+        Program program = compile_source(pose_ball);
+        VM vm(program);
+        vm.set_host(host);
+        vm.dispatch("state_entry", {});
+        require(vm.run(1000) == RunStatus::Finished, "pose ball state_entry runs");
+        // The two seats must stay two seats: pooling constants by type, integer
+        // and string alone made every vector literal the first one written.
+        require(seat_args.size() == 5 && seat_args[0].components[2] == 0.45 &&
+                    seat_args[3].components[0] == 0.25 && seat_args[3].components[2] == 0.6 &&
+                    seat_args[1].components[3] == 1.0 && seat_args[4].components[2] > 0.7,
+                "distinct vector and rotation literals keep their own values");
+
+        vm.dispatch("changed", {Value::make_integer(0x20)});
+        vm.run(1000);
+        require(calls.back() == "llRequestPermissions", "a sitter is asked for permissions");
+        vm.dispatch("run_time_permissions", {Value::make_integer(0x10)});
+        vm.run(1000);
+        require(calls.back() == "start:relax pose", "the granted script starts its pose");
+
+        seated = "00000000-0000-0000-0000-000000000000";
+        vm.dispatch("changed", {Value::make_integer(0x20)});
+        vm.run(1000);
+        require(calls.back() == "say:stood", "NULL_KEY is false and the stand is seen");
+
+        // Some other change is not a link change.
+        const auto before = calls.size();
+        vm.dispatch("changed", {Value::make_integer(0x01)});
+        vm.run(1000);
+        require(calls.size() == before, "a non-link change does nothing");
+    }
+
+    // 9. A vector waiting on the operand stack survives a snapshot as itself.
+    {
+        const std::string source = R"(
+            default { state_entry() { llSitTarget(<1.5, -2.0, 0.25>, <0.0, 0.0, 0.0, 1.0>); } }
+        )";
+        Program program = compile_source(source);
+        std::vector<Value> received;
+        const HostFunction host = [&](const std::string&, const std::vector<Value>& args)
+            -> std::optional<Value> {
+            received = args;
+            return std::nullopt;
+        };
+        VM origin(program);
+        origin.set_host(host);
+        origin.dispatch("state_entry", {});
+        origin.run(1); // pushed the vector, not yet the rotation or the call
+        VM destination(program);
+        destination.set_host(host);
+        destination.restore(origin.snapshot());
+        destination.run(100);
+        require(received.size() == 2 && received[0].type == homeworldz::script::Type::Vector &&
+                    received[0].components[0] == 1.5 && received[0].components[1] == -2.0 &&
+                    received[1].components[3] == 1.0,
+                "a vector on the stack crosses a snapshot intact");
+    }
+
+    // 10. Diagnostics for the new types.
+    {
+        bool refused = false;
+        try {
+            compile_source(R"(default { state_entry() { integer i = "x" & 1; } })");
+        } catch (const ScriptError&) {
+            refused = true;
+        }
+        require(refused, "'&' refuses a string operand");
+        refused = false;
+        try {
+            compile_source(R"(key k = 5; default { state_entry() { } })");
+        } catch (const ScriptError&) {
+            refused = true;
+        }
+        require(refused, "a key global refuses an integer initializer");
+        refused = false;
+        try {
+            compile_source(R"(integer i = llGetPermissions(); default { state_entry() { } })");
+        } catch (const ScriptError&) {
+            refused = true;
+        }
+        require(refused, "a global initializer must be a constant");
+    }
+
     if (g_failures == 0) {
         std::cout << "ALL PoC CHECKS PASSED\n";
         return EXIT_SUCCESS;

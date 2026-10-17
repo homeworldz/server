@@ -2,6 +2,9 @@
 
 #include "homeworldz/script/lexer.h" // ScriptError
 
+#include <array>
+#include <cctype>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -15,7 +18,8 @@ struct VmFault : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-constexpr std::uint16_t kSnapshotVersion = 2;
+// v3 records vectors and rotations as themselves; v2 wrote them as integers.
+constexpr std::uint16_t kSnapshotVersion = 3;
 constexpr unsigned char kMagic[4] = {'H', 'W', 'Z', 'S'};
 constexpr std::uint32_t kMaxSnapshotValues = 1'000'000; // corrupt-input guard
 
@@ -51,6 +55,15 @@ private:
             u32(static_cast<std::uint32_t>(v.str.size()));
             for (char c : v.str) {
                 u8(static_cast<std::uint8_t>(c));
+            }
+        } else if (v.type == Type::Vector || v.type == Type::Rotation) {
+            // A vector waiting on the operand stack for a host call is as much
+            // script state as an integer is; written as one, it came back 0.
+            u8(v.type == Type::Vector ? 3 : 4);
+            for (double component : v.components) {
+                std::uint64_t bits = 0;
+                std::memcpy(&bits, &component, sizeof bits);
+                u64(bits);
             }
         } else {
             u8(1);
@@ -119,6 +132,17 @@ private:
         }
         if (tag == 1) {
             return Value::make_integer(static_cast<std::int32_t>(u32()));
+        }
+        if (tag == 3 || tag == 4) {
+            std::array<double, 4> components{};
+            for (double& component : components) {
+                const std::uint64_t bits = u64();
+                std::memcpy(&component, &bits, sizeof component);
+            }
+            Value result = tag == 3
+                ? Value::make_vector(components[0], components[1], components[2])
+                : Value::make_rotation(components[0], components[1], components[2], components[3]);
+            return result;
         }
         throw ScriptError("snapshot has an unknown value tag");
     }
@@ -309,6 +333,81 @@ void VM::step() {
     case Op::Halt:
         finished_ = true;
         break;
+    case Op::NotEqualInt: {
+        std::int32_t b = pop_int();
+        std::int32_t a = pop_int();
+        stack_.push_back(Value::make_integer(a != b ? 1 : 0));
+        break;
+    }
+    case Op::EqualStr:
+    case Op::NotEqualStr: {
+        Value b = pop();
+        Value a = pop();
+        if (a.type != Type::String || b.type != Type::String) {
+            throw VmFault("string comparison requires strings");
+        }
+        const bool equal = a.str == b.str;
+        stack_.push_back(Value::make_integer((instr.op == Op::EqualStr) == equal ? 1 : 0));
+        break;
+    }
+    case Op::BitAnd: {
+        std::int32_t b = pop_int();
+        std::int32_t a = pop_int();
+        stack_.push_back(Value::make_integer(a & b));
+        break;
+    }
+    case Op::BitOr: {
+        std::int32_t b = pop_int();
+        std::int32_t a = pop_int();
+        stack_.push_back(Value::make_integer(a | b));
+        break;
+    }
+    case Op::LogicalAnd: {
+        std::int32_t b = pop_int();
+        std::int32_t a = pop_int();
+        stack_.push_back(Value::make_integer((a != 0 && b != 0) ? 1 : 0));
+        break;
+    }
+    case Op::LogicalOr: {
+        std::int32_t b = pop_int();
+        std::int32_t a = pop_int();
+        stack_.push_back(Value::make_integer((a != 0 || b != 0) ? 1 : 0));
+        break;
+    }
+    case Op::NegInt: {
+        // Unsigned negation wraps as LSL's -(-2147483648) does, without the
+        // undefined behaviour signed overflow would be in C++.
+        const auto a = static_cast<std::uint32_t>(pop_int());
+        stack_.push_back(Value::make_integer(static_cast<std::int32_t>(0u - a)));
+        break;
+    }
+    case Op::NotInt:
+        stack_.push_back(Value::make_integer(pop_int() == 0 ? 1 : 0));
+        break;
+    case Op::StrTruth: {
+        Value a = pop();
+        if (a.type != Type::String) {
+            throw VmFault("expected a string on the stack");
+        }
+        stack_.push_back(Value::make_integer(a.str.empty() ? 0 : 1));
+        break;
+    }
+    case Op::KeyTruth: {
+        // A key is true when it is a well-formed uuid other than NULL_KEY.
+        Value a = pop();
+        if (a.type != Type::String) {
+            throw VmFault("expected a key on the stack");
+        }
+        bool valid = a.str.size() == 36 && a.str != "00000000-0000-0000-0000-000000000000";
+        for (std::size_t i = 0; valid && i < a.str.size(); ++i) {
+            const char c = a.str[i];
+            valid = (i == 8 || i == 13 || i == 18 || i == 23)
+                        ? c == '-'
+                        : std::isxdigit(static_cast<unsigned char>(c)) != 0;
+        }
+        stack_.push_back(Value::make_integer(valid ? 1 : 0));
+        break;
+    }
     }
 }
 

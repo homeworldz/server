@@ -17,12 +17,24 @@ const char* type_name(Type type) {
     case Type::Void: return "void";
     case Type::Vector: return "vector";
     case Type::Rotation: return "rotation";
+    case Type::Key: return "key";
     }
     return "?";
 }
 
+// LSL converts between string and key implicitly wherever one is given for the
+// other; every other pair of types must match exactly.
+bool assignable(Type to, Type from) {
+    if (to == from) return true;
+    return (to == Type::Key && from == Type::String) ||
+           (to == Type::String && from == Type::Key);
+}
+
 // A bounded host-function signature. Real Homeworldz will have a generated
-// table; the PoC hand-lists the functions the demo needs.
+// table; this hand-lists the functions implemented so far. A script calling a
+// function missing here does not compile, which is why the sitting unit
+// (ADR 0040) brings the handful every chair and pose ball calls, not only the
+// sit functions themselves.
 struct HostSignature {
     std::vector<Type> params;
     Type result;
@@ -35,21 +47,78 @@ const HostSignature* lookup_host(const std::string& name) {
         // The seat: an offset from the prim's centre and a rotation, both in
         // the prim's own space. A zero offset takes the seat away.
         {"llSitTarget", HostSignature{{Type::Vector, Type::Rotation}, Type::Void}},
+        {"llSetLinkSitTarget",
+         HostSignature{{Type::Integer, Type::Vector, Type::Rotation}, Type::Void}},
+        {"llAvatarOnSitTarget", HostSignature{{}, Type::Key}},
+        {"llAvatarOnLinkSitTarget", HostSignature{{Type::Integer}, Type::Key}},
+        {"llUnSit", HostSignature{{Type::Key}, Type::Void}},
+        {"llSetSitText", HostSignature{{Type::String}, Type::Void}},
+        {"llSetClickAction", HostSignature{{Type::Integer}, Type::Void}},
+        {"llSetCameraEyeOffset", HostSignature{{Type::Vector}, Type::Void}},
+        {"llSetCameraAtOffset", HostSignature{{Type::Vector}, Type::Void}},
+        {"llRequestPermissions", HostSignature{{Type::Key, Type::Integer}, Type::Void}},
+        {"llGetPermissions", HostSignature{{}, Type::Integer}},
+        {"llGetPermissionsKey", HostSignature{{}, Type::Key}},
+        {"llStartAnimation", HostSignature{{Type::String}, Type::Void}},
+        {"llStopAnimation", HostSignature{{Type::String}, Type::Void}},
+        {"llGetInventoryName", HostSignature{{Type::Integer, Type::Integer}, Type::String}},
     };
     const auto it = table.find(name);
     return it == table.end() ? nullptr : &it->second;
 }
 
-// The event handlers the PoC recognizes, with their LSL parameter signatures.
+// The event handlers implemented so far, with their LSL parameter signatures.
 const std::vector<Type>* lookup_event(const std::string& name) {
     static const std::unordered_map<std::string, std::vector<Type>> table = {
         {"state_entry", {}},
-        {"touch_start", {Type::Integer}}, // total_number
+        {"touch_start", {Type::Integer}},          // total_number
+        {"changed", {Type::Integer}},              // change
+        {"run_time_permissions", {Type::Integer}}, // permissions
     };
     const auto it = table.find(name);
     return it == table.end() ? nullptr : &it->second;
 }
 
+// LSL's named constants, with Second Life's values. A name here that a script
+// also declares as a variable is the variable's; LSL forbids that anyway.
+const Value* lookup_constant(const std::string& name) {
+    static const std::unordered_map<std::string, Value> table = {
+        {"TRUE", Value::make_integer(1)},
+        {"FALSE", Value::make_integer(0)},
+        {"NULL_KEY", Value::make_string("00000000-0000-0000-0000-000000000000")},
+        {"ZERO_VECTOR", Value::make_vector(0.0, 0.0, 0.0)},
+        {"ZERO_ROTATION", Value::make_rotation(0.0, 0.0, 0.0, 1.0)},
+        {"CHANGED_LINK", Value::make_integer(0x20)},
+        {"LINK_ROOT", Value::make_integer(1)},
+        {"LINK_SET", Value::make_integer(-1)},
+        {"LINK_ALL_OTHERS", Value::make_integer(-2)},
+        {"LINK_ALL_CHILDREN", Value::make_integer(-3)},
+        {"LINK_THIS", Value::make_integer(-4)},
+        {"PERMISSION_TRIGGER_ANIMATION", Value::make_integer(0x10)},
+        {"INVENTORY_ALL", Value::make_integer(-1)},
+        {"INVENTORY_ANIMATION", Value::make_integer(20)},
+        {"CLICK_ACTION_NONE", Value::make_integer(0)},
+        {"CLICK_ACTION_TOUCH", Value::make_integer(0)},
+        {"CLICK_ACTION_SIT", Value::make_integer(1)},
+    };
+    const auto it = table.find(name);
+    return it == table.end() ? nullptr : &it->second;
+}
+
+// Whether two constants are the same value, for pooling. Every field counts:
+// comparing only type, integer and string made every vector literal in a
+// script the first one written, since vectors carry neither.
+bool same_constant(const Value& a, const Value& b) {
+    return a.type == b.type && a.integer == b.integer && a.str == b.str &&
+           a.components == b.components;
+}
+
+// The type a constant value has in the source. Keys are strings at runtime;
+// NULL_KEY is the one constant that is a key.
+Type constant_type(const std::string& name, const Value& value) {
+    if (name == "NULL_KEY") return Type::Key;
+    return value.type;
+}
 enum class Scope { Local, Global };
 
 class Compiler {
@@ -76,11 +145,65 @@ private:
             throw ScriptError("global '" + global.name + "' already declared");
         }
         const std::int32_t slot = static_cast<std::int32_t>(program_.global_defaults.size());
-        Value initial = (global.type == Type::String)
-                            ? Value::make_string(global.has_init ? global.string_init : "")
-                            : Value::make_integer(global.has_init ? global.int_init : 0);
+        Value initial = default_value(global.type);
+        if (global.init) {
+            Type folded_type = Type::Void;
+            initial = fold_constant(*global.init, folded_type);
+            if (!assignable(global.type, folded_type)) {
+                throw ScriptError("cannot initialize " + std::string(type_name(global.type)) +
+                                  " global '" + global.name + "' with " + type_name(folded_type));
+            }
+        }
         program_.global_defaults.push_back(std::move(initial));
         globals_.emplace(global.name, Symbol{Scope::Global, slot, global.type});
+    }
+
+    // A global initializer evaluated at compile time. LSL allows only constant
+    // initializers, so anything that would need code to run is refused.
+    Value fold_constant(const ast::Expr& expr, Type& type) {
+        if (const auto* lit = dynamic_cast<const ast::IntLiteral*>(&expr)) {
+            type = Type::Integer;
+            return Value::make_integer(lit->value);
+        }
+        if (const auto* lit = dynamic_cast<const ast::StringLiteral*>(&expr)) {
+            type = Type::String;
+            return Value::make_string(lit->value);
+        }
+        if (const auto* lit = dynamic_cast<const ast::VectorLiteral*>(&expr)) {
+            const auto& p = lit->components;
+            if (p.size() == 4) {
+                type = Type::Rotation;
+                return Value::make_rotation(p[0], p[1], p[2], p[3]);
+            }
+            type = Type::Vector;
+            return Value::make_vector(p[0], p[1], p[2]);
+        }
+        if (const auto* ref = dynamic_cast<const ast::VarRef*>(&expr)) {
+            if (const Value* constant = lookup_constant(ref->name)) {
+                type = constant_type(ref->name, *constant);
+                return *constant;
+            }
+        }
+        if (const auto* unary = dynamic_cast<const ast::Unary*>(&expr)) {
+            if (unary->op == ast::UnaryOp::Negate) {
+                Value inner = fold_constant(*unary->operand, type);
+                if (type == Type::Integer) {
+                    inner.integer = -inner.integer;
+                    return inner;
+                }
+            }
+        }
+        throw ScriptError("a global initializer must be a constant");
+    }
+
+    static Value default_value(Type type) {
+        switch (type) {
+        case Type::String: return Value::make_string("");
+        case Type::Key: return Value::make_string("00000000-0000-0000-0000-000000000000");
+        case Type::Vector: return Value::make_vector(0.0, 0.0, 0.0);
+        case Type::Rotation: return Value::make_rotation(0.0, 0.0, 0.0, 1.0);
+        default: return Value::make_integer(0);
+        }
     }
 
     void compile_event(const ast::EventHandler& handler) {
@@ -129,9 +252,7 @@ private:
 
     std::int32_t add_constant(Value value) {
         for (std::size_t i = 0; i < program_.constants.size(); ++i) {
-            const Value& existing = program_.constants[i];
-            if (existing.type == value.type && existing.integer == value.integer &&
-                existing.str == value.str) {
+            if (same_constant(program_.constants[i], value)) {
                 return static_cast<std::int32_t>(i);
             }
         }
@@ -203,7 +324,7 @@ private:
         const std::int32_t slot = local_count_++;
         if (decl.init) {
             const Type init_type = compile_expression(*decl.init);
-            if (init_type != decl.type) {
+            if (!assignable(decl.type, init_type)) {
                 throw ScriptError("cannot initialize " + std::string(type_name(decl.type)) +
                                   " '" + decl.name + "' with " + type_name(init_type));
             }
@@ -217,7 +338,7 @@ private:
     void compile_assign(const ast::Assign& assign) {
         const Symbol symbol = resolve(assign.name);
         const Type value_type = compile_expression(*assign.value);
-        if (value_type != symbol.type) {
+        if (!assignable(symbol.type, value_type)) {
             throw ScriptError("cannot assign " + std::string(type_name(value_type)) + " to " +
                               type_name(symbol.type) + " '" + assign.name + "'");
         }
@@ -226,15 +347,29 @@ private:
 
     void compile_while(const ast::While& loop) {
         const std::int32_t start = here();
-        require_integer(compile_expression(*loop.condition), "while condition");
+        compile_condition(*loop.condition, "while condition");
         const std::int32_t exit_jump = emit(Op::JumpIfZero, 0);
         compile_block(*loop.body);
         emit(Op::Jump, start);
         patch_target(exit_jump, here());
     }
 
+    // A condition leaves one integer for JumpIfZero. LSL takes a string as true
+    // when it is not empty and a key as true when it names something — which
+    // is how a sit script asks `if (llAvatarOnSitTarget())`.
+    void compile_condition(const ast::Expr& expr, const char* context) {
+        const Type type = compile_expression(expr);
+        if (type == Type::String) {
+            emit(Op::StrTruth);
+        } else if (type == Type::Key) {
+            emit(Op::KeyTruth);
+        } else {
+            require_integer(type, context);
+        }
+    }
+
     void compile_if(const ast::If& branch) {
-        require_integer(compile_expression(*branch.condition), "if condition");
+        compile_condition(*branch.condition, "if condition");
         const std::int32_t else_jump = emit(Op::JumpIfZero, 0);
         compile_block(*branch.then_branch);
         if (branch.else_branch) {
@@ -272,9 +407,25 @@ private:
             return Type::Vector;
         }
         if (const auto* ref = dynamic_cast<const ast::VarRef*>(&expr)) {
+            if (locals_.count(ref->name) == 0 && globals_.count(ref->name) == 0) {
+                if (const Value* constant = lookup_constant(ref->name)) {
+                    emit(Op::PushConst, add_constant(*constant));
+                    return constant_type(ref->name, *constant);
+                }
+            }
             const Symbol symbol = resolve(ref->name);
             emit_load(symbol);
             return symbol.type;
+        }
+        if (const auto* unary = dynamic_cast<const ast::Unary*>(&expr)) {
+            if (unary->op == ast::UnaryOp::Not) {
+                compile_condition(*unary->operand, "operand of '!'");
+                emit(Op::NotInt);
+                return Type::Integer;
+            }
+            require_integer(compile_expression(*unary->operand), "operand of unary '-'");
+            emit(Op::NegInt);
+            return Type::Integer;
         }
         if (const auto* cast = dynamic_cast<const ast::Cast*>(&expr)) {
             return compile_cast(*cast);
@@ -293,10 +444,16 @@ private:
         if (cast.target == Type::String) {
             if (operand == Type::Integer) {
                 emit(Op::CastIntToStr);
-            } else if (operand != Type::String) {
-                throw ScriptError("cannot cast void to string");
+            } else if (operand != Type::String && operand != Type::Key) {
+                throw ScriptError(std::string("cannot cast ") + type_name(operand) + " to string");
             }
             return Type::String;
+        }
+        if (cast.target == Type::Key) {
+            if (operand != Type::String && operand != Type::Key) {
+                throw ScriptError(std::string("cannot cast ") + type_name(operand) + " to key");
+            }
+            return Type::Key;
         }
         if (operand != Type::Integer) {
             throw ScriptError("(integer) cast from string is not supported in this PoC");
@@ -313,7 +470,7 @@ private:
                 emit(Op::AddInt);
                 return Type::Integer;
             }
-            if (lhs == Type::String && rhs == Type::String) {
+            if (is_textual(lhs) && is_textual(rhs)) {
                 emit(Op::ConcatStr);
                 return Type::String;
             }
@@ -335,8 +492,31 @@ private:
             emit(Op::GreaterInt);
             return Type::Integer;
         case ast::BinaryOp::Equal:
-            require_two_integers(lhs, rhs, "==");
-            emit(Op::EqualInt);
+        case ast::BinaryOp::NotEqual: {
+            const bool equal = binary.op == ast::BinaryOp::Equal;
+            if (is_textual(lhs) && is_textual(rhs)) {
+                emit(equal ? Op::EqualStr : Op::NotEqualStr);
+                return Type::Integer;
+            }
+            require_two_integers(lhs, rhs, equal ? "==" : "!=");
+            emit(equal ? Op::EqualInt : Op::NotEqualInt);
+            return Type::Integer;
+        }
+        case ast::BinaryOp::BitAnd:
+            require_two_integers(lhs, rhs, "&");
+            emit(Op::BitAnd);
+            return Type::Integer;
+        case ast::BinaryOp::BitOr:
+            require_two_integers(lhs, rhs, "|");
+            emit(Op::BitOr);
+            return Type::Integer;
+        case ast::BinaryOp::And:
+            require_two_integers(lhs, rhs, "&&");
+            emit(Op::LogicalAnd);
+            return Type::Integer;
+        case ast::BinaryOp::Or:
+            require_two_integers(lhs, rhs, "||");
+            emit(Op::LogicalOr);
             return Type::Integer;
         }
         throw ScriptError("internal: unknown binary operator");
@@ -353,7 +533,7 @@ private:
         }
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             const Type arg_type = compile_expression(*call.args[i]);
-            if (arg_type != signature->params[i]) {
+            if (!assignable(signature->params[i], arg_type)) {
                 throw ScriptError("argument " + std::to_string(i + 1) + " to '" + call.callee +
                                   "' must be " + type_name(signature->params[i]));
             }
@@ -364,9 +544,10 @@ private:
     }
 
     std::int32_t default_constant(Type type) {
-        return type == Type::String ? add_constant(Value::make_string(""))
-                                     : add_constant(Value::make_integer(0));
+        return add_constant(default_value(type));
     }
+
+    static bool is_textual(Type type) { return type == Type::String || type == Type::Key; }
 
     static void require_integer(Type type, const char* context) {
         if (type != Type::Integer) {

@@ -5,15 +5,21 @@
 namespace homeworldz::script {
 namespace {
 
-// Binding powers for the Pratt expression parser. Higher binds tighter.
+// Binding powers for the Pratt expression parser. Higher binds tighter, in C's
+// order, which is the order LSL documents.
 int binary_precedence(TokenKind kind) {
     switch (kind) {
-    case TokenKind::EqualEqual: return 1;
+    case TokenKind::PipePipe: return 1;
+    case TokenKind::AmpAmp: return 2;
+    case TokenKind::Pipe: return 3;
+    case TokenKind::Amp: return 4;
+    case TokenKind::EqualEqual:
+    case TokenKind::BangEqual: return 5;
     case TokenKind::Less:
-    case TokenKind::Greater: return 2;
+    case TokenKind::Greater: return 6;
     case TokenKind::Plus:
-    case TokenKind::Minus: return 3;
-    case TokenKind::Star: return 4;
+    case TokenKind::Minus: return 7;
+    case TokenKind::Star: return 8;
     default: return -1;
     }
 }
@@ -26,8 +32,19 @@ ast::BinaryOp binary_op_of(TokenKind kind) {
     case TokenKind::Less: return ast::BinaryOp::Less;
     case TokenKind::Greater: return ast::BinaryOp::Greater;
     case TokenKind::EqualEqual: return ast::BinaryOp::Equal;
+    case TokenKind::BangEqual: return ast::BinaryOp::NotEqual;
+    case TokenKind::Amp: return ast::BinaryOp::BitAnd;
+    case TokenKind::Pipe: return ast::BinaryOp::BitOr;
+    case TokenKind::AmpAmp: return ast::BinaryOp::And;
+    case TokenKind::PipePipe: return ast::BinaryOp::Or;
     default: throw ScriptError("internal: not a binary operator");
     }
+}
+
+bool is_type_keyword(TokenKind kind) {
+    return kind == TokenKind::KwInteger || kind == TokenKind::KwString ||
+           kind == TokenKind::KwKey || kind == TokenKind::KwVector ||
+           kind == TokenKind::KwRotation;
 }
 
 class Parser {
@@ -37,7 +54,7 @@ public:
     ast::Script parse_script() {
         ast::Script script;
         // Global variables precede the state, each starting with a type keyword.
-        while (check(TokenKind::KwInteger) || check(TokenKind::KwString)) {
+        while (is_type_keyword(peek().kind)) {
             script.globals.push_back(parse_global());
         }
         expect(TokenKind::KwDefault, "expected global declarations or 'default'");
@@ -83,12 +100,11 @@ private:
     }
 
     Type type_keyword() {
-        if (match(TokenKind::KwInteger)) {
-            return Type::Integer;
-        }
-        if (match(TokenKind::KwString)) {
-            return Type::String;
-        }
+        if (match(TokenKind::KwInteger)) return Type::Integer;
+        if (match(TokenKind::KwString)) return Type::String;
+        if (match(TokenKind::KwKey)) return Type::Key;
+        if (match(TokenKind::KwVector)) return Type::Vector;
+        if (match(TokenKind::KwRotation)) return Type::Rotation;
         throw ScriptError("expected a type (line " + std::to_string(peek().line) + ")");
     }
 
@@ -97,21 +113,7 @@ private:
         global.type = type_keyword();
         global.name = expect(TokenKind::Identifier, "expected global variable name").text;
         if (match(TokenKind::Assign)) {
-            // The PoC allows a literal initializer only.
-            if (check(TokenKind::IntLiteral)) {
-                if (global.type != Type::Integer) {
-                    throw ScriptError("cannot initialize a string global with an integer literal");
-                }
-                global.int_init = advance().integer;
-            } else if (check(TokenKind::StringLiteral)) {
-                if (global.type != Type::String) {
-                    throw ScriptError("cannot initialize an integer global with a string literal");
-                }
-                global.string_init = advance().text;
-            } else {
-                throw ScriptError("global initializers must be a literal in this PoC");
-            }
-            global.has_init = true;
+            global.init = parse_expression(0);
         }
         expect(TokenKind::Semicolon, "expected ';' after global declaration");
         return global;
@@ -148,7 +150,7 @@ private:
     }
 
     ast::StmtPtr parse_statement() {
-        if (check(TokenKind::KwInteger) || check(TokenKind::KwString)) {
+        if (is_type_keyword(peek().kind)) {
             return parse_var_decl();
         }
         if (check(TokenKind::KwWhile)) {
@@ -204,7 +206,13 @@ private:
         expect(TokenKind::RParen, "expected ')' after condition");
         node->then_branch = parse_block();
         if (match(TokenKind::KwElse)) {
-            node->else_branch = parse_block();
+            if (check(TokenKind::KwIf)) {
+                // `else if` is an `else` whose block is one more `if`.
+                node->else_branch = std::make_unique<ast::Block>();
+                node->else_branch->statements.push_back(parse_if());
+            } else {
+                node->else_branch = parse_block();
+            }
         }
         return node;
     }
@@ -229,16 +237,26 @@ private:
     ast::ExprPtr parse_unary() {
         // A cast: '(' type ')' operand, distinguished from a parenthesized group.
         if (check(TokenKind::LParen) &&
-            (peek(1).kind == TokenKind::KwInteger || peek(1).kind == TokenKind::KwString) &&
+            (peek(1).kind == TokenKind::KwInteger || peek(1).kind == TokenKind::KwString ||
+             peek(1).kind == TokenKind::KwKey) &&
             peek(2).kind == TokenKind::RParen) {
             advance(); // (
-            const Type target = check(TokenKind::KwString) ? Type::String : Type::Integer;
+            const Type target = check(TokenKind::KwString) ? Type::String
+                              : check(TokenKind::KwKey)    ? Type::Key
+                                                           : Type::Integer;
             advance(); // type
             advance(); // )
             auto cast = std::make_unique<ast::Cast>();
             cast->target = target;
             cast->operand = parse_unary();
             return cast;
+        }
+        if (check(TokenKind::Minus) || check(TokenKind::Bang)) {
+            auto unary = std::make_unique<ast::Unary>();
+            unary->op = advance().kind == TokenKind::Minus ? ast::UnaryOp::Negate
+                                                           : ast::UnaryOp::Not;
+            unary->operand = parse_unary();
+            return unary;
         }
         return parse_primary();
     }

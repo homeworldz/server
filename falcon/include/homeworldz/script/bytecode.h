@@ -22,12 +22,16 @@ namespace homeworldz::script {
 // Bumped when the emitted bytecode or snapshot layout changes. A destination
 // region refuses to restore state produced by an incompatible ABI. v2 added
 // globals and the event-dispatch model.
-inline constexpr std::uint32_t kBytecodeAbiVersion = 2;
-inline constexpr std::uint32_t kCompilerVersion = 3;
+// v3 added the logical, bitwise and string-comparison operators, keys, and
+// vector and rotation values in snapshots.
+inline constexpr std::uint32_t kBytecodeAbiVersion = 3;
+inline constexpr std::uint32_t kCompilerVersion = 4;
 
 // Compile-time value types. Void exists only for typing host calls used as
-// statements; a runtime Value is always Integer or String.
-enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation };
+// statements. Key is a static type only: a key is a string at runtime, and the
+// compiler is what keeps the two apart where LSL does (a key's truth is whether
+// it names something, a string's is whether it is empty).
+enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation, Key };
 
 // A tagged LSL value. LSL integers are 32-bit; strings are UTF-8 bytes.
 //
@@ -74,6 +78,17 @@ enum class Op : std::uint8_t {
     CallHost,      // a = host-function index, b = argument count
     Pop,           // discards the top of the operand stack
     Halt,          // ends execution of the current event handler
+    NotEqualInt,   // pops b, a; pushes (a != b) ? 1 : 0
+    EqualStr,      // pops b, a (strings or keys); pushes (a == b) ? 1 : 0
+    NotEqualStr,   // pops b, a (strings or keys); pushes (a != b) ? 1 : 0
+    BitAnd,        // pops b, a; pushes a & b
+    BitOr,         // pops b, a; pushes a | b
+    LogicalAnd,    // pops b, a; pushes (a && b) — LSL evaluates both sides
+    LogicalOr,     // pops b, a; pushes (a || b)
+    NegInt,        // pops a; pushes -a
+    NotInt,        // pops a; pushes !a
+    StrTruth,      // pops a string; pushes 1 when it is non-empty
+    KeyTruth,      // pops a key; pushes 1 when it is a non-null uuid
 };
 
 struct Instruction {

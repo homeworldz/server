@@ -40,7 +40,14 @@ struct VarRef : Expr {
     std::string name;
 };
 
-enum class BinaryOp { Add, Sub, Mul, Less, Greater, Equal };
+enum class BinaryOp { Add, Sub, Mul, Less, Greater, Equal, NotEqual, BitAnd, BitOr, And, Or };
+
+enum class UnaryOp { Negate, Not };
+
+struct Unary : Expr {
+    UnaryOp op = UnaryOp::Negate;
+    ExprPtr operand;
+};
 
 struct Binary : Expr {
     BinaryOp op = BinaryOp::Add;
@@ -48,7 +55,8 @@ struct Binary : Expr {
     ExprPtr rhs;
 };
 
-// A C-style cast such as (string)i. The PoC supports (string) and (integer).
+// A C-style cast such as (string)i. Supported: (string), (integer), and (key)
+// between strings and keys.
 struct Cast : Expr {
     Type target = Type::String;
     ExprPtr operand;
@@ -108,14 +116,14 @@ struct EventHandler {
     std::unique_ptr<Block> body;
 };
 
-// A script-level global variable, persistent across events. The PoC allows a
-// literal initializer only; absent, the global takes its type default.
+// A script-level global variable, persistent across events. Its initializer,
+// if any, must fold to a constant at compile time — a literal, a named constant
+// such as ZERO_ROTATION, or a negated integer — as LSL requires; absent, the
+// global takes its type default.
 struct GlobalVar {
     Type type = Type::Integer;
     std::string name;
-    bool has_init = false;
-    std::int32_t int_init = 0;
-    std::string string_init;
+    ExprPtr init; // may be null
 };
 
 // The compiled script: globals plus the default state's event handlers. Named

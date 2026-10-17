@@ -31,6 +31,9 @@ enum class TokenKind : std::uint8_t {
     KwDefault,
     KwInteger,
     KwString,
+    KwKey,
+    KwVector,
+    KwRotation,
     KwWhile,
     KwIf,
     KwElse,
@@ -47,6 +50,12 @@ enum class TokenKind : std::uint8_t {
     Greater,
     Assign,     // =
     EqualEqual, // ==
+    BangEqual,  // !=
+    Bang,       // !
+    Amp,        // &
+    AmpAmp,     // &&
+    Pipe,       // |
+    PipePipe,   // ||
 };
 
 struct Token {
