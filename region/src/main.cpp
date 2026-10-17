@@ -13630,6 +13630,22 @@ int main(int argc, char* argv[]) {
                                 const auto recipient_id =
                                     homeworldz::viewer::parse_uuid(recipient.user_id);
                                 if (!recipient_id) continue;
+                                // A seated avatar names its seat as its parent,
+                                // and this viewer has not been sent the region's
+                                // objects yet. Told of the seat first, it parents
+                                // the avatar at once rather than as an orphan; a
+                                // late joiner who learned of a seated avatar the
+                                // other way kept it seated after it stood
+                                // (2026-10-17). Halcyon sends the seat for the
+                                // same reason.
+                                if (recipient.seat && recipient.seat->prim != 0)
+                                    if (const auto* seat_root = scene.find(recipient.seat->root))
+                                        if (const auto seat_object = static_object_from_entity(
+                                                scene, *seat_root, live_avatar.user_id, falcon))
+                                            if (const auto sent = circuits.send(endpoint,
+                                                    object_update_for(endpoint, *seat_object),
+                                                    true, now, true))
+                                                static_cast<void>(send_udp(viewer_server, endpoint, *sent));
                                 const auto existing_avatar_update = avatar_update_for(
                                         endpoint,
                                         static_cast<std::uint32_t>(recipient.entity_id),
