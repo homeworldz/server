@@ -13772,6 +13772,23 @@ int main(int argc, char* argv[]) {
                                             route, new_animation, false, now))
                                         static_cast<void>(send_udp(viewer_server, route, *outgoing));
                                 });
+                            // Appearances before animations. A viewer picks the
+                            // male or female form of `sit` by the avatar's sex as
+                            // it stands when the sit starts; told the sit first,
+                            // it played sit_female on a male avatar, and when he
+                            // stood its stop for `sit` missed it, leaving him
+                            // seated to that viewer (2026-10-17).
+                            for (const auto& [appearance_endpoint, retained] : avatar_appearances) {
+                                if (appearance_endpoint == endpoint) continue;
+                                const auto retained_appearance =
+                                    homeworldz::viewer::encode_avatar_appearance({
+                                        retained.agent_id, retained.serial, retained.texture_entry,
+                                        retained.visual_params, {}, retained.appearance_version});
+                                if (retained_appearance.empty()) continue;
+                                if (const auto outgoing = circuits.send(
+                                        endpoint, retained_appearance, true, now, true))
+                                    static_cast<void>(send_udp(viewer_server, endpoint, *outgoing));
+                            }
                             for (const auto& [animation_endpoint, retained] : avatar_animations) {
                                 if (animation_endpoint == endpoint || retained.empty()) continue;
                                 const auto existing = avatars.find(animation_endpoint);
@@ -13784,17 +13801,6 @@ int main(int argc, char* argv[]) {
                                         {*sender_id, retained});
                                 if (const auto outgoing = circuits.send(
                                         endpoint, retained_animation, false, now))
-                                    static_cast<void>(send_udp(viewer_server, endpoint, *outgoing));
-                            }
-                            for (const auto& [appearance_endpoint, retained] : avatar_appearances) {
-                                if (appearance_endpoint == endpoint) continue;
-                                const auto retained_appearance =
-                                    homeworldz::viewer::encode_avatar_appearance({
-                                        retained.agent_id, retained.serial, retained.texture_entry,
-                                        retained.visual_params, {}, retained.appearance_version});
-                                if (retained_appearance.empty()) continue;
-                                if (const auto outgoing = circuits.send(
-                                        endpoint, retained_appearance, true, now, true))
                                     static_cast<void>(send_udp(viewer_server, endpoint, *outgoing));
                             }
                             // If this avatar has not supplied an appearance yet,
