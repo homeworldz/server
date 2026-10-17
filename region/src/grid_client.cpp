@@ -1315,12 +1315,9 @@ bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
         "/prepare-arrival", std::string(document)).status_code == 200;
 }
 
-bool activate_object_arrival(Transport& destination, std::string_view transit_id,
-                             std::chrono::system_clock::time_point deadline) {
-    const auto deadline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline.time_since_epoch()).count();
+bool activate_object_arrival(Transport& destination, std::string_view transit_id) {
     return destination.send("POST", "/api/v1/object-transits/" + std::string(transit_id) +
-        "/activate", "{\"deadline\":" + std::to_string(deadline_ms) + "}").status_code == 200;
+        "/activate", {}).status_code == 200;
 }
 
 std::optional<InventoryItem> Client::copy_library_item(std::string_view user_id,

@@ -4410,10 +4410,7 @@ int main(int argc, char* argv[]) {
         }
         bool activated = false;
         try {
-            // Half the transport's 20 s wait, which leaves the rest for
-            // clock skew between the two machines and the reply's travel.
-            activated = homeworldz::grid::activate_object_arrival(*destination, transit.id,
-                std::chrono::system_clock::now() + std::chrono::seconds(10));
+            activated = homeworldz::grid::activate_object_arrival(*destination, transit.id);
         } catch (const std::exception& error) {
             std::cout << "{\"level\":\"warn\",\"message\":\"object crossing activation failed\""
                          ",\"error\":" << homeworldz::api::json_string(error.what()) << "}"
@@ -8443,38 +8440,7 @@ int main(int argc, char* argv[]) {
                                 homeworldz::api::to_json(homeworldz::api::Status{"arrived"}));
                         } else {
                             const auto staged = inbound_objects.activate(transit_id, arrival_now);
-                            // Past the source's deadline it has stopped
-                            // waiting and kept the object, so building it here
-                            // would put it in both regions - what a deadlock
-                            // did on 2026-10-17, finishing at 21 s against
-                            // Nova's 20. Absent, from an older source: no limit.
-                            bool expired = false;
-                            {
-                                const auto body = http_request_body(request);
-                                constexpr std::string_view marker = "\"deadline\":";
-                                if (const auto at = body.find(marker); at != std::string::npos) {
-                                    long long deadline_ms = 0;
-                                    const auto* first = body.data() + at + marker.size();
-                                    const auto parsed = std::from_chars(
-                                        first, body.data() + body.size(), deadline_ms);
-                                    const auto now_ms = std::chrono::duration_cast<
-                                        std::chrono::milliseconds>(
-                                        std::chrono::system_clock::now().time_since_epoch()).count();
-                                    expired = parsed.ec != std::errc{} || now_ms > deadline_ms;
-                                }
-                            }
-                            if (staged && expired) {
-                                std::cout << "{\"level\":\"warn\",\"message\":\"object crossing "
-                                             "refused past its deadline\",\"transitId\":"
-                                          << homeworldz::api::json_string(transit_id) << ",\"objectId\":"
-                                          << homeworldz::api::json_string(staged->object_id) << "}"
-                                          << std::endl;
-                                response = homeworldz::http::response_for_content(
-                                    request, 409, "application/json",
-                                    homeworldz::api::to_json(homeworldz::api::Error{
-                                        "transit_expired",
-                                        "the source had stopped waiting for this transit"}));
-                            } else if (staged && materialize_object_transit(*staged, arrival_now)) {
+                            if (staged && materialize_object_transit(*staged, arrival_now)) {
                                 inbound_objects.note_arrival(transit_id, arrival_now);
                                 // Its riders' crossings start once this one
                                 // answers; an avatar crossing takes seconds,
