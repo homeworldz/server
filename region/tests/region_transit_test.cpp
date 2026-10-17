@@ -110,10 +110,38 @@ int main() {
         {0.0, 0.0, 0.7071067811865476, 0.7071067811865476},
         {-3.5, 0.125, -9.8},
         {0.0, 1.25, -0.5},
-        std::string("{\"format\":\"homeworldz-linkset-v1\",\"parts\":[{\"name\":\"Crate\"},"
-                    "{\"name\":\"Lid\"}]}")};
+        // Two riders, each with a position unlike the object's, so a parser
+        // that read the wrong "position" would be caught.
+        {{"88888888-8888-4888-8888-888888888888", "77777777-7777-4777-8777-777777777777",
+          {0.75, -0.5, 1.3156}, {0.0, 0.0, 0.3826834323650898}},
+         {"99999999-9999-4999-8999-999999999999", "66666666-6666-4666-8666-666666666666",
+          {0.0, 0.0, 0.5156}, {0.0, 0.0, 0.0}}},
+        std::string("{\"format\":\"homeworldz-linkset-v1\",\"parts\":[{\"name\":\"Crate\","
+                    "\"position\":[9,9,9]},{\"name\":\"Lid\"}]}")};
     const auto document = homeworldz::region::encode_object_transit(outbound);
     const auto inbound = homeworldz::region::parse_object_transit(document);
+    if (!inbound || inbound->sitters.size() != 2) return 1;
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto& sent = outbound.sitters[index];
+        const auto& read = inbound->sitters[index];
+        if (read.agent_id != sent.agent_id || read.prim_object_id != sent.prim_object_id ||
+            read.position != sent.position || read.rotation != sent.rotation)
+            return 1;
+    }
+    // A source that predates seated crossings sends no riders at all, which is
+    // an empty list and not a malformed document.
+    {
+        auto older = document;
+        const auto from = older.find(",\"sitters\":");
+        older.erase(from, older.find(",\"linkset\":") - from);
+        const auto parsed = homeworldz::region::parse_object_transit(older);
+        if (!parsed || !parsed->sitters.empty() || parsed->position != outbound.position) return 1;
+    }
+    // A rider half-described is refused whole.
+    if (homeworldz::region::parse_object_transit(std::string(document).replace(
+            document.find("\"primObjectId\":"), std::string_view("\"primObjectId\":").size(),
+            "\"primObject\":")))
+        return 1;
     if (!inbound || inbound->id != outbound.id ||
         inbound->source_region_id != outbound.source_region_id ||
         inbound->destination_region_id != outbound.destination_region_id ||

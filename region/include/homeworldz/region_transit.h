@@ -111,6 +111,16 @@ private:
     std::unordered_map<std::string, Entry> entries_;
 };
 
+// One avatar riding an object across a border: the prim it sits on, by object
+// id since local ids do not survive the crossing, and its pose relative to the
+// linkset's root, a rotation's imaginary part as every entity rotation is.
+struct ObjectTransitSitter {
+    std::string agent_id;
+    std::string prim_object_id;
+    std::array<double, 3> position{};
+    std::array<double, 3> rotation{};
+};
+
 // An object handed across a macro border, as it travels.
 //
 // The `linkset` field is the very asset a take writes — one format carries an
@@ -138,6 +148,10 @@ struct ObjectTransit {
     std::array<double, 4> rotation{0.0, 0.0, 0.0, 1.0};
     std::array<double, 3> linear_velocity{};
     std::array<double, 3> angular_velocity{};
+    // Everyone seated on the object (ADR 0040): which prim each sits on and
+    // where, relative to the root, so the destination seats each one as its
+    // avatar arrives by its own crossing.
+    std::vector<ObjectTransitSitter> sitters;
     std::string linkset;
 };
 

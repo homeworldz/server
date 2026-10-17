@@ -252,6 +252,38 @@ std::optional<std::vector<grid::WornAttachment>> json_worn_array(
     return worn;
 }
 
+// The riders, in the same shape as the worn set and refused whole for the same
+// reason: a rider half-described would be seated somewhere plausible and wrong.
+// Absent is an empty list, from a source that predates seated crossings.
+std::optional<std::vector<ObjectTransitSitter>> json_sitter_array(
+    std::string_view document, std::string_view name) {
+    std::vector<ObjectTransitSitter> sitters;
+    const std::string marker = "\"" + std::string(name) + "\":[";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return sitters;
+    auto rest = document.substr(start + marker.size());
+    while (!rest.empty() && rest.front() != ']') {
+        if (rest.front() != '{') {
+            rest.remove_prefix(1);
+            continue;
+        }
+        const auto close = rest.find('}');
+        if (close == std::string_view::npos) return std::nullopt;
+        const auto element = rest.substr(0, close);
+        const auto agent = json_string_field(element, "agentId");
+        const auto prim = json_string_field(element, "primObjectId");
+        const auto position = json_number_array<3>(element, "position");
+        const auto rotation = json_number_array<3>(element, "rotation");
+        if (agent.empty() || prim.empty() || !position || !rotation) return std::nullopt;
+        for (const auto& values : {*position, *rotation})
+            for (const auto value : values)
+                if (!std::isfinite(value)) return std::nullopt;
+        sitters.push_back({std::string(agent), std::string(prim), *position, *rotation});
+        rest.remove_prefix(close + 1);
+    }
+    return sitters;
+}
+
 // The nested linkset asset, lifted out whole. It is itself JSON, so it travels
 // raw rather than escaped into a string: the crossing hands the destination
 // the same bytes a take would have written, and the destination reads them
@@ -318,6 +350,16 @@ std::string encode_object_transit(const ObjectTransit& transit) {
         children += quoted_string(transit.child_object_ids[index]);
     }
     children.push_back(']');
+    std::string sitters{'['};
+    for (std::size_t index = 0; index < transit.sitters.size(); ++index) {
+        const auto& sitter = transit.sitters[index];
+        if (index != 0) sitters.push_back(',');
+        sitters += "{\"agentId\":" + quoted_string(sitter.agent_id) +
+                   ",\"primObjectId\":" + quoted_string(sitter.prim_object_id) +
+                   ",\"position\":" + number_array(sitter.position) +
+                   ",\"rotation\":" + number_array(sitter.rotation) + '}';
+    }
+    sitters.push_back(']');
     return std::string{"{\"id\":"} + quoted_string(transit.id) +
         ",\"sourceRegionId\":" + quoted_string(transit.source_region_id) +
         ",\"destinationRegionId\":" + quoted_string(transit.destination_region_id) +
@@ -329,6 +371,9 @@ std::string encode_object_transit(const ObjectTransit& transit) {
         ",\"rotation\":" + number_array(transit.rotation) +
         ",\"linearVelocity\":" + number_array(transit.linear_velocity) +
         ",\"angularVelocity\":" + number_array(transit.angular_velocity) +
+        // After every top-level field the parser finds by name, so a rider's
+        // own "position" is never mistaken for the object's.
+        ",\"sitters\":" + sitters +
         ",\"linkset\":" + transit.linkset + "}";
 }
 
@@ -346,6 +391,11 @@ std::optional<ObjectTransit> parse_object_transit(std::string_view document) {
     const auto rotation = json_number_array<4>(document, "rotation");
     const auto linear = json_number_array<3>(document, "linearVelocity");
     const auto angular = json_number_array<3>(document, "angularVelocity");
+    // Only up to the linkset, which is a whole asset and not this document's.
+    const auto sitters = json_sitter_array(
+        document.substr(0, document.find("\"linkset\":")), "sitters");
+    if (!sitters) return std::nullopt;
+    transit.sitters = *sitters;
     if (transit.id.empty() || transit.source_region_id.empty() ||
         transit.destination_region_id.empty() || transit.object_id.empty() ||
         transit.owner_id.empty() || transit.linkset.empty() ||

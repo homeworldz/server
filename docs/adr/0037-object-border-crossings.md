@@ -61,6 +61,7 @@ whichever one the containment clamp happens to produce.
 | Attachment | Never alone; travels with its wearer, and is rebuilt at the destination from the grid's worn list |
 | Temporary-on-rez object | Contained. Its remaining lifetime is not a thing the crossing carries, and sixty seconds of borrowed existence is not worth a protocol |
 | Non-physical object, dragged over the line | Crossed, by the same handoff a physical one uses. Revised 2026-08-22: this row said the edit was refused where it was validated, and that was wrong — editing an object across a border is ordinary on every grid, and the only thing entitled to refuse it is a parcel or region that disallows entry |
+| Object with avatars seated on it | Crossed, and each rider follows by its own avatar crossing and is seated again on arrival ([ADR 0040](0040-sitting.md)). Contained if any rider cannot follow |
 | Anything, no eligible neighbor | Contained: origin clamped to the extent, outward velocity cancelled |
 
 The attachment row is the one that looks like a gap and is not. A worn object
@@ -144,6 +145,6 @@ crossings; it is the part of vehicle crossings that does not need scripts.
   already do, for asset replication and avatar arrival preparation.
 - A crossing whose neighbor refuses or cannot be reached is retried, not
   hammered: the object is contained against the edge and tries again shortly.
-- A seated-avatar bundle is unbuildable until seating exists (Phase 3). The
-  crossing is shaped to take it — an object and everything riding on it move as
-  one document — but there is nothing to seat yet.
+- An object's riders are named in its transit document and follow it by their
+  own avatar crossings (ADR 0040), so the grid's avatar transit did not change
+  to carry seats.

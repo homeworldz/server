@@ -244,6 +244,10 @@ struct LiveAvatar {
         homeworldz::scene::EntityId root{};   // its linkset's root, the viewer's parent
         homeworldz::region::SeatPose pose;    // relative to the root, as sent
         bool default_sit_stopped{};           // a script stopped "sit" for a pose
+        // Its object has crossed to a neighbour and this avatar is following
+        // by its own crossing, to be seated again on the far side. The seat
+        // names a root that is no longer here, and that is expected.
+        bool riding{};
     };
     std::optional<Seat> seat;
 };
@@ -3277,6 +3281,14 @@ int main(int argc, char* argv[]) {
     };
     std::unordered_map<std::string, PendingLoginSpawn> pending_login_spawns;
     homeworldz::region::InboundObjectRegistry inbound_objects;
+    // Riders of objects that crossed in, keyed by agent, until each avatar
+    // arrives by its own crossing and is seated again (ADR 0040).
+    struct ExpectedRider {
+        std::string prim_object_id;
+        homeworldz::region::SeatPose pose;
+        std::chrono::steady_clock::time_point expires;
+    };
+    std::unordered_map<std::string, ExpectedRider> expected_riders;
     // Sessions whose avatar lives in a neighbour and which hold a child circuit
     // here (ADR 0038). Empty until something establishes one.
     homeworldz::region::ChildAgentRegistry child_agents;
@@ -4290,6 +4302,24 @@ int main(int argc, char* argv[]) {
                 children.push_back(&candidate);
                 part_ids.push_back(candidate_id);
             }
+        // Riders go with it (ADR 0040), each by its own avatar crossing once
+        // the object is across. One that cannot follow - a session client,
+        // or an avatar already handing off - holds the object here, since
+        // crossing without it would drop it from its seat at the border.
+        std::vector<std::string> rider_keys;
+        std::vector<homeworldz::region::ObjectTransitSitter> riders;
+        for (const auto& [rider_key, rider] : avatars) {
+            if (!rider.seat || rider.seat->prim == 0 || rider.seat->root != root_id) continue;
+            const auto* seat_prim = scene.find(rider.seat->prim);
+            if (rider.transport != AvatarTransport::lludp || rider.handing_off ||
+                !rider.outbound_transit_id.empty() || !seat_prim)
+                return false;
+            rider_keys.push_back(rider_key);
+            const auto& pose = rider.seat->pose;
+            riders.push_back({rider.user_id, seat_prim->object_id,
+                {pose.position.x, pose.position.y, pose.position.z},
+                {pose.rotation.x, pose.rotation.y, pose.rotation.z}});
+        }
         homeworldz::region::ObjectTransit transit;
         transit.id = homeworldz::viewer::random_uuid();
         transit.source_region_id = registration->region_id();
@@ -4306,10 +4336,12 @@ int main(int argc, char* argv[]) {
         transit.angular_velocity = {state.angular_velocity.x, state.angular_velocity.y,
                                     state.angular_velocity.z};
         transit.linkset = homeworldz::asset::serialize_linkset_asset(*root, children);
+        transit.sitters = riders;
         // The same document, addressed back here: what rebuilds the object if
         // the far side never takes it. Built before the removal, because after
         // it there is nothing left to serialize.
         auto recovery = transit;
+        recovery.sitters.clear();
         recovery.destination_region_id = transit.source_region_id;
         recovery.source_region_id = transit.destination_region_id;
         recovery.position = {root->position.x, root->position.y, root->position.z};
@@ -4374,9 +4406,19 @@ int main(int argc, char* argv[]) {
                       << std::endl;
             return false;
         }
+        // Each rider is put where the object left, past the edge, so the
+        // tick's border crossing carries it to the same neighbour.
+        for (const auto& rider_key : rider_keys) {
+            auto rider = avatars.find(rider_key);
+            if (rider == avatars.end() || !rider->second.seat) continue;
+            rider->second.seat->riding = true;
+            rider->second.controller.hold_seated(state.position,
+                rider->second.controller.state().rotation);
+        }
         std::cout << "{\"level\":\"info\",\"message\":\"object crossing completed\",\"transitId\":"
                   << homeworldz::api::json_string(transit.id) << ",\"objectId\":"
-                  << homeworldz::api::json_string(transit.object_id) << ",\"parts\":"
+                  << homeworldz::api::json_string(transit.object_id) << ",\"riders\":"
+                  << riders.size() << ",\"parts\":"
                   << part_ids.size() << ",\"destinationRegionId\":"
                   << homeworldz::api::json_string(transit.destination_region_id) << "}"
                   << std::endl;
@@ -4897,14 +4939,6 @@ int main(int argc, char* argv[]) {
             if (live.seat && live.seat->prim != 0 && live.seat->prim == prim_id) return key;
         return {};
     };
-    // An occupied object does not cross a region border; it is held at the
-    // edge until a crossing can carry its sitters with it (ADR 0040).
-    const auto linkset_occupied = [&](homeworldz::scene::EntityId root_id) {
-        return std::any_of(avatars.begin(), avatars.end(), [&](const auto& entry) {
-            return entry.second.seat && entry.second.seat->prim != 0 &&
-                   entry.second.seat->root == root_id;
-        });
-    };
     const auto sit_animation_id = [](bool on_ground) {
         return homeworldz::viewer::parse_uuid(*homeworldz::region::builtin_animation_id(
             on_ground ? "sit_ground_constrained" : "sit"));
@@ -5044,6 +5078,54 @@ int main(int argc, char* argv[]) {
         for (const auto& key : seated) static_cast<void>(stand_avatar(key, when));
         return seated.size();
     };
+    // Seats an avatar on a prim already chosen, at a pose already worked out:
+    // the end of a sit request, and how a rider is seated again when it
+    // arrives on the far side of a border with its object.
+    const auto place_on_seat = [&](const std::string& key, LiveAvatar& live,
+                                   const homeworldz::scene::Entity& seat_prim,
+                                   const homeworldz::scene::Entity& root,
+                                   const homeworldz::region::SeatPose& pose,
+                                   std::chrono::steady_clock::time_point when) {
+        if (physics_world && live.physics_character != 0) {
+            physics_world->remove_character(live.physics_character);
+            live.physics_character = 0;
+        }
+        live.seat = LiveAvatar::Seat{seat_prim.id, root.id, pose, false};
+        const auto world = homeworldz::region::seated_world(root.position, root.rotation, pose);
+        live.controller.hold_seated(world.position,
+            {static_cast<float>(world.rotation.x), static_cast<float>(world.rotation.y),
+             static_cast<float>(world.rotation.z)});
+        if (const auto agent_id = homeworldz::viewer::parse_uuid(live.user_id))
+            if (homeworldz::viewer::apply_seated_animation(avatar_animations[key],
+                    sit_animation_id(false), *agent_id, next_animation_sequences[key]))
+                publish_avatar_animations(key, when);
+        homeworldz::viewer::AvatarSitResponse response;
+        response.sit_object =
+            homeworldz::viewer::parse_uuid(seat_prim.object_id).value_or(homeworldz::viewer::Uuid{});
+        response.sit_position = {static_cast<float>(seat_prim.sit_target_position.x),
+                                 static_cast<float>(seat_prim.sit_target_position.y),
+                                 static_cast<float>(seat_prim.sit_target_position.z)};
+        response.sit_rotation = {static_cast<float>(seat_prim.sit_target_rotation.x),
+                                 static_cast<float>(seat_prim.sit_target_rotation.y),
+                                 static_cast<float>(seat_prim.sit_target_rotation.z)};
+        response.camera_eye_offset = {static_cast<float>(seat_prim.camera_eye_offset.x),
+                                      static_cast<float>(seat_prim.camera_eye_offset.y),
+                                      static_cast<float>(seat_prim.camera_eye_offset.z)};
+        response.camera_at_offset = {static_cast<float>(seat_prim.camera_at_offset.x),
+                                     static_cast<float>(seat_prim.camera_at_offset.y),
+                                     static_cast<float>(seat_prim.camera_at_offset.z)};
+        if (const auto outgoing = circuits.send(
+                key, homeworldz::viewer::encode_avatar_sit_response(response), true, when))
+            static_cast<void>(send_udp(viewer_server, key, *outgoing));
+        announce_avatar(live, when);
+        tell_linkset_changed(root.id);
+        std::cout << "{\"level\":\"info\",\"message\":\"avatar seated\",\"agent\":"
+                  << homeworldz::api::json_string(live.user_id) << ",\"prim\":" << seat_prim.id
+                  << ",\"root\":" << root.id << ",\"sitTarget\":"
+                  << (homeworldz::scene::has_sit_target(seat_prim) ? "true" : "false")
+                  << ",\"pose\":[" << pose.position.x << ',' << pose.position.y << ','
+                  << pose.position.z << "]}" << std::endl;
+    };
     const auto seat_avatar = [&](const std::string& key, homeworldz::scene::EntityId clicked_id,
                                  std::chrono::steady_clock::time_point when) -> std::string {
         const auto found = avatars.find(key);
@@ -5078,45 +5160,7 @@ int main(int argc, char* argv[]) {
             child ? seat_prim->local_rotation : homeworldz::scene::Vector3{},
             homeworldz::scene::has_sit_target(*seat_prim), seat_prim->sit_target_position,
             seat_prim->sit_target_rotation, live.controller.state().hip_offset);
-        if (physics_world && live.physics_character != 0) {
-            physics_world->remove_character(live.physics_character);
-            live.physics_character = 0;
-        }
-        live.seat = LiveAvatar::Seat{seat_prim->id, root_id, pose, false};
-        const auto world = homeworldz::region::seated_world(root->position, root->rotation, pose);
-        live.controller.hold_seated(world.position,
-            {static_cast<float>(world.rotation.x), static_cast<float>(world.rotation.y),
-             static_cast<float>(world.rotation.z)});
-        if (const auto agent_id = homeworldz::viewer::parse_uuid(live.user_id))
-            if (homeworldz::viewer::apply_seated_animation(avatar_animations[key],
-                    sit_animation_id(false), *agent_id, next_animation_sequences[key]))
-                publish_avatar_animations(key, when);
-        homeworldz::viewer::AvatarSitResponse response;
-        response.sit_object =
-            homeworldz::viewer::parse_uuid(seat_prim->object_id).value_or(homeworldz::viewer::Uuid{});
-        response.sit_position = {static_cast<float>(seat_prim->sit_target_position.x),
-                                 static_cast<float>(seat_prim->sit_target_position.y),
-                                 static_cast<float>(seat_prim->sit_target_position.z)};
-        response.sit_rotation = {static_cast<float>(seat_prim->sit_target_rotation.x),
-                                 static_cast<float>(seat_prim->sit_target_rotation.y),
-                                 static_cast<float>(seat_prim->sit_target_rotation.z)};
-        response.camera_eye_offset = {static_cast<float>(seat_prim->camera_eye_offset.x),
-                                      static_cast<float>(seat_prim->camera_eye_offset.y),
-                                      static_cast<float>(seat_prim->camera_eye_offset.z)};
-        response.camera_at_offset = {static_cast<float>(seat_prim->camera_at_offset.x),
-                                     static_cast<float>(seat_prim->camera_at_offset.y),
-                                     static_cast<float>(seat_prim->camera_at_offset.z)};
-        if (const auto outgoing = circuits.send(
-                key, homeworldz::viewer::encode_avatar_sit_response(response), true, when))
-            static_cast<void>(send_udp(viewer_server, key, *outgoing));
-        announce_avatar(live, when);
-        tell_linkset_changed(root_id);
-        std::cout << "{\"level\":\"info\",\"message\":\"avatar seated\",\"agent\":"
-                  << homeworldz::api::json_string(live.user_id) << ",\"prim\":" << seat_prim->id
-                  << ",\"root\":" << root_id << ",\"sitTarget\":"
-                  << (homeworldz::scene::has_sit_target(*seat_prim) ? "true" : "false")
-                  << ",\"pose\":[" << pose.position.x << ',' << pose.position.y << ','
-                  << pose.position.z << "]}" << std::endl;
+        place_on_seat(key, live, *seat_prim, *root, pose, when);
         return {};
     };
     const auto sit_on_ground = [&](const std::string& key, std::chrono::steady_clock::time_point when) {
@@ -8375,6 +8419,18 @@ int main(int argc, char* argv[]) {
                             const auto staged = inbound_objects.activate(transit_id, arrival_now);
                             if (staged && materialize_object_transit(*staged, arrival_now)) {
                                 inbound_objects.note_arrival(transit_id, arrival_now);
+                                // Its riders' crossings start once this one
+                                // answers; an avatar crossing takes seconds,
+                                // and a minute covers a slow one.
+                                std::erase_if(expected_riders, [&](const auto& entry) {
+                                    return entry.second.expires <= arrival_now;
+                                });
+                                for (const auto& rider : staged->sitters)
+                                    expected_riders.insert_or_assign(rider.agent_id, ExpectedRider{
+                                        rider.prim_object_id,
+                                        {{rider.position[0], rider.position[1], rider.position[2]},
+                                         {rider.rotation[0], rider.rotation[1], rider.rotation[2]}},
+                                        arrival_now + std::chrono::seconds(60)});
                                 std::cout << "{\"level\":\"info\",\"message\":\"object crossing accepted\""
                                              ",\"transitId\":"
                                           << homeworldz::api::json_string(transit_id)
@@ -13584,6 +13640,30 @@ int main(int argc, char* argv[]) {
                                         static_cast<void>(send_udp(viewer_server, endpoint, *dressed));
                                 }
                             }
+                            // A rider arriving behind its object (ADR 0040)
+                            // sits back down where it was, before anyone is
+                            // told it is here, so it is announced seated.
+                            if (arrival) {
+                                const auto expected = expected_riders.find(
+                                    homeworldz::viewer::format_uuid(identity->agent_id));
+                                if (expected != expected_riders.end()) {
+                                    const auto rider = expected->second;
+                                    expected_riders.erase(expected);
+                                    const auto* seat_prim = scene.find(
+                                        entity_id_by_object_id(rider.prim_object_id));
+                                    const auto* seat_root =
+                                        seat_prim ? scene.find(root_of(seat_prim->id)) : nullptr;
+                                    if (seat_prim && seat_root && now < rider.expires &&
+                                        occupant_key_of(seat_prim->id).empty())
+                                        place_on_seat(endpoint, avatars.at(endpoint), *seat_prim,
+                                                      *seat_root, rider.pose, now);
+                                    else
+                                        std::cout << "{\"level\":\"warn\",\"message\":\"rider "
+                                                     "arrived without its seat\",\"primObjectId\":"
+                                                  << homeworldz::api::json_string(rider.prim_object_id)
+                                                  << "}" << std::endl;
+                                }
+                            }
                             const auto& live_avatar = avatars.at(endpoint);
                             auto& animations = avatar_animations[endpoint];
                             const auto initial_movement =
@@ -14409,9 +14489,8 @@ int main(int argc, char* argv[]) {
                                     const auto crossing = homeworldz::region::plan_border_crossing(
                                         region_grid_x, region_grid_y, region_size_x, region_size_y,
                                         {requested.x, requested.y, requested.z}, region_neighbors);
-                                    if (!crossing || linkset_occupied(entity->id)) {
-                                        // Nothing owns the far side, or someone
-                                        // is sitting on it, so the edit
+                                    if (!crossing) {
+                                        // Nothing owns the far side, so the edit
                                         // really is out of bounds. Say the
                                         // object's real position, or the viewer
                                         // keeps the one it invented.
@@ -16708,6 +16787,10 @@ int main(int argc, char* argv[]) {
                           << ",\"maxOvershoot\":" << avatar.crossing_max_overshoot << "}" << std::endl;
                 avatar.outbound_transit_id.clear();
                 avatar.handing_off = false;
+                // Its object went ahead and it could not follow. It stands
+                // here rather than sit on nothing.
+                if (avatar.seat && avatar.seat->riding)
+                    static_cast<void>(stand_avatar(endpoint, now));
             }
             if (physics_world && avatar.physics_character != 0)
                 if (const auto state = physics_world->character_state(avatar.physics_character))
@@ -16787,7 +16870,7 @@ int main(int argc, char* argv[]) {
             // step and no crossing of its own. A seat whose prim has gone
             // without saying so stands its avatar up rather than hold it in
             // the air.
-            if (avatar.seat && avatar.seat->prim != 0) {
+            if (avatar.seat && avatar.seat->prim != 0 && !avatar.seat->riding) {
                 if (const auto* root = scene.find(avatar.seat->root);
                     root && root_of(avatar.seat->prim) == avatar.seat->root) {
                     const auto world = homeworldz::region::seated_world(
@@ -16836,8 +16919,8 @@ int main(int argc, char* argv[]) {
             // the cell immediately beyond this side, from where the avatar
             // actually is? A corner needs no special case — it is two edges,
             // each answered on its own when the avatar reaches it.
-            const bool crossing_allowed =
-                may_cross && avatar.outbound_transit_id.empty() && !avatar.seat;
+            const bool crossing_allowed = may_cross && avatar.outbound_transit_id.empty() &&
+                (!avatar.seat || avatar.seat->riding);
             homeworldz::viewer::AvatarController::OpenBorders open;
             if (crossing_allowed) {
                 const auto& standing = avatar.controller.state().position;
@@ -17021,7 +17104,8 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
-            if (may_cross && avatar.outbound_transit_id.empty() && !avatar.seat) {
+            if (may_cross && avatar.outbound_transit_id.empty() &&
+                (!avatar.seat || avatar.seat->riding)) {
                 const auto& position = avatar.controller.state().position;
                 const auto crossing = homeworldz::region::plan_border_crossing(
                     region_grid_x, region_grid_y, region_size_x, region_size_y,
@@ -17524,7 +17608,6 @@ int main(int argc, char* argv[]) {
                 // lifetime is not a thing the crossing can carry.
                 const bool crossable = current.parent_id == 0 &&
                     current.attachment_point == 0 && !current.temporary &&
-                    !linkset_occupied(entity_id) &&
                     now >= next_object_crossing_attempt[entity_id];
                 if (crossable) {
                     if (const auto crossing = homeworldz::region::plan_border_crossing(

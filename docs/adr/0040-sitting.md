@@ -8,8 +8,8 @@ expected to be revised as evidence arrives.
 **Implementation state (2026-10-17).** Built and on every region (9781d3b). A
 prim with no sit target seats at Halcyon's fixed default offset; placing the
 avatar on the prim's top face was considered and not adopted, as Halcyon left it
-commented out. Not yet built: carrying sitters across a region border with their
-object, which until then is held at the edge.
+commented out. Riders crossing a region border with their object are built and
+not yet proven live.
 
 ## The problem
 
@@ -97,9 +97,25 @@ without it a seated avatar sinks into its seat.
 The avatar stands, with a world position just off the object, when it presses
 Stand; when a script calls `llUnSit`; when the object is deleted, taken,
 returned, derezzed, or unlinked from under it; and on logout, teleport, and
-region restart. An object with an avatar seated on it does not cross a region
-border yet — it is contained at the edge — until the crossing that carries an
-object and its sitters together lands.
+region restart.
+
+### Riding across a region border
+
+An object crosses with its riders, Halcyon's way round: the object first,
+naming who sits on it, then each rider by its own ordinary avatar crossing.
+The object transit carries, per rider, the agent, the prim it sits on (by
+object id, since local ids do not survive the crossing) and its pose relative
+to the root. The destination remembers them, and seats each avatar where it
+was as it arrives, before anyone is told it is there. The grid's avatar
+transit is unchanged: regions already trust each other for objects, and the
+seat is the object's business.
+
+A rider that cannot follow - a session client, or an avatar already handing
+off - holds the object at the edge, since crossing without it would drop it
+from its seat. A rider whose own crossing then fails stands where the object
+left. Scripts do not cross with their state yet, so a seat's script restarts
+on the far side; the re-seat fires `changed(CHANGED_LINK)`, which is what lets
+a pose script ask for its permission again.
 
 ### Scripts
 
@@ -136,7 +152,7 @@ with them.
 
 - [ADR 0036](0036-rectangular-regions-via-facet-presentation.md): a seated
   avatar is partitioned with its seat's facet.
-- [ADR 0037](0037-object-border-crossings.md): an occupied object is contained
-  at a border until the seated-bundle crossing.
+- [ADR 0037](0037-object-border-crossings.md): an occupied object crosses with
+  its riders.
 - [ADR 0038](0038-cross-region-child-agents.md): child circuits carry seated
   avatars with their parent relationship.
