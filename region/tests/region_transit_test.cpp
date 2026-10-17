@@ -192,6 +192,19 @@ int main() {
     if (!objects.arrived(outbound.id)) return 1;
     if (!objects.stage(outbound, destination, now + 3s) || objects.size(now + 3s) != 0) return 1;
     if (objects.activate(outbound.id, now + 3s)) return 1;
+    if (homeworldz::region::object_cancel_object_id(
+            "{\"objectId\":\"66666666-6666-4666-8666-666666666666\"}") !=
+            "66666666-6666-4666-8666-666666666666" ||
+        !homeworldz::region::object_cancel_object_id("{}").empty())
+        return 1;
+    // A staged transit its source gave up on cannot then be activated.
+    {
+        auto late = outbound;
+        late.id = "abababab-abab-4bab-8bab-abababababab";
+        if (!objects.stage(late, destination, now + 3s)) return 1;
+        objects.discard(late.id);
+        if (objects.activate(late.id, now + 3s) || objects.size(now + 3s) != 0) return 1;
+    }
     // Staging that is never activated expires having created nothing.
     homeworldz::region::ObjectTransit stale = outbound;
     stale.id = "99999999-9999-4999-8999-999999999999";

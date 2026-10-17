@@ -1320,6 +1320,12 @@ bool activate_object_arrival(Transport& destination, std::string_view transit_id
         "/activate", {}).status_code == 200;
 }
 
+bool cancel_object_arrival(Transport& destination, std::string_view transit_id,
+                           std::string_view object_id) {
+    return destination.send("POST", "/api/v1/object-transits/" + std::string(transit_id) +
+        "/cancel", "{\"objectId\":" + api::json_string(object_id) + "}").status_code == 200;
+}
+
 std::optional<InventoryItem> Client::copy_library_item(std::string_view user_id,
                                                        std::string_view source_item_id,
                                                        std::string_view destination_folder_id,

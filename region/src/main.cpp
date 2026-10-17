@@ -4298,6 +4298,59 @@ int main(int argc, char* argv[]) {
             pending_crossing_scripts.end(), created.begin(), created.end());
         return true;
     };
+    // Removes an object a cancelled crossing built here: the source kept its
+    // own copy, so this one must go, with everything a deletion tells.
+    const auto remove_cancelled_arrival = [&](std::string_view object_id,
+                                              std::chrono::steady_clock::time_point when) {
+        homeworldz::scene::EntityId root_id{};
+        for (const auto& [entity_id, entity] : scene.entities())
+            if (entity.parent_id == 0 && entity.object_id == object_id) root_id = entity_id;
+        if (root_id == 0) return std::size_t{};
+        std::vector<homeworldz::scene::EntityId> part_ids{root_id};
+        for (const auto& [entity_id, entity] : scene.entities())
+            if (entity.parent_id == root_id) part_ids.push_back(entity_id);
+        std::vector<std::uint32_t> killed;
+        for (const auto part : part_ids) {
+            if (const auto* entity = scene.find(part))
+                for (const auto& item : entity->task_inventory)
+                    if (item.asset_type == 10)
+                        static_cast<void>(falcon.erase(entity->object_id, item.item_id));
+            if (scene.remove(part)) killed.push_back(static_cast<std::uint32_t>(part));
+        }
+        try {
+            storage->save_snapshot(scene);
+        } catch (const std::exception& error) {
+            std::cerr << "{\"level\":\"error\",\"message\":\"cancelled arrival removal not "
+                         "persisted\",\"error\":" << homeworldz::api::json_string(error.what())
+                      << "}" << std::endl;
+        }
+        if (killed.empty()) return killed.size();
+        const auto kill = homeworldz::viewer::encode_kill_object(killed);
+        for (const auto& [recipient_endpoint, recipient] : avatars) {
+            static_cast<void>(recipient);
+            for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
+                if (const auto outgoing = circuits.send(route, kill, true, when))
+                    static_cast<void>(send_udp(viewer_server, route, *outgoing));
+            });
+        }
+        for_each_child_circuit(every_facet, when,
+            [&](const std::string& route, const auto& child) {
+                static_cast<void>(child);
+                if (const auto outgoing = circuits.send(route, kill, true, when))
+                    static_cast<void>(send_udp(viewer_server, route, *outgoing));
+            });
+        deliver_to_embodied(session_kill_many(killed));
+        return killed.size();
+    };
+    // Cancels the source still owes a destination it could not reach, sent
+    // again from the tick until one is answered.
+    struct PendingObjectCancel {
+        std::string endpoint;
+        std::string transit_id;
+        std::string object_id;
+        std::chrono::steady_clock::time_point next_attempt;
+    };
+    std::vector<PendingObjectCancel> pending_object_cancels;
     // The source half of an object crossing.
     //
     // The order is stage, remove, activate, and it is chosen so the two ways
@@ -4417,6 +4470,18 @@ int main(int argc, char* argv[]) {
                       << std::endl;
         }
         if (!activated) {
+            // The destination may have built it all the same - slow, not
+            // absent - so it is told to drop it before this copy comes back.
+            // One that cannot be reached is told again from the tick.
+            bool cancelled = false;
+            try {
+                cancelled = homeworldz::grid::cancel_object_arrival(
+                    *destination, transit.id, transit.object_id);
+            } catch (const std::exception&) {
+            }
+            if (!cancelled)
+                pending_object_cancels.push_back({crossing.destination.public_endpoint,
+                    transit.id, transit.object_id, when + std::chrono::seconds(5)});
             const bool recovered = materialize_object_transit(recovery, when);
             std::cout << "{\"level\":" << (recovered ? "\"warn\"" : "\"error\"")
                       << ",\"message\":"
@@ -4424,6 +4489,7 @@ int main(int argc, char* argv[]) {
                                     : "\"object crossing lost the object\"")
                       << ",\"transitId\":" << homeworldz::api::json_string(transit.id)
                       << ",\"objectId\":" << homeworldz::api::json_string(transit.object_id)
+                      << ",\"destinationCancelled\":" << (cancelled ? "true" : "false")
                       << ",\"destinationRegionId\":"
                       << homeworldz::api::json_string(transit.destination_region_id) << "}"
                       << std::endl;
@@ -8396,7 +8462,8 @@ int main(int argc, char* argv[]) {
                         const auto authorization =
                             homeworldz::http::request_header_value(request, "Authorization");
                         const auto arrival_now = std::chrono::steady_clock::now();
-                        if (action != "prepare-arrival" && action != "activate") {
+                        if (action != "prepare-arrival" && action != "activate" &&
+                            action != "cancel") {
                             // Not ours; fall through to the router's own answer.
                         } else if (response.method != "POST") {
                             response = homeworldz::http::response_for_content(
@@ -8430,6 +8497,23 @@ int main(int argc, char* argv[]) {
                                     request, 200, "application/json",
                                     homeworldz::api::to_json(homeworldz::api::Status{"staged"}));
                             }
+                        } else if (action == "cancel") {
+                            // The source kept the object: if it was built
+                            // here it goes, and if it is only staged it never
+                            // will be.
+                            const auto built = homeworldz::region::object_cancel_object_id(
+                                http_request_body(request));
+                            inbound_objects.discard(transit_id);
+                            const auto removed = built.empty()
+                                ? std::size_t{} : remove_cancelled_arrival(built, arrival_now);
+                            std::cout << "{\"level\":\"info\",\"message\":\"object crossing "
+                                         "cancelled by its source\",\"transitId\":"
+                                      << homeworldz::api::json_string(transit_id)
+                                      << ",\"objectId\":" << homeworldz::api::json_string(built)
+                                      << ",\"partsRemoved\":" << removed << "}" << std::endl;
+                            response = homeworldz::http::response_for_content(
+                                request, 200, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Status{"cancelled"}));
                         } else if (inbound_objects.arrived(transit_id)) {
                             // The source is retrying an activation whose answer
                             // it never heard. Saying yes again is the whole
@@ -16794,6 +16878,23 @@ int main(int argc, char* argv[]) {
             next_terrain_persist = now + std::chrono::seconds(3);
         }
 
+        std::erase_if(pending_object_cancels, [&](PendingObjectCancel& pending) {
+            if (now < pending.next_attempt) return false;
+            try {
+                if (const auto transport =
+                        homeworldz::grid::socket_transport(pending.endpoint, service_token);
+                    transport && homeworldz::grid::cancel_object_arrival(
+                        *transport, pending.transit_id, pending.object_id)) {
+                    std::cout << "{\"level\":\"info\",\"message\":\"object crossing cancel "
+                                 "delivered\",\"transitId\":"
+                              << homeworldz::api::json_string(pending.transit_id) << "}" << std::endl;
+                    return true;
+                }
+            } catch (const std::exception&) {
+            }
+            pending.next_attempt = now + std::chrono::seconds(5);
+            return false;
+        });
         for (auto& closure : pending_crossing_closures)
             materialize_asset_closure(std::move(closure), "object crossing");
         pending_crossing_closures.clear();

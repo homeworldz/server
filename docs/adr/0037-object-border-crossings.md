@@ -116,6 +116,13 @@ object here if activation fails. Two live copies of one object, colliding with
 the world in two regions at once, is not recoverable — something has to decide
 which one is real, and nothing is in a position to.
 
+A source that rebuilds its copy owns the object, and says so: it tells the
+destination to delete that object id, which deletes it if it was built and
+drops it if it is only staged. A destination that cannot be told is told
+again until it answers. Added 2026-10-17, after a destination finished building
+a second after its source had given up and restored its own — a deadlock, now
+fixed, but not the only way a reply can be lost.
+
 The remaining failures fall the safe way. A source that dies between staging
 and activation leaves a staged entry that expires having created nothing, and
 the object is still in the source's last snapshot. A destination that never

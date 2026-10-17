@@ -163,6 +163,9 @@ struct ObjectTransit {
 
 std::string encode_object_transit(const ObjectTransit& transit);
 std::optional<ObjectTransit> parse_object_transit(std::string_view document);
+// The object a source kept when it cancelled a crossing, from the cancel's
+// body; empty when the body names none.
+std::string object_cancel_object_id(std::string_view body);
 
 // The destination half of an object crossing, which is two-phase for one
 // reason: an object must never be alive in both regions at once, and must
@@ -187,6 +190,9 @@ public:
     bool arrived(std::string_view transit_id) const;
     void note_arrival(std::string_view transit_id, std::chrono::steady_clock::time_point now,
                       std::chrono::seconds memory = std::chrono::seconds(300));
+    // Drops a staged transit the source has given up on, so it cannot be
+    // activated after all.
+    void discard(std::string_view transit_id);
     std::size_t size(std::chrono::steady_clock::time_point now);
 
 private:

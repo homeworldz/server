@@ -427,6 +427,10 @@ std::optional<ObjectTransit> parse_object_transit(std::string_view document) {
     return transit;
 }
 
+std::string object_cancel_object_id(std::string_view body) {
+    return std::string(json_string_field(body, "objectId"));
+}
+
 bool InboundObjectRegistry::stage(ObjectTransit transit, std::string_view local_region_id,
                                   std::chrono::steady_clock::time_point now,
                                   std::chrono::seconds lifetime) {
@@ -467,6 +471,10 @@ void InboundObjectRegistry::note_arrival(std::string_view transit_id,
                                          std::chrono::seconds memory) {
     if (transit_id.empty()) return;
     arrived_.insert_or_assign(std::string(transit_id), now + memory);
+}
+
+void InboundObjectRegistry::discard(std::string_view transit_id) {
+    staged_.erase(std::string(transit_id));
 }
 
 std::size_t InboundObjectRegistry::size(std::chrono::steady_clock::time_point now) {

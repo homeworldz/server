@@ -563,6 +563,10 @@ bool confirm_avatar_arrival(Transport& source, std::string_view transit_id);
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document);
 bool activate_object_arrival(Transport& destination, std::string_view transit_id);
+// The source gave up and kept the object, so the destination must not have
+// it too: it deletes the object if it built it, and drops it if staged.
+bool cancel_object_arrival(Transport& destination, std::string_view transit_id,
+                           std::string_view object_id);
 
 class ViewerSessionCache {
 public:
