@@ -17506,7 +17506,13 @@ int main(int argc, char* argv[]) {
             const bool transform_changed = (dx * dx + dy * dy + dz * dz) > 0.001 ||
                                            (dvx * dvx + dvy * dvy + dvz * dvz) > 0.000001 ||
                                            (drx * drx + dry * dry + drz * drz) > 0.000001F;
-            if (transform_changed && now >= avatar.next_transform) {
+            // Nothing while riding, as Halcyon sends nothing for a rider in
+            // transit: its seat has gone ahead, and the destination announces
+            // it seated on arrival. Sent here it was a standing avatar past the
+            // edge for a second, and the viewer that rode across drew the
+            // object a region away (2026-10-17).
+            const bool riding = avatar.seat && avatar.seat->riding;
+            if (transform_changed && !riding && now >= avatar.next_transform) {
                 const auto agent_id = homeworldz::viewer::parse_uuid(avatar.user_id);
                 if (agent_id) {
                     const std::array<float, 3> position{
