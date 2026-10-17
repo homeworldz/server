@@ -48,6 +48,25 @@ struct AgentMessage {
     Uuid session_id{};
 };
 
+// High 6: sit on this prim (ADR 0040). `offset` is where the viewer was
+// clicked, in the prim's frame; the region chooses the seat itself.
+struct AgentRequestSit : AgentMessage {
+    Uuid target_id{};
+    std::array<float, 3> offset{};
+};
+
+// High 21: the seat the region granted. With autopilot off the viewer neither
+// walks over nor answers with AgentSit; the region has already seated it.
+struct AvatarSitResponse {
+    Uuid sit_object{};
+    bool autopilot{};
+    std::array<float, 3> sit_position{};
+    std::array<float, 3> sit_rotation{};
+    std::array<float, 3> camera_eye_offset{};
+    std::array<float, 3> camera_at_offset{};
+    bool force_mouselook{};
+};
+
 struct TeleportLocationRequest : AgentMessage {
     std::uint64_t region_handle{};
     std::array<float, 3> position{};
@@ -548,6 +567,9 @@ struct ObjectProperties {
     std::uint64_t creation_date{};
     std::string name;
     std::string description;
+    // The pie menu's label for sitting here, from llSetSitText (ADR 0040).
+    // Empty is the viewer's own "Sit Here".
+    std::string sit_name;
 };
 
 struct InventoryItem {
@@ -1026,6 +1048,8 @@ struct StaticObject {
     // The point is nibble-swapped into this byte — see attachment_state below,
     // which is the inverse of the viewer's ATTACHMENT_ID_FROM_STATE.
     std::uint8_t state{};
+    // What a left click does: 0 touches, 1 sits (llSetClickAction).
+    std::uint8_t click_action{};
     // The inventory item a worn object came from, sent as the NameValue
     // "AttachItemID". Not decoration: the viewer identifies attachments by it,
     // and every attachment carrying the same (null) id is read as the same item
@@ -1253,11 +1277,17 @@ std::vector<std::byte> encode_terrain_window(std::span<const TerrainPatch> patch
                                              std::size_t window_edge);
 std::vector<std::byte> encode_static_object_update(std::uint64_t region_handle,
                                                    const StaticObject& object);
+// A seated avatar (ADR 0040) names its seat's root prim as `parent_local_id`,
+// with position and rotation in that prim's frame; zero is a standing avatar in
+// region coordinates.
 std::vector<std::byte> encode_avatar_object_update(std::uint64_t region_handle, std::uint32_t local_id,
                                                    const Uuid& agent_id,
                                                    std::array<float, 3> position,
                                                    std::array<float, 3> velocity = {},
-                                                   std::array<float, 3> rotation = {});
+                                                   std::array<float, 3> rotation = {},
+                                                   std::uint32_t parent_local_id = 0);
+std::optional<AgentRequestSit> decode_agent_request_sit(std::span<const std::byte> payload);
+std::vector<std::byte> encode_avatar_sit_response(const AvatarSitResponse& response);
 std::vector<std::byte> encode_packet_ack(std::span<const std::uint32_t> sequences);
 std::optional<std::vector<std::uint32_t>> decode_packet_ack(std::span<const std::byte> payload);
 

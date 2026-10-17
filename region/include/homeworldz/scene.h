@@ -144,11 +144,25 @@ struct Entity {
     // offset beside it.
     Vector3 sit_target_position;
     Vector3 sit_target_rotation;
+    // What else a sit script sets on its prim (ADR 0040): the pie-menu label
+    // for sitting (llSetSitText), what a left click does (llSetClickAction,
+    // 1 = sit), and where the viewer puts its camera while seated here
+    // (llSetCameraEyeOffset / llSetCameraAtOffset, in the prim's frame).
+    std::string sit_text;
+    std::uint8_t click_action{};
+    Vector3 camera_eye_offset;
+    Vector3 camera_at_offset;
 };
 
 // Whether a script has put a seat on this prim. The offset carries the answer;
 // see the note on Entity::sit_target_position.
 bool has_sit_target(const Entity& entity);
+
+// Rotations here are a quaternion's x, y and z with w implied non-negative, as
+// every Entity rotation is stored.
+Vector3 rotate_vector(Vector3 value, Vector3 rotation);
+// left * right: the rotation `right` applied in the frame `left` describes.
+Vector3 multiply_rotations(Vector3 left, Vector3 right);
 
 struct RayIntersection {
     Vector3 position;

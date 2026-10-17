@@ -47,9 +47,8 @@ click point in its local space. The region answers with `AvatarSitResponse`
 nor sends `AgentSit`; the region seats the avatar as it answers, as OpenSim does
 for a seat within reach. `AgentSit` is accepted and ignored.
 
-A seated avatar is sent in `ObjectUpdate` with its `ParentID` set to the seat
-prim's local id and its position and rotation in that prim's frame. That is what
-makes the viewer move it with the object. The default sit animation is played
+A seated avatar is sent in `ObjectUpdate` with its `ParentID` set to the seat's
+root prim (see below). That is what makes the viewer move it with the object. The default sit animation is played
 through the avatar's ordinary animation set.
 
 Standing is the `AGENT_CONTROL_STAND_UP` flag (0x00010000) in `AgentUpdate`.
@@ -61,14 +60,25 @@ seated state with no parent object and the ground-sit animation.
 - The clicked prim's sit target, if it has one and it is free.
 - Otherwise the first free sit target elsewhere in the same linkset, in link
   order.
-- Otherwise, if the clicked prim has no sit target, a default seat on it: on
-  top of the prim near the click point, facing the prim's forward axis.
+- Otherwise, if the clicked prim has no sit target, a default seat on it: the
+  viewer's own default offset, <0.34, 0, 0.55> in the prim's frame, facing the
+  prim's forward axis.
 - Otherwise the request is refused: every target in the linkset is taken.
+  Halcyon falls back to the clicked prim here and stacks a second sitter on an
+  occupied seat; refusing is what Second Life does.
 
-One avatar per prim with a sit target, as in Second Life. The sit target offset
-is applied to the avatar's position as Second Life applies it, including its
-fixed vertical adjustment; the exact constant is confirmed against Firestorm
-in-world rather than assumed.
+One avatar per prim with a sit target, as in Second Life. A sit target is used
+exactly as given, with no vertical correction — Halcyon's Second Life-accurate
+mode, which this follows throughout.
+
+### What the viewer is sent
+
+Following Halcyon, the seated avatar's parent is always the **root** prim of
+the linkset, with position and rotation in the root's frame, even when the seat
+is a child prim: a child seat's offset is rotated by the child's local
+rotation and added to its local position. The avatar's hip offset is
+subtracted from the height, because the viewer draws an avatar from its hips;
+without it a seated avatar sinks into its seat.
 
 ### While seated
 

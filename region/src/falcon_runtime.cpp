@@ -16,6 +16,19 @@ std::string instance_key(std::string_view object_id, std::string_view item_id) {
     return std::string(object_id) + '|' + std::string(item_id);
 }
 
+// What a value-returning host function gives a script when the region does not
+// answer it. The compiler has already emitted code that expects a value on the
+// stack after the call; leaving it short would fault the script on its next
+// instruction, which is worse than a well-defined empty answer.
+std::optional<Value> default_result(const std::string& name) {
+    if (name == "llAvatarOnSitTarget" || name == "llAvatarOnLinkSitTarget" ||
+        name == "llGetPermissionsKey")
+        return Value::make_string("00000000-0000-0000-0000-000000000000");
+    if (name == "llGetPermissions") return Value::make_integer(0);
+    if (name == "llGetInventoryName") return Value::make_string("");
+    return std::nullopt;
+}
+
 } // namespace
 
 struct FalconRuntime::Impl {
@@ -46,13 +59,19 @@ struct FalconRuntime::Impl {
         }
 
         LiveScript(Identity script_identity, Program compiled, bool start_enabled,
-                   const HostSink& sink, const SitTargetSink& sit_target_sink)
+                   const HostSink& sink, const SitTargetSink& sit_target_sink,
+                   const RegionCall& region_call)
             : identity(std::move(script_identity)), program(std::move(compiled)), vm(program),
               enabled(start_enabled) {
             const auto host_identity = identity;
-            vm.set_host([sink, sit_target_sink, host_identity](
+            vm.set_host([sink, sit_target_sink, region_call, host_identity](
                             const std::string& name, const std::vector<Value>& args)
                             -> std::optional<Value> {
+                if (name != "llSitTarget" && name != "llOwnerSay" && name != "llSay") {
+                    auto answer = region_call ? region_call(host_identity, name, args)
+                                              : std::optional<Value>{};
+                    return answer ? answer : default_result(name);
+                }
                 if (name == "llSitTarget" && args.size() == 2 &&
                     args[0].type == Type::Vector && args[1].type == Type::Rotation) {
                     if (sit_target_sink)
@@ -80,13 +99,16 @@ struct FalconRuntime::Impl {
 
     HostSink sink;
     SitTargetSink sit_target_sink;
+    RegionCall region_call;
     std::unordered_map<std::string, std::unique_ptr<LiveScript>> scripts;
 };
 
-FalconRuntime::FalconRuntime(HostSink host_sink, SitTargetSink sit_target_sink)
+FalconRuntime::FalconRuntime(HostSink host_sink, SitTargetSink sit_target_sink,
+                             RegionCall region_call)
     : impl_(std::make_unique<Impl>()) {
     impl_->sink = std::move(host_sink);
     impl_->sit_target_sink = std::move(sit_target_sink);
+    impl_->region_call = std::move(region_call);
 }
 
 FalconRuntime::~FalconRuntime() = default;
@@ -99,7 +121,8 @@ FalconRezResult FalconRuntime::rez(Identity identity, std::string_view source,
         while (!source.empty() && source.back() == '\0') source.remove_suffix(1);
         auto program = compile_source(std::string(source));
         auto live = std::make_unique<Impl::LiveScript>(
-            identity, std::move(program), enabled, impl_->sink, impl_->sit_target_sink);
+            identity, std::move(program), enabled, impl_->sink, impl_->sit_target_sink,
+            impl_->region_call);
         impl_->scripts.insert_or_assign(
             instance_key(identity.object_id, identity.inventory_item_id), std::move(live));
         return {true, enabled, {}};
@@ -140,14 +163,25 @@ FalconRuntime::ScriptStatus FalconRuntime::object_script_status(
 
 std::size_t FalconRuntime::dispatch_touch_start(std::string_view object_id,
                                                 std::int32_t total_number) {
+    return dispatch_event(object_id, "touch_start", {Value::make_integer(total_number)});
+}
+
+std::size_t FalconRuntime::dispatch_event(std::string_view object_id, const std::string& event,
+                                          const std::vector<Value>& args) {
     std::size_t accepted = 0;
     for (auto& [key, script] : impl_->scripts) {
         (void)key;
         if (script->identity.object_id != object_id) continue;
-        if (script->queue_event("touch_start", {Value::make_integer(total_number)}))
-            ++accepted;
+        if (script->queue_event(event, args)) ++accepted;
     }
     return accepted;
+}
+
+bool FalconRuntime::dispatch_to_script(std::string_view object_id,
+                                       std::string_view inventory_item_id,
+                                       const std::string& event, const std::vector<Value>& args) {
+    const auto found = impl_->scripts.find(instance_key(object_id, inventory_item_id));
+    return found != impl_->scripts.end() && found->second->queue_event(event, args);
 }
 
 FalconTickResult FalconRuntime::run_tick(std::uint64_t total_instruction_budget,

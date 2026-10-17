@@ -18,6 +18,7 @@ add_library(homeworldz-region-core
   src/capability_paths.cpp
   src/region_storage.cpp
   src/scene.cpp
+  src/seating.cpp
   src/sha256.cpp
   src/simulation_loop.cpp
   src/visual_params.cpp
@@ -202,6 +203,10 @@ add_test(NAME region-grid-client COMMAND homeworldz-grid-client-tests)
 add_executable(homeworldz-region-transit-tests tests/region_transit_test.cpp)
 target_link_libraries(homeworldz-region-transit-tests PRIVATE homeworldz-region-core)
 add_test(NAME region-transit COMMAND homeworldz-region-transit-tests)
+
+add_executable(homeworldz-seating-tests tests/seating_test.cpp)
+target_link_libraries(homeworldz-seating-tests PRIVATE homeworldz-region-core)
+add_test(NAME region-seating COMMAND homeworldz-seating-tests)
 
 add_executable(homeworldz-object-asset-tests tests/object_asset_test.cpp)
 target_link_libraries(homeworldz-object-asset-tests PRIVATE homeworldz-region-core)

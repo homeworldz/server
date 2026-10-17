@@ -1886,7 +1886,8 @@ std::vector<std::byte> encode_object_properties(std::span<const ObjectProperties
         for (int index = 0; index < 3; ++index) append_uuid(output, zero); // inventory IDs
         append_uuid(output, object.creator_id); // initial owner is also the last owner
         if (!append_variable1(output, object.name) || !append_variable1(output, object.description) ||
-            !append_variable1(output, {}) || !append_variable1(output, {}) || !append_variable1(output, {}))
+            !append_variable1(output, {}) || !append_variable1(output, object.sit_name) ||
+            !append_variable1(output, {}))
             return {};
     }
     return output;
@@ -2546,6 +2547,32 @@ std::optional<AgentUpdate> decode_agent_update(std::span<const std::byte> payloa
     return result;
 }
 
+// High 6, zero-coded on the wire (already expanded here): agent, session, the
+// target prim, and the click point in its frame.
+std::optional<AgentRequestSit> decode_agent_request_sit(std::span<const std::byte> payload) {
+    if (payload.size() != 61 || payload[0] != std::byte{6}) return std::nullopt;
+    AgentRequestSit result;
+    std::copy_n(payload.begin() + 1, 16, result.agent_id.begin());
+    std::copy_n(payload.begin() + 17, 16, result.session_id.begin());
+    std::copy_n(payload.begin() + 33, 16, result.target_id.begin());
+    result.offset = read_vector3(payload, 49);
+    return result;
+}
+
+// High 21. The rotation goes as a quaternion's x, y and z, as every rotation
+// in a template message does.
+std::vector<std::byte> encode_avatar_sit_response(const AvatarSitResponse& response) {
+    std::vector<std::byte> output{std::byte{21}};
+    append_uuid(output, response.sit_object);
+    output.push_back(std::byte{response.autopilot ? std::uint8_t{1} : std::uint8_t{0}});
+    for (const auto value : response.sit_position) append_f32(output, value);
+    for (const auto value : response.sit_rotation) append_f32(output, value);
+    for (const auto value : response.camera_eye_offset) append_f32(output, value);
+    for (const auto value : response.camera_at_offset) append_f32(output, value);
+    output.push_back(std::byte{response.force_mouselook ? std::uint8_t{1} : std::uint8_t{0}});
+    return output;
+}
+
 // Low 88. AgentData only: agent, session, and the one bool.
 std::optional<SetAlwaysRun> decode_set_always_run(std::span<const std::byte> payload) {
     constexpr std::array<std::byte, 4> message_id{
@@ -3170,7 +3197,7 @@ std::vector<std::byte> encode_static_object_update(std::uint64_t region_handle, 
     append_le_u32(output, 0); // CRC
     output.push_back(static_cast<std::byte>(object.pcode));
     output.push_back(static_cast<std::byte>(object.material));
-    output.push_back(std::byte{}); // click action
+    output.push_back(static_cast<std::byte>(object.click_action));
     for (const auto value : object.scale) append_f32(output, value);
     std::vector<std::byte> transform;
     for (const auto value : object.position) append_f32(transform, value);
@@ -3406,9 +3433,11 @@ std::vector<std::byte> encode_avatar_object_update(std::uint64_t region_handle, 
                                                    const Uuid& agent_id,
                                                    std::array<float, 3> position,
                                                    std::array<float, 3> velocity,
-                                                   std::array<float, 3> rotation) {
+                                                   std::array<float, 3> rotation,
+                                                   std::uint32_t parent_local_id) {
     StaticObject avatar;
     avatar.local_id = local_id;
+    avatar.parent_local_id = parent_local_id;
     avatar.id = agent_id;
     avatar.owner_id = agent_id;
     avatar.pcode = 47; // avatar

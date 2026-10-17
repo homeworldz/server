@@ -1806,6 +1806,61 @@ bool estate_codecs() {
     return true;
 }
 
+// Sitting (ADR 0040): AgentRequestSit in, AvatarSitResponse out, and a seated
+// avatar's ObjectUpdate naming its parent. Byte layouts from Firestorm's
+// message_template.msg; the reader of the two outgoing ones is a viewer.
+bool sit_messages() {
+    const auto agent = *parse_uuid("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+    const auto session = *parse_uuid("11111111-2222-4333-8444-555555555555");
+    const auto target = *parse_uuid("99999999-8888-4777-8666-555555555555");
+
+    std::vector<std::byte> request{std::byte{6}};
+    request.insert(request.end(), agent.begin(), agent.end());
+    request.insert(request.end(), session.begin(), session.end());
+    request.insert(request.end(), target.begin(), target.end());
+    for (const float value : {0.25F, -0.5F, 1.0F}) {
+        std::array<std::byte, 4> raw{};
+        std::memcpy(raw.data(), &value, 4);
+        request.insert(request.end(), raw.begin(), raw.end());
+    }
+    const auto decoded = homeworldz::viewer::decode_agent_request_sit(request);
+    if (!decoded || decoded->agent_id != agent || decoded->session_id != session ||
+        decoded->target_id != target || decoded->offset[0] != 0.25F ||
+        decoded->offset[1] != -0.5F || decoded->offset[2] != 1.0F)
+        return false;
+    request.pop_back();
+    if (homeworldz::viewer::decode_agent_request_sit(request)) return false; // short
+
+    homeworldz::viewer::AvatarSitResponse response;
+    response.sit_object = target;
+    response.sit_position = {0.F, 0.F, 0.5F};
+    response.sit_rotation = {0.F, 0.F, 0.5F};
+    response.camera_eye_offset = {-2.F, 0.F, 1.F};
+    response.camera_at_offset = {1.F, 0.F, 0.F};
+    response.force_mouselook = true;
+    const auto sit = homeworldz::viewer::encode_avatar_sit_response(response);
+    // 1 id byte + uuid + bool + four 12-byte vectors + bool.
+    if (sit.size() != 1 + 16 + 1 + 48 + 1 || sit[0] != std::byte{21} ||
+        !std::equal(target.begin(), target.end(), sit.begin() + 1) || sit[17] != std::byte{0} ||
+        sit.back() != std::byte{1})
+        return false;
+    float eye_x = 0.F;
+    std::memcpy(&eye_x, sit.data() + 18 + 24, 4);
+    if (eye_x != -2.F) return false;
+
+    // The seated avatar's parent is written where every prim's is.
+    const auto standing = encode_avatar_object_update(0x0102030405060708ULL, 42, agent,
+                                                      {1.F, 2.F, 3.F});
+    const auto seated = encode_avatar_object_update(0x0102030405060708ULL, 42, agent,
+                                                    {1.F, 2.F, 3.F}, {}, {}, 0x11223344U);
+    const std::array<std::byte, 4> parent{std::byte{0x44}, std::byte{0x33}, std::byte{0x22},
+                                          std::byte{0x11}};
+    return standing.size() == seated.size() &&
+           std::search(seated.begin(), seated.end(), parent.begin(), parent.end()) != seated.end() &&
+           std::search(standing.begin(), standing.end(), parent.begin(), parent.end()) ==
+               standing.end();
+}
+
 int main() {
     if (!packet_round_trip()) return 1;
     if (!parcel_codecs()) return 25;
@@ -2065,5 +2120,6 @@ int main() {
             if (std::to_integer<std::uint8_t>(untouched[params_at + i]) != 9) return 49;
     }
 
+    if (!sit_messages()) return 50;
     return 0;
 }

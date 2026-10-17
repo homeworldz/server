@@ -121,6 +121,14 @@ bool apply_task_inventory_update(
     return true;
 }
 
+Vector3 rotate_vector(Vector3 value, Vector3 rotation) {
+    return rotate(value, quaternion(rotation));
+}
+
+Vector3 multiply_rotations(Vector3 left, Vector3 right) {
+    return quaternion_vector(multiply(quaternion(left), quaternion(right)));
+}
+
 bool has_sit_target(const Entity& entity) {
     return entity.sit_target_position.x != 0.0 || entity.sit_target_position.y != 0.0 ||
            entity.sit_target_position.z != 0.0;
