@@ -23,6 +23,10 @@ inline constexpr std::uint32_t control_fast_forward = 0x00000400;
 inline constexpr std::uint32_t control_fast_left = 0x00000800;
 inline constexpr std::uint32_t control_fast_up = 0x00001000;
 inline constexpr std::uint32_t control_fly = 0x00002000;
+// Each set for a single AgentUpdate, when the stand button or Sit Here is
+// pressed (LLAgent::standUp, LLAgent::sitDown).
+inline constexpr std::uint32_t control_stand_up = 0x00010000;
+inline constexpr std::uint32_t control_sit_on_ground = 0x00020000;
 
 struct AvatarGeometry {
     double height{1.56};
@@ -96,6 +100,13 @@ bool is_movement_animation_id(std::string_view animation_id);
 bool apply_movement_animation(std::vector<AvatarAnimationEntry>& playing,
                               MovementAnimation state, const Uuid& agent_id,
                               std::int32_t& next_sequence);
+
+// The seated form of the same rule (ADR 0040): no movement animation at all,
+// and `sit` playing when one is given. A script that stopped the default sit
+// for its own pose passes none, and the pose it started is left alone.
+bool apply_seated_animation(std::vector<AvatarAnimationEntry>& playing,
+                            const std::optional<Uuid>& sit, const Uuid& agent_id,
+                            std::int32_t& next_sequence);
 
 // The `motion` and `clips` members of a session payload, for the avatar
 // announcement and the motion event alike.
@@ -183,6 +194,9 @@ public:
     void contain_horizontal();
     void restore_motion(scene::Vector3 velocity, std::array<float, 3> rotation, bool flying);
     void teleport(scene::Vector3 position, bool flying);
+    // Seated (ADR 0040): the seat decides where the avatar is, so it is put
+    // there exactly and at rest, with no ground or edge rule applied.
+    void hold_seated(scene::Vector3 position, std::array<float, 3> rotation);
     void synchronize_physics(scene::Vector3 position, scene::Vector3 velocity, bool grounded);
     // Rebuilding the physics capsule under a standing avatar loses its ground
     // contact for a step, and regaining it looks exactly like touching down

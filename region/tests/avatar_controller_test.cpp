@@ -402,6 +402,42 @@ int main() {
         if (ordered.size() != 1 || ordered[0].sequence <= first) return 53;
     }
 
+    // Seated (ADR 0040): every movement state goes, the sit is played once, and
+    // a pose a script started stays. With no sit given — a script stopped it —
+    // nothing puts it back.
+    {
+        using homeworldz::viewer::MovementAnimation;
+        const homeworldz::viewer::Uuid agent{std::byte{7}};
+        const auto sit = homeworldz::viewer::parse_uuid("1a5fe8ac-a804-8a5d-7cbd-56bd83184568");
+        const auto pose = homeworldz::viewer::parse_uuid("aaaa1111-2222-4333-8444-555555555555");
+        if (!sit || !pose) return 54;
+        std::vector<homeworldz::viewer::AvatarAnimationEntry> playing;
+        std::int32_t sequence = 0;
+        homeworldz::viewer::apply_movement_animation(playing, MovementAnimation::stand, agent, sequence);
+        playing.push_back({*pose, sequence++, agent});
+        if (!homeworldz::viewer::apply_seated_animation(playing, sit, agent, sequence)) return 55;
+        if (playing.size() != 2 || playing[0].animation_id != *pose ||
+            playing[1].animation_id != *sit)
+            return 56;
+        if (homeworldz::viewer::apply_seated_animation(playing, sit, agent, sequence)) return 57;
+        std::erase_if(playing, [&](const auto& entry) { return entry.animation_id == *sit; });
+        if (homeworldz::viewer::apply_seated_animation(playing, std::nullopt, agent, sequence))
+            return 58;
+        if (playing.size() != 1 || playing[0].animation_id != *pose) return 59;
+    }
+
+    // A seated avatar is held exactly where its seat is, at rest and on
+    // nothing: no ground rule lifts it off a low chair.
+    {
+        homeworldz::viewer::AvatarController seated({128.0, 128.0, 30.0}, 20.0, 1.8);
+        seated.hold_seated({40.0, 50.0, 20.4}, {0.0F, 0.0F, 0.5F});
+        const auto& state = seated.state();
+        if (state.position.x != 40.0 || state.position.y != 50.0 || state.position.z != 20.4)
+            return 60;
+        if (state.rotation[2] != 0.5F || state.flying || !state.grounded) return 61;
+        if (state.velocity.x != 0.0 || state.velocity.y != 0.0 || state.velocity.z != 0.0) return 62;
+    }
+
     // The payload the session avatar announcement and the motion event share.
     // Tested here because the client core's sharpest finding lands on this side:
     // a published field whose correctness nothing can observe comes to be

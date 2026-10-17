@@ -74,6 +74,23 @@ bool apply_movement_animation(std::vector<AvatarAnimationEntry>& playing,
     return changed;
 }
 
+bool apply_seated_animation(std::vector<AvatarAnimationEntry>& playing,
+                            const std::optional<Uuid>& sit, const Uuid& agent_id,
+                            std::int32_t& next_sequence) {
+    const auto before = playing.size();
+    std::erase_if(playing, [](const AvatarAnimationEntry& entry) {
+        return is_movement_animation_id(format_uuid(entry.animation_id));
+    });
+    bool changed = playing.size() != before;
+    if (sit && std::none_of(playing.begin(), playing.end(),
+            [&](const AvatarAnimationEntry& entry) { return entry.animation_id == *sit; })) {
+        if (next_sequence < 2) next_sequence = 2;
+        playing.push_back({*sit, next_sequence++, agent_id});
+        changed = true;
+    }
+    return changed;
+}
+
 std::string motion_fields_json(MovementAnimation state,
                                std::span<const std::string> playing) {
     std::string clips;
@@ -223,6 +240,20 @@ void AvatarController::teleport(scene::Vector3 position, bool flying) {
         state_.position.z = support_height;
         state_.grounded = true;
     }
+}
+
+void AvatarController::hold_seated(scene::Vector3 position, std::array<float, 3> rotation) {
+    if (std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z))
+        state_.position = position;
+    if (std::all_of(rotation.begin(), rotation.end(), [](float value) { return std::isfinite(value); })) {
+        state_.rotation = rotation;
+        body_rotation_ = rotation;
+    }
+    state_.velocity = {};
+    state_.flying = false;
+    state_.grounded = true;
+    flight_lift_velocity_ = 0.0;
+    landing_animation_remaining_ = 0.0;
 }
 
 void AvatarController::synchronize_physics(

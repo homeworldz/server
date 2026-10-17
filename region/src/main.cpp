@@ -59,7 +59,9 @@
 #include "homeworldz/mesh_model_upload.h"
 #include "homeworldz/slmesh.h"
 #include "homeworldz/region_transit.h"
+#include "homeworldz/builtin_animations.h"
 #include "homeworldz/scene.h"
+#include "homeworldz/seating.h"
 #include "homeworldz/sha256.h"
 #include "homeworldz/simulation_loop.h"
 #include "homeworldz/terrain_edit.h"
@@ -233,6 +235,17 @@ struct LiveAvatar {
     // grid's worn list. Until it is retired here, what its viewer says about
     // what it is wearing is about the copy over there, not this one.
     bool handing_off{};
+    // Seated (ADR 0040). The seat lives here and never on the scene entity:
+    // an entity whose parent_id names a prim is a linked child of it to every
+    // edit, physics and removal loop, which would edit, move and delete the
+    // avatar with the furniture.
+    struct Seat {
+        homeworldz::scene::EntityId prim{};   // the prim sat on; 0 on the ground
+        homeworldz::scene::EntityId root{};   // its linkset's root, the viewer's parent
+        homeworldz::region::SeatPose pose;    // relative to the root, as sent
+        bool default_sit_stopped{};           // a script stopped "sit" for a pose
+    };
+    std::optional<Seat> seat;
 };
 
 bool sequence_is_newer(std::uint32_t candidate, std::uint32_t current) {
@@ -1211,6 +1224,7 @@ std::optional<homeworldz::viewer::StaticObject> static_object_from_entity(
         }
     }
     object.face_materials = entity.face_materials;
+    object.click_action = entity.click_action;
     object.path_curve = entity.path_curve;
     object.profile_curve = entity.profile_curve;
     object.path_begin = entity.path_begin;
@@ -1303,6 +1317,7 @@ std::optional<homeworldz::viewer::ObjectProperties> object_properties_from_entit
     properties.creation_date = entity.creation_date;
     properties.name = entity.name;
     properties.description = entity.description;
+    properties.sit_name = entity.sit_text;
     return properties;
 }
 
@@ -3089,7 +3104,8 @@ int main(int argc, char* argv[]) {
             live.controller.state().hip_offset == hip_offset)
             return false;
         live.controller.set_avatar_geometry(height, hip_offset);
-        if (!physics_world) return true;
+        // Seated on a prim there is no capsule to reshape; standing makes one.
+        if (!physics_world || (live.seat && live.physics_character == 0)) return true;
         const auto velocity = live.controller.state().velocity;
         const auto was_grounded = live.controller.state().grounded;
         if (live.physics_character != 0) physics_world->remove_character(live.physics_character);
@@ -3506,6 +3522,17 @@ int main(int argc, char* argv[]) {
     };
     std::uint64_t event_id{};
     std::uint64_t next_inventory_asset_xfer{1};
+    // What each script has been granted (ADR 0040), keyed "object|item" as the
+    // runtime keys its scripts. Only PERMISSION_TRIGGER_ANIMATION exists, and
+    // only for the avatar seated on the script's linkset; standing revokes it.
+    struct ScriptPermission {
+        std::string agent_id;
+        std::int32_t mask{};
+    };
+    std::unordered_map<std::string, ScriptPermission> script_permissions;
+    std::function<std::optional<homeworldz::script::Value>(
+        const homeworldz::script::Identity&, const std::string&,
+        const std::vector<homeworldz::script::Value>&)> script_region_call;
     homeworldz::script::FalconRuntime falcon([&](homeworldz::script::FalconHostMessage message) {
         if (message.text.empty() || message.text.size() > 1023) return;
         const auto object_id = homeworldz::viewer::parse_uuid(message.identity.object_id);
@@ -3580,6 +3607,14 @@ int main(int argc, char* argv[]) {
                   << homeworldz::api::json_string(seat.identity.object_id) << ",\"seated\":"
                   << (homeworldz::scene::has_sit_target(*prim) ? "true" : "false") << "}"
                   << std::endl;
+    },
+    // Every other host function. Scripts run only from the tick, long after
+    // the helpers these need are built below, so the call goes through a hook
+    // assigned there.
+    [&](const homeworldz::script::Identity& caller, const std::string& name,
+        const std::vector<homeworldz::script::Value>& args)
+        -> std::optional<homeworldz::script::Value> {
+        return script_region_call ? script_region_call(caller, name, args) : std::nullopt;
     });
     const auto rez_task_script = [&](const homeworldz::scene::Entity& entity,
                                      const homeworldz::scene::TaskInventoryItem& item,
@@ -4017,6 +4052,24 @@ int main(int argc, char* argv[]) {
                                        std::array<float, 3> velocity = {},
                                        std::array<float, 3> rotation = {}) {
         const auto facet = endpoint_facet_of(recipient_endpoint);
+        // Seated on a prim (ADR 0040), the avatar is a child of the seat's
+        // root, placed relative to it, so nothing is rebased: that is what
+        // tells a viewer it sits, from whichever site the update is sent.
+        for (const auto& [live_key, live] : avatars) {
+            static_cast<void>(live_key);
+            if (static_cast<std::uint32_t>(live.entity_id) != local_id || !live.seat ||
+                live.seat->prim == 0)
+                continue;
+            const auto& pose = live.seat->pose;
+            return homeworldz::viewer::encode_avatar_object_update(
+                facet_handle(facet), local_id, agent_id,
+                {static_cast<float>(pose.position.x), static_cast<float>(pose.position.y),
+                 static_cast<float>(pose.position.z)},
+                {},
+                {static_cast<float>(pose.rotation.x), static_cast<float>(pose.rotation.y),
+                 static_cast<float>(pose.rotation.z)},
+                static_cast<std::uint32_t>(live.seat->root));
+        }
         if (facet > 0) {
             position[0] -= static_cast<float>(facet_origin_x(facet));
             position[1] -= static_cast<float>(facet_origin_y(facet));
@@ -4820,6 +4873,459 @@ int main(int argc, char* argv[]) {
             std::cout << "{\"level\":\"info\",\"message\":\"task scripts restored\",\"count\":"
                       << restored_scripts << "}" << std::endl;
     }
+    // --- Sitting (ADR 0040).
+    constexpr std::int32_t changed_link = 0x20;
+    constexpr std::int32_t permission_trigger_animation = 0x10;
+    const auto entity_id_by_object_id = [&](std::string_view object_id) {
+        for (const auto& [entity_id, candidate] : scene.entities())
+            if (candidate.object_id == object_id) return entity_id;
+        return homeworldz::scene::EntityId{};
+    };
+    const auto root_of = [&](homeworldz::scene::EntityId prim_id) {
+        const auto* prim = scene.find(prim_id);
+        return !prim ? homeworldz::scene::EntityId{} : prim->parent_id == 0 ? prim->id : prim->parent_id;
+    };
+    // A linkset in link order: the root, then its children by id.
+    const auto linkset_of = [&](homeworldz::scene::EntityId root_id) {
+        std::vector<std::uint64_t> children;
+        for (const auto& [candidate_id, candidate] : scene.entities())
+            if (candidate.parent_id == root_id) children.push_back(candidate_id);
+        return homeworldz::region::link_order(root_id, std::move(children));
+    };
+    const auto occupant_key_of = [&](homeworldz::scene::EntityId prim_id) -> std::string {
+        for (const auto& [key, live] : avatars)
+            if (live.seat && live.seat->prim != 0 && live.seat->prim == prim_id) return key;
+        return {};
+    };
+    // An occupied object does not cross a region border; it is held at the
+    // edge until a crossing can carry its sitters with it (ADR 0040).
+    const auto linkset_occupied = [&](homeworldz::scene::EntityId root_id) {
+        return std::any_of(avatars.begin(), avatars.end(), [&](const auto& entry) {
+            return entry.second.seat && entry.second.seat->prim != 0 &&
+                   entry.second.seat->root == root_id;
+        });
+    };
+    const auto sit_animation_id = [](bool on_ground) {
+        return homeworldz::viewer::parse_uuid(*homeworldz::region::builtin_animation_id(
+            on_ground ? "sit_ground_constrained" : "sit"));
+    };
+    // An avatar's whole animation list, to viewers here, to watchers one region
+    // over, and to session clients — what a script or a seat changed.
+    const auto publish_avatar_animations = [&](const std::string& key,
+                                               std::chrono::steady_clock::time_point when) {
+        const auto found = avatars.find(key);
+        if (found == avatars.end()) return;
+        const auto agent_id = homeworldz::viewer::parse_uuid(found->second.user_id);
+        if (!agent_id) return;
+        const auto payload = homeworldz::viewer::encode_avatar_animation(
+            {*agent_id, avatar_animations[key]});
+        for (const auto& [recipient_endpoint, recipient] : avatars) {
+            static_cast<void>(recipient);
+            if (const auto outgoing = circuits.send(recipient_endpoint, payload, false, when, true))
+                static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
+        }
+        const auto& standing = found->second.controller.state().position;
+        for_each_child_circuit(facet_of_position(standing.x, standing.y), when,
+            [&](const std::string& route, const auto& child) {
+                if (child.session_id == found->second.session_id) return;
+                if (const auto outgoing = circuits.send(route, payload, false, when, true))
+                    static_cast<void>(send_udp(viewer_server, route, *outgoing));
+            });
+        if (!session_server) return;
+        const auto notice = session_motion_envelope(found->second, key);
+        for (const auto& [recipient_key, recipient] : avatars) {
+            if (recipient.transport != AvatarTransport::session) continue;
+            const auto known = session_avatar_interest.find(recipient_key);
+            if (known == session_avatar_interest.end() ||
+                !known->second.contains(found->second.entity_id))
+                continue;
+            session_server->send_to(recipient.session_id, notice);
+        }
+    };
+    // The avatar's ObjectUpdate, sent now and reliably: sitting and standing
+    // are told by it, so neither can wait for the next movement.
+    const auto announce_avatar = [&](LiveAvatar& live, std::chrono::steady_clock::time_point when) {
+        const auto agent_id = homeworldz::viewer::parse_uuid(live.user_id);
+        if (!agent_id) return;
+        const auto& state = live.controller.state();
+        const auto viewer_position = live.controller.viewer_position();
+        const std::array<float, 3> position{static_cast<float>(viewer_position.x),
+            static_cast<float>(viewer_position.y), static_cast<float>(viewer_position.z)};
+        const auto local_id = static_cast<std::uint32_t>(live.entity_id);
+        const auto facet = facet_of_position(state.position.x, state.position.y);
+        for (const auto& [recipient_endpoint, recipient] : avatars) {
+            static_cast<void>(recipient);
+            const auto route = facet_route_for(recipient_endpoint, facet);
+            if (route.empty()) continue;
+            if (const auto outgoing = circuits.send(route,
+                    avatar_update_for(route, local_id, *agent_id, position, {}, state.rotation),
+                    true, when, true))
+                static_cast<void>(send_udp(viewer_server, route, *outgoing));
+        }
+        for_each_child_circuit(facet, when, [&](const std::string& route, const auto& child) {
+            if (child.session_id == live.session_id) return;
+            if (const auto outgoing = circuits.send(route,
+                    avatar_update_for(route, local_id, *agent_id, position, {}, state.rotation),
+                    true, when, true))
+                static_cast<void>(send_udp(viewer_server, route, *outgoing));
+        });
+        live.last_sent_position = viewer_position;
+        live.last_sent_velocity = {};
+        live.last_sent_rotation = state.rotation;
+    };
+    const auto tell_linkset_changed = [&](homeworldz::scene::EntityId root_id) {
+        for (const auto prim_id : linkset_of(root_id))
+            if (const auto* prim = scene.find(prim_id))
+                static_cast<void>(falcon.dispatch_event(
+                    prim->object_id, "changed", {homeworldz::script::Value::make_integer(changed_link)}));
+    };
+    // Ends a seat without moving the avatar: what every departure needs, and
+    // the first half of standing up. The seat's scripts lose their permission
+    // and the animations they started, and hear the link change.
+    const auto release_seat = [&](const std::string& key, std::chrono::steady_clock::time_point when)
+        -> std::optional<LiveAvatar::Seat> {
+        const auto found = avatars.find(key);
+        if (found == avatars.end() || !found->second.seat) return std::nullopt;
+        auto& live = found->second;
+        const auto seat = *live.seat;
+        live.seat.reset();
+        std::unordered_set<std::string> seat_objects;
+        if (seat.prim != 0)
+            for (const auto prim_id : linkset_of(seat.root))
+                if (const auto* prim = scene.find(prim_id)) seat_objects.insert(prim->object_id);
+        const auto sit = sit_animation_id(false);
+        const auto ground_sit = sit_animation_id(true);
+        std::erase_if(avatar_animations[key], [&](const auto& entry) {
+            return (sit && entry.animation_id == *sit) ||
+                   (ground_sit && entry.animation_id == *ground_sit) ||
+                   seat_objects.contains(homeworldz::viewer::format_uuid(entry.source_id));
+        });
+        std::erase_if(script_permissions, [&](const auto& entry) {
+            return entry.second.agent_id == live.user_id &&
+                   seat_objects.contains(entry.first.substr(0, entry.first.find('|')));
+        });
+        if (seat.prim != 0) tell_linkset_changed(seat.root);
+        publish_avatar_animations(key, when);
+        std::cout << "{\"level\":\"info\",\"message\":\"avatar seat released\",\"agent\":"
+                  << homeworldz::api::json_string(live.user_id) << ",\"prim\":" << seat.prim
+                  << "}" << std::endl;
+        return seat;
+    };
+    // Standing up: off the seat onto the top of the prim, with the physics
+    // character it was parked without.
+    const auto stand_avatar = [&](const std::string& key, std::chrono::steady_clock::time_point when) {
+        const auto found = avatars.find(key);
+        if (found == avatars.end()) return false;
+        const auto seat = release_seat(key, when);
+        if (!seat) return false;
+        auto& live = found->second;
+        if (seat->prim != 0) {
+            auto position = live.controller.state().position;
+            if (const auto* prim = scene.find(seat->prim))
+                position = homeworldz::region::stand_position(
+                    position, *prim, live.controller.state().height);
+            live.controller.set_ground_height(collision_ground_height(position));
+            live.controller.teleport(position, false);
+        }
+        if (physics_world && live.physics_character == 0) {
+            live.physics_character = physics_world->create_character(character_definition(
+                live.entity_id, live.controller.state().position, live.controller.state().height));
+            physics_world->set_character_flying(live.physics_character, false);
+        }
+        announce_avatar(live, when);
+        return true;
+    };
+    // Every seat on a linkset ends, as when it is deleted, taken or returned.
+    const auto stand_everyone_on = [&](homeworldz::scene::EntityId root_id,
+                                       std::chrono::steady_clock::time_point when) {
+        std::vector<std::string> seated;
+        for (const auto& [key, live] : avatars)
+            if (live.seat && live.seat->prim != 0 && live.seat->root == root_id) seated.push_back(key);
+        for (const auto& key : seated) static_cast<void>(stand_avatar(key, when));
+        return seated.size();
+    };
+    const auto seat_avatar = [&](const std::string& key, homeworldz::scene::EntityId clicked_id,
+                                 std::chrono::steady_clock::time_point when) -> std::string {
+        const auto found = avatars.find(key);
+        if (found == avatars.end() || found->second.transport != AvatarTransport::lludp)
+            return "not seatable here";
+        const auto* clicked = scene.find(clicked_id);
+        const auto root_id = root_of(clicked_id);
+        const auto* root = scene.find(root_id);
+        if (!clicked || !root || clicked->attachment_point != 0 || root->attachment_point != 0)
+            return "not a seat";
+        for (const auto& [other_key, other] : avatars) {
+            static_cast<void>(other_key);
+            if (other.entity_id == root_id) return "not a seat";
+        }
+        // Already seated here: standing first is what lets a second click on
+        // the same furniture move to another seat in it.
+        if (found->second.seat) static_cast<void>(release_seat(key, when));
+        const auto order = linkset_of(root_id);
+        std::vector<homeworldz::region::SeatCandidate> candidates;
+        for (const auto prim_id : order) {
+            const auto* prim = scene.find(prim_id);
+            candidates.push_back({prim_id, prim && homeworldz::scene::has_sit_target(*prim),
+                                  !occupant_key_of(prim_id).empty()});
+        }
+        const auto chosen = homeworldz::region::choose_seat(clicked_id, candidates);
+        const auto* seat_prim = chosen ? scene.find(*chosen) : nullptr;
+        if (!seat_prim) return "no seat free";
+        auto& live = found->second;
+        const bool child = seat_prim->id != root_id;
+        const auto pose = homeworldz::region::seat_pose(
+            child ? seat_prim->local_position : homeworldz::scene::Vector3{},
+            child ? seat_prim->local_rotation : homeworldz::scene::Vector3{},
+            homeworldz::scene::has_sit_target(*seat_prim), seat_prim->sit_target_position,
+            seat_prim->sit_target_rotation, live.controller.state().hip_offset);
+        if (physics_world && live.physics_character != 0) {
+            physics_world->remove_character(live.physics_character);
+            live.physics_character = 0;
+        }
+        live.seat = LiveAvatar::Seat{seat_prim->id, root_id, pose, false};
+        const auto world = homeworldz::region::seated_world(root->position, root->rotation, pose);
+        live.controller.hold_seated(world.position,
+            {static_cast<float>(world.rotation.x), static_cast<float>(world.rotation.y),
+             static_cast<float>(world.rotation.z)});
+        if (const auto agent_id = homeworldz::viewer::parse_uuid(live.user_id))
+            if (homeworldz::viewer::apply_seated_animation(avatar_animations[key],
+                    sit_animation_id(false), *agent_id, next_animation_sequences[key]))
+                publish_avatar_animations(key, when);
+        homeworldz::viewer::AvatarSitResponse response;
+        response.sit_object =
+            homeworldz::viewer::parse_uuid(seat_prim->object_id).value_or(homeworldz::viewer::Uuid{});
+        response.sit_position = {static_cast<float>(seat_prim->sit_target_position.x),
+                                 static_cast<float>(seat_prim->sit_target_position.y),
+                                 static_cast<float>(seat_prim->sit_target_position.z)};
+        response.sit_rotation = {static_cast<float>(seat_prim->sit_target_rotation.x),
+                                 static_cast<float>(seat_prim->sit_target_rotation.y),
+                                 static_cast<float>(seat_prim->sit_target_rotation.z)};
+        response.camera_eye_offset = {static_cast<float>(seat_prim->camera_eye_offset.x),
+                                      static_cast<float>(seat_prim->camera_eye_offset.y),
+                                      static_cast<float>(seat_prim->camera_eye_offset.z)};
+        response.camera_at_offset = {static_cast<float>(seat_prim->camera_at_offset.x),
+                                     static_cast<float>(seat_prim->camera_at_offset.y),
+                                     static_cast<float>(seat_prim->camera_at_offset.z)};
+        if (const auto outgoing = circuits.send(
+                key, homeworldz::viewer::encode_avatar_sit_response(response), true, when))
+            static_cast<void>(send_udp(viewer_server, key, *outgoing));
+        announce_avatar(live, when);
+        tell_linkset_changed(root_id);
+        std::cout << "{\"level\":\"info\",\"message\":\"avatar seated\",\"agent\":"
+                  << homeworldz::api::json_string(live.user_id) << ",\"prim\":" << seat_prim->id
+                  << ",\"root\":" << root_id << ",\"sitTarget\":"
+                  << (homeworldz::scene::has_sit_target(*seat_prim) ? "true" : "false")
+                  << ",\"pose\":[" << pose.position.x << ',' << pose.position.y << ','
+                  << pose.position.z << "]}" << std::endl;
+        return {};
+    };
+    const auto sit_on_ground = [&](const std::string& key, std::chrono::steady_clock::time_point when) {
+        const auto found = avatars.find(key);
+        if (found == avatars.end() || found->second.seat) return;
+        auto& live = found->second;
+        // The capsule stays: a ground sit is still standing on the terrain, it
+        // just does not move.
+        live.seat = LiveAvatar::Seat{};
+        live.controller.hold_seated(live.controller.state().position, live.controller.state().rotation);
+        if (const auto agent_id = homeworldz::viewer::parse_uuid(live.user_id))
+            if (homeworldz::viewer::apply_seated_animation(avatar_animations[key],
+                    sit_animation_id(true), *agent_id, next_animation_sequences[key]))
+                publish_avatar_animations(key, when);
+        std::cout << "{\"level\":\"info\",\"message\":\"avatar sat on the ground\",\"agent\":"
+                  << homeworldz::api::json_string(live.user_id) << "}" << std::endl;
+    };
+    // A prim's sit settings changed: kept, and shown to viewers where they show.
+    const auto persist_sit_settings = [&](const homeworldz::scene::Entity& prim, bool resend) {
+        try {
+            storage->save_snapshot(scene);
+        } catch (const std::exception& error) {
+            std::cerr << "{\"level\":\"error\",\"message\":\"sit settings not persisted\",\"error\":"
+                      << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+        }
+        if (resend) send_entity_update(prim, std::chrono::steady_clock::now());
+    };
+    script_region_call = [&](const homeworldz::script::Identity& caller, const std::string& name,
+                             const std::vector<homeworldz::script::Value>& args)
+        -> std::optional<homeworldz::script::Value> {
+        using homeworldz::script::Type;
+        using homeworldz::script::Value;
+        const auto null_key = Value::make_string("00000000-0000-0000-0000-000000000000");
+        const auto as_vector = [](const Value& value) {
+            return homeworldz::scene::Vector3{value.components[0], value.components[1],
+                                              value.components[2]};
+        };
+        const auto as_rotation = [](const Value& value) {
+            // Stored as every entity rotation is, the imaginary part with w
+            // non-negative.
+            const double sign = value.components[3] < 0.0 ? -1.0 : 1.0;
+            return homeworldz::scene::Vector3{value.components[0] * sign,
+                value.components[1] * sign, value.components[2] * sign};
+        };
+        const auto prim_id = entity_id_by_object_id(caller.object_id);
+        auto* prim = prim_id == 0 ? nullptr : scene.find(prim_id);
+        if (!prim) return std::nullopt;
+        const auto root_id = root_of(prim_id);
+        const auto script_key = caller.object_id + '|' + caller.inventory_item_id;
+        const auto sitter_on_linkset = [&]() -> std::string {
+            for (const auto& [key, live] : avatars)
+                if (live.seat && live.seat->prim != 0 && live.seat->root == root_id) return key;
+            return {};
+        };
+        const auto key_on = [&](homeworldz::scene::EntityId seat_id) {
+            const auto* seat = scene.find(seat_id);
+            if (!seat || !homeworldz::scene::has_sit_target(*seat)) return null_key;
+            const auto occupant = occupant_key_of(seat_id);
+            return occupant.empty() ? null_key : Value::make_string(avatars.at(occupant).user_id);
+        };
+        // The avatar this script may animate, if it still may.
+        const auto animated_avatar = [&]() -> std::string {
+            const auto granted = script_permissions.find(script_key);
+            if (granted == script_permissions.end() ||
+                (granted->second.mask & permission_trigger_animation) == 0)
+                return {};
+            for (const auto& [key, live] : avatars)
+                if (live.user_id == granted->second.agent_id) return key;
+            return {};
+        };
+        const auto animation_named = [&](const std::string& animation)
+            -> std::optional<homeworldz::viewer::Uuid> {
+            for (const auto& item : prim->task_inventory)
+                if (item.asset_type == 20 && item.name == animation)
+                    return homeworldz::viewer::parse_uuid(item.asset_id);
+            if (const auto builtin = homeworldz::region::builtin_animation_id(animation))
+                return homeworldz::viewer::parse_uuid(*builtin);
+            return std::nullopt;
+        };
+        const auto now_point = std::chrono::steady_clock::now();
+        if (name == "llAvatarOnSitTarget") return key_on(prim_id);
+        if (name == "llAvatarOnLinkSitTarget" && args.size() == 1) {
+            const auto targets = homeworldz::region::resolve_link(
+                args[0].integer, prim_id, linkset_of(root_id));
+            return targets.size() == 1 ? key_on(targets.front()) : null_key;
+        }
+        if (name == "llSetLinkSitTarget" && args.size() == 3) {
+            for (const auto target_id : homeworldz::region::resolve_link(
+                     args[0].integer, prim_id, linkset_of(root_id)))
+                if (auto* target = scene.find(target_id)) {
+                    target->sit_target_position = as_vector(args[1]);
+                    target->sit_target_rotation = as_rotation(args[2]);
+                }
+            persist_sit_settings(*prim, false);
+            return std::nullopt;
+        }
+        if (name == "llUnSit" && args.size() == 1) {
+            for (const auto& [key, live] : avatars)
+                if (live.user_id == args[0].str && live.seat && live.seat->prim != 0 &&
+                    live.seat->root == root_id) {
+                    const auto standing = key;
+                    static_cast<void>(stand_avatar(standing, now_point));
+                    break;
+                }
+            return std::nullopt;
+        }
+        if (name == "llSetSitText" && args.size() == 1) {
+            if (prim->sit_text != args[0].str) {
+                prim->sit_text = args[0].str;
+                persist_sit_settings(*prim, false);
+            }
+            return std::nullopt;
+        }
+        if (name == "llSetClickAction" && args.size() == 1) {
+            const auto action = static_cast<std::uint8_t>(args[0].integer);
+            if (prim->click_action != action) {
+                prim->click_action = action;
+                persist_sit_settings(*prim, true);
+            }
+            return std::nullopt;
+        }
+        if ((name == "llSetCameraEyeOffset" || name == "llSetCameraAtOffset") && args.size() == 1) {
+            auto& offset = name == "llSetCameraEyeOffset" ? prim->camera_eye_offset
+                                                          : prim->camera_at_offset;
+            const auto wanted = as_vector(args[0]);
+            if (offset.x != wanted.x || offset.y != wanted.y || offset.z != wanted.z) {
+                offset = wanted;
+                persist_sit_settings(*prim, false);
+            }
+            return std::nullopt;
+        }
+        if (name == "llRequestPermissions" && args.size() == 2) {
+            // Granted without asking to the avatar sitting on this linkset,
+            // which is the only grant there is (ADR 0040). Anyone else would
+            // be asked, and asking does not exist yet, so they are not
+            // answered — as a dialog nobody clicks is not.
+            script_permissions.erase(script_key);
+            const auto sitter = sitter_on_linkset();
+            if (sitter.empty() || avatars.at(sitter).user_id != args[0].str) {
+                std::cout << "{\"level\":\"info\",\"message\":\"script permission request "
+                             "unanswered\",\"objectId\":" << homeworldz::api::json_string(caller.object_id)
+                          << "}" << std::endl;
+                return std::nullopt;
+            }
+            const auto granted = args[1].integer & permission_trigger_animation;
+            script_permissions[script_key] = {args[0].str, granted};
+            static_cast<void>(falcon.dispatch_to_script(caller.object_id, caller.inventory_item_id,
+                "run_time_permissions", {Value::make_integer(granted)}));
+            return std::nullopt;
+        }
+        if (name == "llGetPermissions") {
+            const auto granted = script_permissions.find(script_key);
+            return Value::make_integer(granted == script_permissions.end() ? 0 : granted->second.mask);
+        }
+        if (name == "llGetPermissionsKey") {
+            const auto granted = script_permissions.find(script_key);
+            return granted == script_permissions.end() ? null_key
+                                                       : Value::make_string(granted->second.agent_id);
+        }
+        if ((name == "llStartAnimation" || name == "llStopAnimation") && args.size() == 1) {
+            const auto key = animated_avatar();
+            const auto animation = animation_named(args[0].str);
+            if (key.empty() || !animation) {
+                std::cout << "{\"level\":\"info\",\"message\":\"script animation refused\",\"call\":"
+                          << homeworldz::api::json_string(name) << ",\"animation\":"
+                          << homeworldz::api::json_string(args[0].str) << ",\"permitted\":"
+                          << (key.empty() ? "false" : "true") << "}" << std::endl;
+                return std::nullopt;
+            }
+            auto& live = avatars.at(key);
+            auto& animations = avatar_animations[key];
+            const auto source = homeworldz::viewer::parse_uuid(caller.object_id)
+                                    .value_or(homeworldz::viewer::Uuid{});
+            const bool is_sit = live.seat && sit_animation_id(live.seat->prim == 0) == animation;
+            const auto existing = std::find_if(animations.begin(), animations.end(),
+                [&](const auto& entry) { return entry.animation_id == *animation; });
+            bool changed = false;
+            if (name == "llStartAnimation") {
+                if (is_sit) live.seat->default_sit_stopped = false;
+                if (existing == animations.end()) {
+                    auto& sequence = next_animation_sequences[key];
+                    if (sequence < 2) sequence = 2;
+                    animations.push_back({*animation, sequence++, source});
+                    changed = true;
+                }
+            } else {
+                // Stopping the seat's own sit is how a pose takes over from it,
+                // so it must stay stopped rather than be restored next tick.
+                if (is_sit) live.seat->default_sit_stopped = true;
+                if (existing != animations.end()) {
+                    animations.erase(existing);
+                    changed = true;
+                }
+            }
+            if (changed) publish_avatar_animations(key, now_point);
+            return std::nullopt;
+        }
+        if (name == "llGetInventoryName" && args.size() == 2) {
+            std::vector<std::string> names;
+            for (const auto& item : prim->task_inventory)
+                if (args[0].integer == -1 || item.asset_type == args[0].integer)
+                    names.push_back(item.name);
+            std::sort(names.begin(), names.end());
+            const auto index = args[1].integer;
+            return Value::make_string(index >= 0 && static_cast<std::size_t>(index) < names.size()
+                                          ? names[static_cast<std::size_t>(index)] : std::string{});
+        }
+        return std::nullopt;
+    };
     // `demoting` means the avatar left across a border and this region becomes a
     // child of its session rather than a stranger to it (ADR 0038). The avatar
     // has genuinely gone, so everything about its presence still goes: the kill
@@ -4829,6 +5335,8 @@ int main(int argc, char* argv[]) {
     const auto clear_viewer_endpoint = [&](const std::string& endpoint,
                                            const std::string& session_id,
                                            bool demoting = false) {
+        // A seat ends with whoever leaves it, however they leave.
+        static_cast<void>(release_seat(endpoint, std::chrono::steady_clock::now()));
         // Tell the remaining viewers to remove this avatar's rezzed
         // representation. Every avatar-removal path (logout, disconnect/timeout,
         // duplicate-login replacement, and teleport/crossing source-retirement
@@ -10577,6 +11085,8 @@ int main(int argc, char* argv[]) {
                                         ? "You are not permitted to enter that parcel"
                                         : "Destination position is unavailable");
                                 } else {
+                                    // A teleport ends a seat, as it does in Second Life.
+                                    static_cast<void>(stand_avatar(endpoint, now));
                                     const auto flying = avatar->second.controller.state().flying;
                                     // A teleport always places the avatar above
                                     // ground (operator, 2026-08-23). The extent
@@ -13575,6 +14085,30 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                         }
+                        const auto sit_request =
+                            homeworldz::viewer::decode_agent_request_sit(packet->payload);
+                        if (sit_request && sit_request->agent_id == identity->agent_id &&
+                            sit_request->session_id == identity->session_id) {
+                            const auto target = entity_id_by_object_id(
+                                homeworldz::viewer::format_uuid(sit_request->target_id));
+                            const auto refused = target == 0 ? std::string("not a seat")
+                                                             : seat_avatar(endpoint, target, now);
+                            if (!refused.empty()) {
+                                // The wording of the viewer's own
+                                // CantSitNoSuitableSurface notification.
+                                if (const auto outgoing = circuits.send(endpoint,
+                                        homeworldz::viewer::encode_agent_alert_message(
+                                            identity->agent_id, false,
+                                            "There is no suitable surface to sit on, try another spot."),
+                                        true, now))
+                                    static_cast<void>(send_udp(viewer_server, endpoint, *outgoing));
+                                std::cout << "{\"level\":\"info\",\"message\":\"sit refused\",\"reason\":"
+                                          << homeworldz::api::json_string(refused) << ",\"target\":"
+                                          << homeworldz::api::json_string(
+                                                 homeworldz::viewer::format_uuid(sit_request->target_id))
+                                          << "}" << std::endl;
+                            }
+                        }
                         const auto grab =
                             homeworldz::viewer::decode_object_grab(packet->payload);
                         if (grab && grab->agent_id == identity->agent_id &&
@@ -13768,8 +14302,9 @@ int main(int argc, char* argv[]) {
                                     const auto crossing = homeworldz::region::plan_border_crossing(
                                         region_grid_x, region_grid_y, region_size_x, region_size_y,
                                         {requested.x, requested.y, requested.z}, region_neighbors);
-                                    if (!crossing) {
-                                        // Nothing owns the far side, so the edit
+                                    if (!crossing || linkset_occupied(entity->id)) {
+                                        // Nothing owns the far side, or someone
+                                        // is sitting on it, so the edit
                                         // really is out of bounds. Say the
                                         // object's real position, or the viewer
                                         // keeps the one it invented.
@@ -15302,6 +15837,11 @@ int main(int argc, char* argv[]) {
                             if (grace_active && was_flying)
                                 accepted.control_flags |= homeworldz::viewer::control_fly;
                             avatar->second.controller.apply(accepted);
+                            if ((update->control_flags & homeworldz::viewer::control_stand_up) != 0)
+                                static_cast<void>(stand_avatar(endpoint, now));
+                            else if ((update->control_flags &
+                                      homeworldz::viewer::control_sit_on_ground) != 0)
+                                sit_on_ground(endpoint, now);
                             avatar->second.last_agent_update = now;
                             avatar->second.last_agent_update_sequence = packet->sequence;
                             avatar->second.has_agent_update = true;
@@ -16098,6 +16638,22 @@ int main(int argc, char* argv[]) {
             }
             avatar.controller.set_ground_height(
                 collision_ground_height(avatar.controller.state().position));
+            // Seated on a prim (ADR 0040): wherever the seat now is, with no
+            // step and no crossing of its own. A seat whose prim has gone
+            // without saying so stands its avatar up rather than hold it in
+            // the air.
+            if (avatar.seat && avatar.seat->prim != 0) {
+                if (const auto* root = scene.find(avatar.seat->root);
+                    root && root_of(avatar.seat->prim) == avatar.seat->root) {
+                    const auto world = homeworldz::region::seated_world(
+                        root->position, root->rotation, avatar.seat->pose);
+                    avatar.controller.hold_seated(world.position,
+                        {static_cast<float>(world.rotation.x), static_cast<float>(world.rotation.y),
+                         static_cast<float>(world.rotation.z)});
+                } else {
+                    static_cast<void>(stand_avatar(endpoint, now));
+                }
+            }
             // A session avatar crosses by re-entering the neighbor rather than
             // by the viewers' transit handoff (docs/CLIENT2-EMBODIMENT.md
             // milestone E2), so it only needs the border detected — and only
@@ -16135,7 +16691,8 @@ int main(int argc, char* argv[]) {
             // the cell immediately beyond this side, from where the avatar
             // actually is? A corner needs no special case — it is two edges,
             // each answered on its own when the avatar reaches it.
-            const bool crossing_allowed = may_cross && avatar.outbound_transit_id.empty();
+            const bool crossing_allowed =
+                may_cross && avatar.outbound_transit_id.empty() && !avatar.seat;
             homeworldz::viewer::AvatarController::OpenBorders open;
             if (crossing_allowed) {
                 const auto& standing = avatar.controller.state().position;
@@ -16173,7 +16730,7 @@ int main(int argc, char* argv[]) {
             avatar.controller.set_open_borders(open);
             if (!avatar.outbound_transit_id.empty())
                 avatar.controller.expire_transient_controls();
-            avatar.controller.step(elapsed);
+            if (!avatar.seat) avatar.controller.step(elapsed);
             // Containment has to reach the character, or it undoes itself.
             //
             // The step above may have clamped the avatar back inside a closed
@@ -16248,7 +16805,7 @@ int main(int argc, char* argv[]) {
             // because there is no second server. Only the macro border below
             // is a real crossing.
             if (facet_count > 1 && !session_avatar && avatar.outbound_transit_id.empty() &&
-                now >= avatar.next_crossing_attempt) {
+                !avatar.seat && now >= avatar.next_crossing_attempt) {
                 const auto& macro_position = avatar.controller.state().position;
                 const bool inside_region =
                     macro_position.x >= 0.0 && macro_position.x < region_size_x &&
@@ -16319,7 +16876,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
-            if (may_cross && avatar.outbound_transit_id.empty()) {
+            if (may_cross && avatar.outbound_transit_id.empty() && !avatar.seat) {
                 const auto& position = avatar.controller.state().position;
                 const auto crossing = homeworldz::region::plan_border_crossing(
                     region_grid_x, region_grid_y, region_size_x, region_size_y,
@@ -16518,7 +17075,16 @@ int main(int argc, char* argv[]) {
             // The list owns its own correctness: exactly one movement animation,
             // whichever the state now is. It needs no previous value and so cannot
             // drift from one. Viewers are told only when the list actually changed.
-            if (movement_agent_id) {
+            // Seated, the list holds the sit and no movement state at all
+            // (ADR 0040), and a script that stopped the sit for a pose keeps
+            // it stopped.
+            if (movement_agent_id && avatar.seat) {
+                if (homeworldz::viewer::apply_seated_animation(animations,
+                        avatar.seat->default_sit_stopped ? std::nullopt
+                            : sit_animation_id(avatar.seat->prim == 0),
+                        *movement_agent_id, next_animation_sequences[endpoint]))
+                    publish_avatar_animations(endpoint, now);
+            } else if (movement_agent_id) {
                 auto& sequence = next_animation_sequences[endpoint];
                 if (homeworldz::viewer::apply_movement_animation(
                         animations, desired_animation, *movement_agent_id, sequence)) {
@@ -16813,6 +17379,7 @@ int main(int argc, char* argv[]) {
                 // lifetime is not a thing the crossing can carry.
                 const bool crossable = current.parent_id == 0 &&
                     current.attachment_point == 0 && !current.temporary &&
+                    !linkset_occupied(entity_id) &&
                     now >= next_object_crossing_attempt[entity_id];
                 if (crossable) {
                     if (const auto crossing = homeworldz::region::plan_border_crossing(
@@ -17329,6 +17896,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 if (!target) continue; // nowhere in-region admits this avatar
+                static_cast<void>(stand_avatar(viewer_endpoint, now));
                 const auto flying = avatar.controller.state().flying;
                 avatar.controller.set_ground_height(collision_ground_height(*target));
                 avatar.controller.teleport(*target, flying);
