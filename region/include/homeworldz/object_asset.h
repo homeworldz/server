@@ -67,6 +67,12 @@ struct ObjectAsset {
     // being taken but not being crossed would be a strange thing to explain.
     scene::Vector3 sit_target_position;
     scene::Vector3 sit_target_rotation;
+    // The rest of what a sit script sets on its prim (ADR 0040), carried for
+    // the same reason.
+    std::string sit_text;
+    std::uint8_t click_action{};
+    scene::Vector3 camera_eye_offset;
+    scene::Vector3 camera_at_offset;
 };
 
 struct LinksetAsset {

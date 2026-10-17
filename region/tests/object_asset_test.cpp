@@ -67,6 +67,10 @@ int main() {
     // the prim that has it and must not invent one on the prim that does not.
     child.sit_target_position = {0.0, 0.4, 0.6};
     child.sit_target_rotation = {0.0, 0.0, -0.5};
+    child.sit_text = "Lounge";
+    child.click_action = 1;
+    child.camera_eye_offset = {-1.5, 0.0, 1.0};
+    child.camera_at_offset = {1.0, 0.0, 0.25};
     const std::array<const homeworldz::scene::Entity*, 1> children{&child};
     const auto linkset_text = homeworldz::asset::serialize_linkset_asset(root, children);
     const auto linkset = homeworldz::asset::parse_linkset_asset(std::span(
@@ -95,7 +99,13 @@ int main() {
         linkset->children[0].sit_target_rotation.z != -0.5 ||
         linkset->root.sit_target_position.x != 0.0 ||
         linkset->root.sit_target_position.y != 0.0 ||
-        linkset->root.sit_target_position.z != 0.0)
+        linkset->root.sit_target_position.z != 0.0 ||
+        // The rest of a sit script's settings ride with the seat, and the root
+        // without any keeps none (ADR 0040).
+        linkset->children[0].sit_text != "Lounge" || linkset->children[0].click_action != 1 ||
+        linkset->children[0].camera_eye_offset.x != -1.5 ||
+        linkset->children[0].camera_at_offset.z != 0.25 || !linkset->root.sit_text.empty() ||
+        linkset->root.click_action != 0)
         return 1;
     // The offset is the whole answer to "is there a seat here".
     if (!homeworldz::scene::has_sit_target(child) || homeworldz::scene::has_sit_target(root))

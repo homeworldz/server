@@ -101,6 +101,14 @@ int main() {
             // region comes back standing-room only.
             entity->sit_target_position = {0.0, 0.25, 0.5};
             entity->sit_target_rotation = {0.0, 0.0, 0.7071};
+            entity->sit_text = "Relax \"here\"";
+            entity->click_action = 1;
+            // The prim beside it has a sit camera and no seat: the seat field is
+            // written as zero to keep the order, and must not become a seat.
+            if (auto* beside = scene.find(second)) {
+                beside->camera_eye_offset = {-2.0, 0.0, 1.5};
+                beside->camera_at_offset = {1.0, 0.0, 0.0};
+            }
             scene.step(1.0);
             storage.save_snapshot(scene);
             metadata = storage.snapshot_metadata();
@@ -116,6 +124,10 @@ int main() {
                 restored_first->sit_target_position.y != 0.25 ||
                 restored_first->sit_target_position.z != 0.5 ||
                 restored_first->sit_target_rotation.z != 0.7071 ||
+                restored_first->sit_text != "Relax \"here\"" || restored_first->click_action != 1 ||
+                restored_second == nullptr || restored_second->camera_eye_offset.x != -2.0 ||
+                restored_second->camera_eye_offset.z != 1.5 ||
+                restored_second->camera_at_offset.x != 1.0 ||
                 restored_first->task_inventory_serial != 9 ||
                 !restored_first->task_inventory.empty() ||
                 restored_second == nullptr ||

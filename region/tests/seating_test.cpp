@@ -1,3 +1,4 @@
+#include "homeworldz/builtin_animations.h"
 #include "homeworldz/seating.h"
 
 #include <cmath>
@@ -92,6 +93,18 @@ int main() {
         const auto standing = homeworldz::region::stand_position({10.0, 10.0, 21.4}, stool, 1.8);
         check(near(standing.z, 21.5 + 0.9), "standing puts the avatar above the stool");
         check(near(standing.x, 10.0) && near(standing.y, 10.0), "where it was sitting");
+    }
+
+    // Built-in animations by name, as a pose script stops the default sit.
+    {
+        using homeworldz::region::builtin_animation_id;
+        check(builtin_animation_id("sit") == "1a5fe8ac-a804-8a5d-7cbd-56bd83184568", "sit");
+        check(builtin_animation_id("sit_ground_constrained") ==
+                  "1a2bd58e-87ff-0df8-0b4c-53e047b0bb6e",
+              "sit_ground_constrained");
+        check(builtin_animation_id("aim_l_bow") && builtin_animation_id("yoga_float"),
+              "the first and last names are found, so the table is sorted");
+        check(!builtin_animation_id("relax pose"), "an inventory animation is not built in");
     }
 
     if (failures != 0) return 1;

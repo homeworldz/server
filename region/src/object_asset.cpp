@@ -314,6 +314,18 @@ std::string object_json(const scene::Entity& entity, bool child) {
             ",\"sitTargetRotation\":[" + std::to_string(entity.sit_target_rotation.x) + ',' +
             std::to_string(entity.sit_target_rotation.y) + ',' +
             std::to_string(entity.sit_target_rotation.z) + ']';
+    const auto vector_json = [](const scene::Vector3& value) {
+        return '[' + std::to_string(value.x) + ',' + std::to_string(value.y) + ',' +
+               std::to_string(value.z) + ']';
+    };
+    if (!entity.sit_text.empty()) result += ",\"sitText\":" + json_string(entity.sit_text);
+    if (entity.click_action != 0)
+        result += ",\"clickAction\":" + std::to_string(entity.click_action);
+    if (entity.camera_eye_offset.x != 0.0 || entity.camera_eye_offset.y != 0.0 ||
+        entity.camera_eye_offset.z != 0.0 || entity.camera_at_offset.x != 0.0 ||
+        entity.camera_at_offset.y != 0.0 || entity.camera_at_offset.z != 0.0)
+        result += ",\"cameraEyeOffset\":" + vector_json(entity.camera_eye_offset) +
+            ",\"cameraAtOffset\":" + vector_json(entity.camera_at_offset);
     if (child)
         result += ",\"localPosition\":[" + std::to_string(entity.local_position.x) + ',' +
             std::to_string(entity.local_position.y) + ',' +
@@ -525,6 +537,14 @@ std::optional<ObjectAsset> parse_object_asset(std::span<const std::byte> content
     result.local_position = local_position.value_or(scene::Vector3{});
     result.sit_target_position = sit_target.value_or(scene::Vector3{});
     result.sit_target_rotation = sit_target_rotation.value_or(scene::Vector3{});
+    // Absent on every asset written before sitting existed; absence means unset.
+    result.sit_text = string_after(text, R"("sitText":")").value_or(std::string{});
+    if (const auto click = integer_after<unsigned>(text, R"("clickAction":)"); click && *click <= 255)
+        result.click_action = static_cast<std::uint8_t>(*click);
+    result.camera_eye_offset =
+        vector_after(text, R"("cameraEyeOffset":[)").value_or(scene::Vector3{});
+    result.camera_at_offset =
+        vector_after(text, R"("cameraAtOffset":[)").value_or(scene::Vector3{});
     result.local_rotation = result.rotation;
     if (const auto sculpt_id = string_after(text, R"("sculptId":")")) {
         const auto sculpt_type = integer_after<unsigned>(text, R"("sculptType":)");

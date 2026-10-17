@@ -514,6 +514,25 @@ private:
         expect_string("sitTargetRotation");
         expect(":");
         result.sit_target_rotation = vector();
+        if (consume("}")) return result;
+        expect(",");
+        expect_string("sitText");
+        expect(":");
+        result.sit_text = string();
+        expect(",");
+        expect_string("clickAction");
+        expect(":");
+        const auto click_action = unsigned_integer();
+        if (click_action > 255) fail("click action is outside the supported range");
+        result.click_action = static_cast<std::uint8_t>(click_action);
+        expect(",");
+        expect_string("cameraEyeOffset");
+        expect(":");
+        result.camera_eye_offset = vector();
+        expect(",");
+        expect_string("cameraAtOffset");
+        expect(":");
+        result.camera_at_offset = vector();
         expect("}");
         return result;
     }
@@ -635,14 +654,26 @@ std::string snapshot_json(const scene::Scene& scene) {
         // where the reader is looking for a sculpt id.
         json += ",\"sculptId\":" + api::json_string(entity->sculpt_id) +
             ",\"sculptType\":" + std::to_string(entity->sculpt_type);
-        if (scene::has_sit_target(*entity))
-            json += ",\"sitTarget\":[" + std::to_string(entity->sit_target_position.x) + ',' +
-                std::to_string(entity->sit_target_position.y) + ',' +
-                std::to_string(entity->sit_target_position.z) + ']' +
-                ",\"sitTargetRotation\":[" +
-                std::to_string(entity->sit_target_rotation.x) + ',' +
-                std::to_string(entity->sit_target_rotation.y) + ',' +
-                std::to_string(entity->sit_target_rotation.z) + ']';
+        // The rest of what a sit script sets (ADR 0040) follows the seat, and
+        // the seat is written whenever it does — zero meaning "no seat" — for
+        // the same reason the sculpt fields always are: the reader takes these
+        // in order, and only the tail may be left off.
+        const auto vector_json = [](const scene::Vector3& value) {
+            return '[' + std::to_string(value.x) + ',' + std::to_string(value.y) + ',' +
+                   std::to_string(value.z) + ']';
+        };
+        const bool sit_extras = !entity->sit_text.empty() || entity->click_action != 0 ||
+            entity->camera_eye_offset.x != 0.0 || entity->camera_eye_offset.y != 0.0 ||
+            entity->camera_eye_offset.z != 0.0 || entity->camera_at_offset.x != 0.0 ||
+            entity->camera_at_offset.y != 0.0 || entity->camera_at_offset.z != 0.0;
+        if (scene::has_sit_target(*entity) || sit_extras)
+            json += ",\"sitTarget\":" + vector_json(entity->sit_target_position) +
+                ",\"sitTargetRotation\":" + vector_json(entity->sit_target_rotation);
+        if (sit_extras)
+            json += ",\"sitText\":" + api::json_string(entity->sit_text) +
+                ",\"clickAction\":" + std::to_string(entity->click_action) +
+                ",\"cameraEyeOffset\":" + vector_json(entity->camera_eye_offset) +
+                ",\"cameraAtOffset\":" + vector_json(entity->camera_at_offset);
         json += "}";
     }
     return json + "]}";

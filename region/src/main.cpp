@@ -1275,6 +1275,10 @@ void apply_object_asset(
     entity.face_materials = asset.face_materials;
     entity.sit_target_position = asset.sit_target_position;
     entity.sit_target_rotation = asset.sit_target_rotation;
+    entity.sit_text = asset.sit_text;
+    entity.click_action = asset.click_action;
+    entity.camera_eye_offset = asset.camera_eye_offset;
+    entity.camera_at_offset = asset.camera_at_offset;
     regenerate_task_inventory_item_ids(entity);
 }
 

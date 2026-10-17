@@ -19,6 +19,7 @@ add_library(homeworldz-region-core
   src/region_storage.cpp
   src/scene.cpp
   src/seating.cpp
+  src/builtin_animations.cpp
   src/sha256.cpp
   src/simulation_loop.cpp
   src/visual_params.cpp
