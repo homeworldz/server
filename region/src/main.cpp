@@ -14874,6 +14874,44 @@ int main(int argc, char* argv[]) {
                                           << created_entities.size() << "}" << std::endl;
                             }
                         }
+                        // The build tool's "when left-clicked" (ADR 0040).
+                        // Unhandled, the choice lived only in the viewer that
+                        // made it: nobody else saw a prim become a seat on
+                        // click, and a restart forgot it (2026-10-17).
+                        const auto click_action =
+                            homeworldz::viewer::decode_object_click_action(packet->payload);
+                        if (click_action && click_action->agent_id == identity->agent_id &&
+                            click_action->session_id == identity->session_id) {
+                            const auto user_id = homeworldz::viewer::format_uuid(identity->agent_id);
+                            std::vector<homeworldz::scene::EntityId> changed_entities;
+                            for (const auto& update : click_action->objects) {
+                                auto* entity = scene.find(update.local_id);
+                                if (!entity || !entity_is_editable_object(*entity) ||
+                                    entity->owner_id != user_id ||
+                                    (entity->owner_permissions & homeworldz::scene::permission_modify) == 0 ||
+                                    entity->click_action == update.click_action)
+                                    continue;
+                                entity->click_action = update.click_action;
+                                changed_entities.push_back(entity->id);
+                            }
+                            if (!changed_entities.empty()) {
+                                try {
+                                    storage->save_snapshot(scene);
+                                } catch (const std::exception& error) {
+                                    std::cerr << "{\"level\":\"error\",\"message\":\"click action not "
+                                                 "persisted\",\"error\":"
+                                              << homeworldz::api::json_string(error.what()) << "}"
+                                              << std::endl;
+                                }
+                                for (const auto entity_id : changed_entities)
+                                    if (const auto* entity = scene.find(entity_id))
+                                        send_entity_update(*entity, now);
+                                std::cout << "{\"level\":\"info\",\"message\":\"click action set\","
+                                             "\"prims\":" << changed_entities.size() << ",\"action\":"
+                                          << static_cast<int>(click_action->objects.front().click_action)
+                                          << "}" << std::endl;
+                            }
+                        }
                         const auto object_material =
                             homeworldz::viewer::decode_object_material(packet->payload);
                         if (object_material && object_material->agent_id == identity->agent_id &&

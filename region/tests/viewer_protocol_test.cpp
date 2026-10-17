@@ -1849,6 +1849,22 @@ bool sit_messages() {
     std::memcpy(&eye_x, sit.data() + 18 + 24, 4);
     if (eye_x != -2.F) return false;
 
+    // ObjectClickAction (Low 95): the build tool's left-click choice, per prim.
+    std::vector<std::byte> click{std::byte{0xff}, std::byte{0xff}, std::byte{0x00}, std::byte{0x5f}};
+    click.insert(click.end(), agent.begin(), agent.end());
+    click.insert(click.end(), session.begin(), session.end());
+    click.insert(click.end(), {std::byte{2},
+        std::byte{0x78}, std::byte{0x56}, std::byte{0x34}, std::byte{0x12}, std::byte{1},
+        std::byte{0x2a}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}});
+    const auto click_action = homeworldz::viewer::decode_object_click_action(click);
+    if (!click_action || click_action->agent_id != agent || click_action->objects.size() != 2 ||
+        click_action->objects[0].local_id != 0x12345678U ||
+        click_action->objects[0].click_action != 1 || click_action->objects[1].local_id != 42 ||
+        click_action->objects[1].click_action != 0)
+        return false;
+    click.pop_back();
+    if (homeworldz::viewer::decode_object_click_action(click)) return false; // short
+
     // The seated avatar's parent is written where every prim's is.
     const auto standing = encode_avatar_object_update(0x0102030405060708ULL, 42, agent,
                                                       {1.F, 2.F, 3.F});

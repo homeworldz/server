@@ -467,6 +467,16 @@ struct ObjectMaterial : AgentMessage {
     std::vector<ObjectMaterialUpdate> objects;
 };
 
+// Low 95: the build tool's "when left-clicked" choice, per prim.
+struct ObjectClickActionUpdate {
+    std::uint32_t local_id{};
+    std::uint8_t click_action{};
+};
+
+struct ObjectClickAction : AgentMessage {
+    std::vector<ObjectClickActionUpdate> objects;
+};
+
 struct ObjectShapeUpdate {
     std::uint32_t local_id{};
     std::uint8_t path_curve{};
@@ -1187,6 +1197,7 @@ std::optional<ObjectDescription> decode_object_description(std::span<const std::
 std::optional<ObjectPermissions> decode_object_permissions(std::span<const std::byte> payload);
 std::optional<ObjectDuplicate> decode_object_duplicate(std::span<const std::byte> payload);
 std::optional<ObjectMaterial> decode_object_material(std::span<const std::byte> payload);
+std::optional<ObjectClickAction> decode_object_click_action(std::span<const std::byte> payload);
 std::optional<ObjectShape> decode_object_shape(std::span<const std::byte> payload);
 std::optional<ObjectImage> decode_object_image(std::span<const std::byte> payload);
 std::optional<ObjectFlagUpdate> decode_object_flag_update(std::span<const std::byte> payload);
