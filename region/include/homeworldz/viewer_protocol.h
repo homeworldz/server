@@ -688,6 +688,7 @@ struct AssetTransferRequest {
     std::int32_t source_type{};
     Uuid agent_id{};   // populated for SIM_INV_ITEM
     Uuid session_id{}; // populated for SIM_INV_ITEM
+    Uuid task_id{};    // SIM_INV_ITEM: the object holding the item; zero for agent inventory
     Uuid item_id{};    // populated for SIM_INV_ITEM
     Uuid asset_id{};
     std::int32_t asset_type{};

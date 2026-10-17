@@ -1305,7 +1305,8 @@ std::optional<AssetTransferRequest> decode_transfer_request(std::span<const std:
     if (result.source_type == transfer_source_sim_inv_item && params.size() >= 100) {
         std::copy_n(params.begin() + 0, 16, result.agent_id.begin());
         std::copy_n(params.begin() + 16, 16, result.session_id.begin());
-        // owner id (32..48) and task id (48..64) are not needed for agent inventory.
+        // owner id (32..48) is not needed; the task id names an object's contents.
+        std::copy_n(params.begin() + 48, 16, result.task_id.begin());
         std::copy_n(params.begin() + 64, 16, result.item_id.begin());
         std::copy_n(params.begin() + 80, 16, result.asset_id.begin());
         result.asset_type = static_cast<std::int32_t>(read_le_u32(params, 96));

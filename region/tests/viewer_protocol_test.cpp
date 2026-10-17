@@ -1504,7 +1504,7 @@ bool transfer_codecs() {
     const auto transfer = parse_uuid("12345678-90ab-4cde-8f01-234567890abc");
     const auto agent = parse_uuid("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
     const auto session = parse_uuid("11111111-2222-4333-8444-555555555555");
-    const auto task = parse_uuid("00000000-0000-0000-0000-000000000000");
+    const auto task = parse_uuid("44444444-5555-4666-8777-888888888888");
     const auto item = parse_uuid("22222222-3333-4444-8555-666666666666");
     const auto asset = parse_uuid("33333333-4444-4555-8666-777777777777");
     if (!transfer || !agent || !session || !task || !item || !asset) return false;
@@ -1534,7 +1534,8 @@ bool transfer_codecs() {
         decoded->source_type != transfer_source_sim_inv_item)
         return false;
     if (decoded->agent_id != *agent || decoded->session_id != *session ||
-        decoded->item_id != *item || decoded->asset_id != *asset || decoded->asset_type != 10)
+        decoded->task_id != *task || decoded->item_id != *item || decoded->asset_id != *asset ||
+        decoded->asset_type != 10)
         return false;
     if (decoded->params.size() != 100) return false;
 

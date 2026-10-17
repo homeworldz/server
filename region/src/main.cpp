@@ -12080,12 +12080,34 @@ int main(int argc, char* argv[]) {
                                  asset_transfer->session_id == transfer_identity->session_id);
                             std::int32_t status = homeworldz::viewer::transfer_status_ok;
                             std::vector<std::byte> asset_bytes;
-                            if (!authorized) {
+                            // An item in an object's contents is served as it is
+                            // now, not as the viewer remembers it: Firestorm names
+                            // the asset from its cached copy of the contents, so a
+                            // script saved and reopened showed the text from before
+                            // the save (2026-10-17). Only the object's owner may
+                            // read it, the rule the save already enforces.
+                            auto serve_asset_id = homeworldz::viewer::format_uuid(asset_transfer->asset_id);
+                            if (authorized && asset_transfer->source_type ==
+                                    homeworldz::viewer::transfer_source_sim_inv_item &&
+                                asset_transfer->task_id != homeworldz::viewer::Uuid{}) {
+                                serve_asset_id.clear();
+                                const auto task_object = homeworldz::viewer::format_uuid(asset_transfer->task_id);
+                                const auto item_id = homeworldz::viewer::format_uuid(asset_transfer->item_id);
+                                const auto requester = homeworldz::viewer::format_uuid(asset_transfer->agent_id);
+                                for (const auto& [task_entity_id, task_entity] : scene.entities()) {
+                                    static_cast<void>(task_entity_id);
+                                    if (task_entity.object_id != task_object) continue;
+                                    if (task_entity.owner_id != requester) break;
+                                    for (const auto& task_item : task_entity.task_inventory)
+                                        if (task_item.item_id == item_id) serve_asset_id = task_item.asset_id;
+                                    break;
+                                }
+                            }
+                            if (!authorized || serve_asset_id.empty()) {
                                 status = homeworldz::viewer::transfer_status_unknown_source;
                             } else {
                                 try {
-                                    asset_bytes = read_federated_asset(
-                                        homeworldz::viewer::format_uuid(asset_transfer->asset_id));
+                                    asset_bytes = read_federated_asset(serve_asset_id);
                                 } catch (const std::exception&) {
                                     status = homeworldz::viewer::transfer_status_unknown_source;
                                 }
@@ -12123,6 +12145,8 @@ int main(int argc, char* argv[]) {
                             std::cout << "{\"level\":" << (status == 0 ? "\"info\"" : "\"warn\"")
                                       << ",\"message\":\"asset transfer "
                                       << (status == 0 ? "served" : "rejected") << "\",\"assetId\":"
+                                      << homeworldz::api::json_string(serve_asset_id)
+                                      << ",\"requestedAssetId\":"
                                       << homeworldz::api::json_string(
                                              homeworldz::viewer::format_uuid(asset_transfer->asset_id))
                                       << ",\"sourceType\":" << asset_transfer->source_type
