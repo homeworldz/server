@@ -4166,15 +4166,6 @@ int main(int argc, char* argv[]) {
         send_entity_update(entity, when);
         if (session_object_visible(entity)) deliver_to_embodied(session_object_envelope(entity));
     };
-    // The destination half of an object crossing: a staged transit becomes live
-    // entities here. The object it produces is the same object, not a copy of
-    // it — identity, ownership, creator, permissions, contents, and motion all
-    // come across unchanged, and the only thing this region decides is the
-    // local entity id, which never left the region it was minted in anyway.
-    //
-    // Nothing is announced until the scene is persisted. A crossing that told
-    // the source "landed", showed the object to viewers, and then lost it to a
-    // restart would be worse than one that refused.
     // Closures of objects that crossed in, fetched on the tick rather than
     // while answering the activation. Their assets usually live only on the
     // source, and the source cannot answer while it waits for that
@@ -4186,14 +4177,27 @@ int main(int argc, char* argv[]) {
     // closure for the same reason. A script's state does not cross yet, so
     // it starts afresh from state_entry, as after a restart.
     std::vector<homeworldz::scene::EntityId> pending_crossing_scripts;
+    // The destination half of an object crossing: a staged transit becomes live
+    // entities here. The object it produces is the same object, not a copy of
+    // it — identity, ownership, creator, permissions, contents, and motion all
+    // come across unchanged, and the only thing this region decides is the
+    // local entity id, which never left the region it was minted in anyway.
+    //
+    // Nothing is announced until the scene is persisted. A crossing that told
+    // the source "landed", showed the object to viewers, and then lost it to a
+    // restart would be worse than one that refused.
     const auto materialize_object_transit =
         [&](const homeworldz::region::ObjectTransit& transit,
             std::chrono::steady_clock::time_point when) -> bool {
         const auto linkset = homeworldz::asset::parse_linkset_asset(
             std::as_bytes(std::span{transit.linkset.data(), transit.linkset.size()}));
         if (!linkset) return false;
+        // From the facet the source aimed at to this region's own corner.
+        const auto corner_x = transit.facet_grid ? (*transit.facet_grid)[0] : region_grid_x;
+        const auto corner_y = transit.facet_grid ? (*transit.facet_grid)[1] : region_grid_y;
         const homeworldz::scene::Vector3 position{
-            transit.position[0], transit.position[1], transit.position[2]};
+            transit.position[0] + (corner_x - region_grid_x) * 256.0,
+            transit.position[1] + (corner_y - region_grid_y) * 256.0, transit.position[2]};
         std::vector<homeworldz::scene::EntityId> created;
         // Contents keep the item ids they had. apply_object_asset reissues them,
         // which is right for a rez — that makes a new object — and wrong for a
@@ -4346,6 +4350,8 @@ int main(int argc, char* argv[]) {
         transit.owner_id = root->owner_id;
         transit.creation_date = root->creation_date;
         transit.position = {crossing.position[0], crossing.position[1], crossing.position[2]};
+        transit.facet_grid = std::array<int, 2>{crossing.destination.grid_x,
+                                                crossing.destination.grid_y};
         transit.rotation = state.rotation;
         transit.linear_velocity = {state.linear_velocity.x, state.linear_velocity.y,
                                    state.linear_velocity.z};
@@ -4361,6 +4367,7 @@ int main(int argc, char* argv[]) {
         recovery.destination_region_id = transit.source_region_id;
         recovery.source_region_id = transit.destination_region_id;
         recovery.position = {root->position.x, root->position.y, root->position.z};
+        recovery.facet_grid.reset();
         const auto document = homeworldz::region::encode_object_transit(transit);
         std::shared_ptr<homeworldz::grid::Transport> destination;
         try {

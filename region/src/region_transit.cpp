@@ -368,6 +368,10 @@ std::string encode_object_transit(const ObjectTransit& transit) {
         ",\"ownerId\":" + quoted_string(transit.owner_id) +
         ",\"creationDate\":" + std::to_string(transit.creation_date) +
         ",\"position\":" + number_array(transit.position) +
+        (transit.facet_grid
+             ? ",\"facetGridX\":" + std::to_string((*transit.facet_grid)[0]) +
+                   ",\"facetGridY\":" + std::to_string((*transit.facet_grid)[1])
+             : std::string{}) +
         ",\"rotation\":" + number_array(transit.rotation) +
         ",\"linearVelocity\":" + number_array(transit.linear_velocity) +
         ",\"angularVelocity\":" + number_array(transit.angular_velocity) +
@@ -396,6 +400,14 @@ std::optional<ObjectTransit> parse_object_transit(std::string_view document) {
         document.substr(0, document.find("\"linkset\":")), "sitters");
     if (!sitters) return std::nullopt;
     transit.sitters = *sitters;
+    {
+        const auto before_linkset = document.substr(0, document.find("\"linkset\":"));
+        const auto facet_x = json_number_field(before_linkset, "facetGridX");
+        const auto facet_y = json_number_field(before_linkset, "facetGridY");
+        if (facet_x.has_value() != facet_y.has_value()) return std::nullopt;
+        if (facet_x) transit.facet_grid = std::array<int, 2>{static_cast<int>(*facet_x),
+                                                              static_cast<int>(*facet_y)};
+    }
     if (transit.id.empty() || transit.source_region_id.empty() ||
         transit.destination_region_id.empty() || transit.object_id.empty() ||
         transit.owner_id.empty() || transit.linkset.empty() ||

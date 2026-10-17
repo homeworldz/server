@@ -107,6 +107,7 @@ int main() {
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         1723500000ULL,
         {0.25, 200.5, 31.75},
+        std::array<int, 2>{900, 899},
         {0.0, 0.0, 0.7071067811865476, 0.7071067811865476},
         {-3.5, 0.125, -9.8},
         {0.0, 1.25, -0.5},
@@ -120,7 +121,16 @@ int main() {
                     "\"position\":[9,9,9]},{\"name\":\"Lid\"}]}")};
     const auto document = homeworldz::region::encode_object_transit(outbound);
     const auto inbound = homeworldz::region::parse_object_transit(document);
-    if (!inbound || inbound->sitters.size() != 2) return 1;
+    if (!inbound || inbound->sitters.size() != 2 || inbound->facet_grid != outbound.facet_grid)
+        return 1;
+    // Without the corner, the destination's own: what an older source meant.
+    {
+        auto cornerless = outbound;
+        cornerless.facet_grid.reset();
+        const auto parsed = homeworldz::region::parse_object_transit(
+            homeworldz::region::encode_object_transit(cornerless));
+        if (!parsed || parsed->facet_grid) return 1;
+    }
     for (std::size_t index = 0; index < 2; ++index) {
         const auto& sent = outbound.sitters[index];
         const auto& read = inbound->sitters[index];

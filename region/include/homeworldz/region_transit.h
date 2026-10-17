@@ -145,6 +145,12 @@ struct ObjectTransit {
     // Destination-local: the source rebases before sending, because only the
     // source knows which border was crossed.
     std::array<double, 3> position{};
+    // The grid corner `position` is measured from: the facet the source
+    // resolved as the neighbour (ADR 0036), not necessarily the destination's
+    // own south-west corner. Read without it, a position in Lazy 2 landed in
+    // Lazy, 256 m west (2026-10-17). Absent from an older source, meaning the
+    // destination's own corner.
+    std::optional<std::array<int, 2>> facet_grid;
     std::array<double, 4> rotation{0.0, 0.0, 0.0, 1.0};
     std::array<double, 3> linear_velocity{};
     std::array<double, 3> angular_velocity{};
