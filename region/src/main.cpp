@@ -5263,8 +5263,11 @@ int main(int argc, char* argv[]) {
             }
             const auto granted = args[1].integer & permission_trigger_animation;
             script_permissions[script_key] = {args[0].str, granted};
-            static_cast<void>(falcon.dispatch_to_script(caller.object_id, caller.inventory_item_id,
-                "run_time_permissions", {Value::make_integer(granted)}));
+            const bool queued = falcon.dispatch_to_script(caller.object_id, caller.inventory_item_id,
+                "run_time_permissions", {Value::make_integer(granted)});
+            std::cout << "{\"level\":\"info\",\"message\":\"script permission granted\",\"mask\":"
+                      << granted << ",\"eventQueued\":" << (queued ? "true" : "false") << "}"
+                      << std::endl;
             return std::nullopt;
         }
         if (name == "llGetPermissions") {
@@ -5312,6 +5315,12 @@ int main(int argc, char* argv[]) {
                 }
             }
             if (changed) publish_avatar_animations(key, now_point);
+            std::cout << "{\"level\":\"info\",\"message\":\"script animation\",\"call\":"
+                      << homeworldz::api::json_string(name) << ",\"animation\":"
+                      << homeworldz::api::json_string(args[0].str) << ",\"id\":\""
+                      << homeworldz::viewer::format_uuid(*animation) << "\",\"changed\":"
+                      << (changed ? "true" : "false") << ",\"playing\":" << animations.size()
+                      << "}" << std::endl;
             return std::nullopt;
         }
         if (name == "llGetInventoryName" && args.size() == 2) {
@@ -12851,7 +12860,33 @@ int main(int argc, char* argv[]) {
                                          "\"changes\":" << agent_animation->animations.size()
                                       << ",\"active\":" << animations.size()
                                       << ",\"recipients\":" << avatars.size()
-                                      << ",\"sessionClientsTold\":" << session_told << "}" << std::endl;
+                                      << ",\"sessionClientsTold\":" << session_told;
+                            // Which ids, and what is left playing: the counts
+                            // alone could not say why a seated pose vanished.
+                            std::cout << ",\"started\":[";
+                            const char* separator = "";
+                            for (const auto& change : agent_animation->animations)
+                                if (change.start) {
+                                    std::cout << separator << '"'
+                                              << homeworldz::viewer::format_uuid(change.animation_id) << '"';
+                                    separator = ",";
+                                }
+                            std::cout << "],\"stopped\":[";
+                            separator = "";
+                            for (const auto& change : agent_animation->animations)
+                                if (!change.start) {
+                                    std::cout << separator << '"'
+                                              << homeworldz::viewer::format_uuid(change.animation_id) << '"';
+                                    separator = ",";
+                                }
+                            std::cout << "],\"playing\":[";
+                            separator = "";
+                            for (const auto& entry : animations) {
+                                std::cout << separator << '"'
+                                          << homeworldz::viewer::format_uuid(entry.animation_id) << '"';
+                                separator = ",";
+                            }
+                            std::cout << "]}" << std::endl;
                         }
                         const auto asset_upload =
                             homeworldz::viewer::decode_asset_upload_request(packet->payload);
