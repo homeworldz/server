@@ -9813,6 +9813,34 @@ int main(int argc, char* argv[]) {
                                             body, update.script_running);
                                         broadcast_object_update(
                                             *task_entity, std::chrono::steady_clock::now());
+                                        // The saver's viewer is told the contents
+                                        // changed, as every other contents edit
+                                        // tells it. Without the new serial it
+                                        // keeps the item's old asset id and
+                                        // reopens the script from before the save.
+                                        const auto task_uuid =
+                                            homeworldz::viewer::parse_uuid(task_entity->object_id);
+                                        for (const auto& [saver_endpoint, saver] : avatars) {
+                                            if (saver.session_id != update.session_id || !task_uuid)
+                                                continue;
+                                            const auto filename = "inventory_" +
+                                                homeworldz::viewer::random_uuid() + ".tmp";
+                                            pending_task_inventory_files.insert_or_assign(
+                                                saver_endpoint + '|' + filename,
+                                                task_inventory_file(*task_entity));
+                                            auto wire_filename = filename;
+                                            wire_filename.push_back('\0');
+                                            if (const auto outgoing = circuits.send(saver_endpoint,
+                                                    homeworldz::viewer::encode_reply_task_inventory({
+                                                        *task_uuid,
+                                                        static_cast<std::int16_t>(
+                                                            task_entity->task_inventory_serial),
+                                                        wire_filename}),
+                                                    true, std::chrono::steady_clock::now(), true))
+                                                static_cast<void>(
+                                                    send_udp(viewer_server, saver_endpoint, *outgoing));
+                                            break;
+                                        }
                                     }
                                 }
                                 response = stored
@@ -12084,20 +12112,18 @@ int main(int argc, char* argv[]) {
                             // now, not as the viewer remembers it: Firestorm names
                             // the asset from its cached copy of the contents, so a
                             // script saved and reopened showed the text from before
-                            // the save (2026-10-17). Only the object's owner may
-                            // read it, the rule the save already enforces.
+                            // the save (2026-10-17). Assets are fetched by id as in
+                            // Second Life, so an item the region cannot find is
+                            // served as named.
                             auto serve_asset_id = homeworldz::viewer::format_uuid(asset_transfer->asset_id);
                             if (authorized && asset_transfer->source_type ==
                                     homeworldz::viewer::transfer_source_sim_inv_item &&
                                 asset_transfer->task_id != homeworldz::viewer::Uuid{}) {
-                                serve_asset_id.clear();
                                 const auto task_object = homeworldz::viewer::format_uuid(asset_transfer->task_id);
                                 const auto item_id = homeworldz::viewer::format_uuid(asset_transfer->item_id);
-                                const auto requester = homeworldz::viewer::format_uuid(asset_transfer->agent_id);
                                 for (const auto& [task_entity_id, task_entity] : scene.entities()) {
                                     static_cast<void>(task_entity_id);
                                     if (task_entity.object_id != task_object) continue;
-                                    if (task_entity.owner_id != requester) break;
                                     for (const auto& task_item : task_entity.task_inventory)
                                         if (task_item.item_id == item_id) serve_asset_id = task_item.asset_id;
                                     break;
