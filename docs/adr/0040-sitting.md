@@ -5,9 +5,11 @@ Status: Accepted
 This ADR records **current expectation and intent**, not a commitment, and is
 expected to be revised as evidence arrives.
 
-**Implementation state (2026-10-16).** Designed, not built. `llSitTarget` is the
-only part that exists: it stores a seat on the prim, persists it, and carries it
-in the object asset.
+**Implementation state (2026-10-17).** Built and on every region (9781d3b). A
+prim with no sit target seats at Halcyon's fixed default offset; placing the
+avatar on the prim's top face was considered and not adopted, as Halcyon left it
+commented out. Not yet built: carrying sitters across a region border with their
+object, which until then is held at the edge.
 
 ## The problem
 

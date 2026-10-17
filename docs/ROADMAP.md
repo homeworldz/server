@@ -13,8 +13,8 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="46">46%</progress>
- <strong>46%</strong>
+  <progress data-color="primary" max="100" value="47">47%</progress>
+ <strong>47%</strong>
 </label>
 </p>
 
@@ -29,11 +29,11 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="96" aria-label="Phase 2 progress: 96%">96%</progress> | 96% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="97" aria-label="Phase 2 progress: 97%">97%</progress> | 97% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
-| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="16" aria-label="Phase 6 progress: 16%">16%</progress> | 16% |
+| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="19" aria-label="Phase 6 progress: 19%">19%</progress> | 19% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="25" aria-label="Phase 7 progress: 25%">25%</progress> | 25% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="3" aria-label="Phase 8 progress: 3%">3%</progress> | 3% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="66" aria-label="Phase 9 progress: 66%">66%</progress> | 66% |
@@ -133,7 +133,8 @@ client.
 
 Vehicle crossings follow vehicles, in Phase 6.
 
-- [ ] Sit on a prim, at its sit target or a default seat, with unsit, camera placement, and seated animation.
+- [x] Sit on a prim, at its sit target or a default seat, with unsit, camera placement, and seated animation.
+- [x] Sit on the ground.
 - [x] Define what happens to every kind of entity that moves off a region ([ADR 0037](adr/0037-object-border-crossings.md)).
 - [x] Contain avatars and physical objects at a border with no neighbor.
 - [x] Resolve border neighbors from grid records and current leases.
@@ -273,7 +274,9 @@ glTF (GLB) is the stored format, and each client is served a derived rendition.
 - [x] Recompile scripts after edits, keep the running instance on a failed compile, and remove deleted ones.
 - [x] Implement `llSay` and `llOwnerSay`.
 - [x] Implement touch, starting with `touch_start`.
-- [x] Implement `llSitTarget`.
+- [x] Implement `llSitTarget`, `llSetLinkSitTarget`, and the other sit-target functions.
+- [x] Implement `changed` and `run_time_permissions`.
+- [x] Grant animation permission to a seated avatar and play animations with `llStartAnimation` and `llStopAnimation`.
 - [ ] Implement the remaining LSL events.
 - [ ] Implement the LSL host functions.
 - [ ] Preserve Second Life event ordering and delays where they are observable.
