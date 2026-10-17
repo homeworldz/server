@@ -562,7 +562,10 @@ bool confirm_avatar_arrival(Transport& source, std::string_view transit_id);
 
 bool prepare_object_arrival(Transport& destination, std::string_view transit_id,
                             std::string_view document);
-bool activate_object_arrival(Transport& destination, std::string_view transit_id);
+// `deadline` is when the source stops waiting and keeps the object itself; a
+// destination that would build it later must not, or both regions hold it.
+bool activate_object_arrival(Transport& destination, std::string_view transit_id,
+                             std::chrono::system_clock::time_point deadline);
 
 class ViewerSessionCache {
 public:

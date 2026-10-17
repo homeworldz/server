@@ -116,6 +116,15 @@ object here if activation fails. Two live copies of one object, colliding with
 the world in two regions at once, is not recoverable — something has to decide
 which one is real, and nothing is in a position to.
 
+The source rebuilding its copy is only safe if the destination never builds
+one afterwards, so activation carries the moment the source stops waiting, and
+a destination that reaches that moment without having built the object refuses
+to. Revised 2026-10-17, after a destination spent 21 s fetching the object's
+contents from the source — which could not answer while it waited — and built
+it a second after the source had given up at 20 s and restored its own. The
+fetch now happens after the answer, and the deadline is set at half the wait so
+clock skew between the two machines does not reopen the gap.
+
 The remaining failures fall the safe way. A source that dies between staging
 and activation leaves a staged entry that expires having created nothing, and
 the object is still in the source's last snapshot. A destination that never
