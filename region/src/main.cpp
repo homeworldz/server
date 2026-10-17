@@ -4445,20 +4445,16 @@ int main(int argc, char* argv[]) {
                       << std::endl;
         }
         if (!killed.empty()) {
-            const auto kill = homeworldz::viewer::encode_kill_object(killed);
-            for (const auto& [recipient_endpoint, recipient] : avatars) {
-                static_cast<void>(recipient);
-                for_each_viewer_circuit(recipient_endpoint, [&](const std::string& route) {
-                    if (const auto outgoing = circuits.send(route, kill, true, when))
-                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
-                });
-            }
-            for_each_child_circuit(every_facet, when,
-                [&](const std::string& route, const auto& child) {
-                    static_cast<void>(child);
-                    if (const auto outgoing = circuits.send(route, kill, true, when))
-                        static_cast<void>(send_udp(viewer_server, route, *outgoing));
-                });
+            // Two seconds late, as an avatar's departure is (pending_departure_
+            // kills says why). A viewer that sees the destination is handed the
+            // same object id from there and moves the object it already has,
+            // keeping it selected and its riders seated; a kill that reached it
+            // first destroyed it instead, dropping the selection mid-drag
+            // (2026-10-17). Once moved, this region's local ids name nothing
+            // in that viewer, and the late kill only clears the object for one
+            // that cannot see where it went. Ids are never reused, so the kill
+            // cannot catch anything newer.
+            pending_departure_kills.push_back({killed, {}, when + departure_kill_delay});
             deliver_to_embodied(session_kill_many(killed));
         }
         bool activated = false;
