@@ -278,7 +278,14 @@ std::optional<std::vector<ObjectTransitSitter>> json_sitter_array(
         for (const auto& values : {*position, *rotation})
             for (const auto value : values)
                 if (!std::isfinite(value)) return std::nullopt;
-        sitters.push_back({std::string(agent), std::string(prim), *position, *rotation});
+        const auto animation_ids = json_string_array(element, "animationIds");
+        const auto animation_sources = json_string_array(element, "animationSources");
+        if (animation_ids.size() != animation_sources.size()) return std::nullopt;
+        std::vector<RiderAnimation> animations;
+        for (std::size_t index = 0; index < animation_ids.size(); ++index)
+            animations.push_back({animation_ids[index], animation_sources[index]});
+        sitters.push_back({std::string(agent), std::string(prim), *position, *rotation,
+                           std::move(animations)});
         rest.remove_prefix(close + 1);
     }
     return sitters;
@@ -354,10 +361,24 @@ std::string encode_object_transit(const ObjectTransit& transit) {
     for (std::size_t index = 0; index < transit.sitters.size(); ++index) {
         const auto& sitter = transit.sitters[index];
         if (index != 0) sitters.push_back(',');
+        std::string animation_ids{'['};
+        std::string animation_sources{'['};
+        for (std::size_t played = 0; played < sitter.animations.size(); ++played) {
+            if (played != 0) {
+                animation_ids.push_back(',');
+                animation_sources.push_back(',');
+            }
+            animation_ids += quoted_string(sitter.animations[played].animation_id);
+            animation_sources += quoted_string(sitter.animations[played].source_id);
+        }
+        animation_ids.push_back(']');
+        animation_sources.push_back(']');
         sitters += "{\"agentId\":" + quoted_string(sitter.agent_id) +
                    ",\"primObjectId\":" + quoted_string(sitter.prim_object_id) +
                    ",\"position\":" + number_array(sitter.position) +
-                   ",\"rotation\":" + number_array(sitter.rotation) + '}';
+                   ",\"rotation\":" + number_array(sitter.rotation) +
+                   ",\"animationIds\":" + animation_ids +
+                   ",\"animationSources\":" + animation_sources + '}';
     }
     sitters.push_back(']');
     return std::string{"{\"id\":"} + quoted_string(transit.id) +

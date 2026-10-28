@@ -3287,6 +3287,7 @@ int main(int argc, char* argv[]) {
         std::string prim_object_id;
         homeworldz::region::SeatPose pose;
         std::chrono::steady_clock::time_point expires;
+        std::vector<homeworldz::viewer::AvatarAnimationEntry> animations;
     };
     std::unordered_map<std::string, ExpectedRider> expected_riders;
     // Sessions whose avatar lives in a neighbour and which hold a child circuit
@@ -3427,6 +3428,10 @@ int main(int argc, char* argv[]) {
     };
     std::unordered_map<std::string, std::vector<homeworldz::viewer::AvatarAnimationEntry>> avatar_animations;
     std::unordered_map<std::string, std::int32_t> next_animation_sequences;
+    // Avatars whose animations a script changed, told once after the scripts
+    // have run. A pose replaces the seat's sit with a stop and then a start,
+    // and a viewer told between the two plays the avatar standing up.
+    std::unordered_set<std::string> script_animated_avatars;
     std::unordered_map<std::string, homeworldz::viewer::MovementAnimation> movement_animations;
     std::unordered_map<std::string, homeworldz::viewer::UuidName> resolved_avatar_names;
     std::unordered_map<std::string, std::deque<QueuedTexturePacket>> texture_packets;
@@ -4389,9 +4394,13 @@ int main(int argc, char* argv[]) {
                 return false;
             rider_keys.push_back(rider_key);
             const auto& pose = rider.seat->pose;
+            std::vector<homeworldz::region::RiderAnimation> playing;
+            for (const auto& entry : avatar_animations[rider_key])
+                playing.push_back({homeworldz::viewer::format_uuid(entry.animation_id),
+                                   homeworldz::viewer::format_uuid(entry.source_id)});
             riders.push_back({rider.user_id, seat_prim->object_id,
                 {pose.position.x, pose.position.y, pose.position.z},
-                {pose.rotation.x, pose.rotation.y, pose.rotation.z}});
+                {pose.rotation.x, pose.rotation.y, pose.rotation.z}, std::move(playing)});
         }
         homeworldz::region::ObjectTransit transit;
         transit.id = homeworldz::viewer::random_uuid();
@@ -5169,12 +5178,14 @@ int main(int argc, char* argv[]) {
     };
     // Seats an avatar on a prim already chosen, at a pose already worked out:
     // the end of a sit request, and how a rider is seated again when it
-    // arrives on the far side of a border with its object.
+    // arrives on the far side of a border with its object. A rider brings the
+    // animations it was playing, and keeps them in place of the default sit.
     const auto place_on_seat = [&](const std::string& key, LiveAvatar& live,
                                    const homeworldz::scene::Entity& seat_prim,
                                    const homeworldz::scene::Entity& root,
                                    const homeworldz::region::SeatPose& pose,
-                                   std::chrono::steady_clock::time_point when) {
+                                   std::chrono::steady_clock::time_point when,
+                                   std::vector<homeworldz::viewer::AvatarAnimationEntry> carried = {}) {
         if (physics_world && live.physics_character != 0) {
             physics_world->remove_character(live.physics_character);
             live.physics_character = 0;
@@ -5184,7 +5195,16 @@ int main(int argc, char* argv[]) {
         live.controller.hold_seated(world.position,
             {static_cast<float>(world.rotation.x), static_cast<float>(world.rotation.y),
              static_cast<float>(world.rotation.z)});
-        if (const auto agent_id = homeworldz::viewer::parse_uuid(live.user_id))
+        if (!carried.empty()) {
+            const auto sit = sit_animation_id(false);
+            live.seat->default_sit_stopped = std::none_of(carried.begin(), carried.end(),
+                [&](const auto& entry) { return sit && entry.animation_id == *sit; });
+            auto& sequence = next_animation_sequences[key];
+            if (sequence < 2) sequence = 2;
+            for (auto& entry : carried) entry.sequence = sequence++;
+            avatar_animations[key] = std::move(carried);
+            publish_avatar_animations(key, when);
+        } else if (const auto agent_id = homeworldz::viewer::parse_uuid(live.user_id))
             if (homeworldz::viewer::apply_seated_animation(avatar_animations[key],
                     sit_animation_id(false), *agent_id, next_animation_sequences[key]))
                 publish_avatar_animations(key, when);
@@ -5447,7 +5467,7 @@ int main(int argc, char* argv[]) {
                     changed = true;
                 }
             }
-            if (changed) publish_avatar_animations(key, now_point);
+            if (changed) script_animated_avatars.insert(key);
             std::cout << "{\"level\":\"info\",\"message\":\"script animation\",\"call\":"
                       << homeworldz::api::json_string(name) << ",\"animation\":"
                       << homeworldz::api::json_string(args[0].str) << ",\"id\":\""
@@ -8532,12 +8552,27 @@ int main(int argc, char* argv[]) {
                                 std::erase_if(expected_riders, [&](const auto& entry) {
                                     return entry.second.expires <= arrival_now;
                                 });
-                                for (const auto& rider : staged->sitters)
+                                for (const auto& rider : staged->sitters) {
+                                    // All of them or none: none seats the
+                                    // rider with the default sit.
+                                    std::vector<homeworldz::viewer::AvatarAnimationEntry> playing;
+                                    for (const auto& played : rider.animations) {
+                                        const auto animation =
+                                            homeworldz::viewer::parse_uuid(played.animation_id);
+                                        const auto source =
+                                            homeworldz::viewer::parse_uuid(played.source_id);
+                                        if (!animation || !source) {
+                                            playing.clear();
+                                            break;
+                                        }
+                                        playing.push_back({*animation, 0, *source});
+                                    }
                                     expected_riders.insert_or_assign(rider.agent_id, ExpectedRider{
                                         rider.prim_object_id,
                                         {{rider.position[0], rider.position[1], rider.position[2]},
                                          {rider.rotation[0], rider.rotation[1], rider.rotation[2]}},
-                                        arrival_now + std::chrono::seconds(60)});
+                                        arrival_now + std::chrono::seconds(60), std::move(playing)});
+                                }
                                 std::cout << "{\"level\":\"info\",\"message\":\"object crossing accepted\""
                                              ",\"transitId\":"
                                           << homeworldz::api::json_string(transit_id)
@@ -13763,7 +13798,7 @@ int main(int argc, char* argv[]) {
                                     if (seat_prim && seat_root && now < rider.expires &&
                                         occupant_key_of(seat_prim->id).empty())
                                         place_on_seat(endpoint, avatars.at(endpoint), *seat_prim,
-                                                      *seat_root, rider.pose, now);
+                                                      *seat_root, rider.pose, now, rider.animations);
                                     else
                                         std::cout << "{\"level\":\"warn\",\"message\":\"rider "
                                                      "arrived without its seat\",\"primObjectId\":"
@@ -16631,6 +16666,8 @@ int main(int argc, char* argv[]) {
             else ++iterator;
         }
         const auto script_tick = falcon.run_tick();
+        for (const auto& key : script_animated_avatars) publish_avatar_animations(key, now);
+        script_animated_avatars.clear();
         if (script_tick.trapped != 0) {
             std::cerr << "{\"level\":\"warning\",\"message\":\"Falcon script runtime trapped\","
                          "\"scriptsVisited\":"

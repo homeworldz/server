@@ -114,11 +114,19 @@ private:
 // One avatar riding an object across a border: the prim it sits on, by object
 // id since local ids do not survive the crossing, and its pose relative to the
 // linkset's root, a rotation's imaginary part as every entity rotation is.
+// Its animations travel too, as the source was playing them: seated with the
+// default sit instead, the rider visibly changes pose until the seat's script,
+// restarted on the far side, puts its own back.
+struct RiderAnimation {
+    std::string animation_id;
+    std::string source_id;
+};
 struct ObjectTransitSitter {
     std::string agent_id;
     std::string prim_object_id;
     std::array<double, 3> position{};
     std::array<double, 3> rotation{};
+    std::vector<RiderAnimation> animations;
 };
 
 // An object handed across a macro border, as it travels.

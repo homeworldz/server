@@ -114,7 +114,9 @@ int main() {
         // Two riders, each with a position unlike the object's, so a parser
         // that read the wrong "position" would be caught.
         {{"88888888-8888-4888-8888-888888888888", "77777777-7777-4777-8777-777777777777",
-          {0.75, -0.5, 1.3156}, {0.0, 0.0, 0.3826834323650898}},
+          {0.75, -0.5, 1.3156}, {0.0, 0.0, 0.3826834323650898},
+          {{"b1709c8d-ecd3-54a1-4f28-d55ac0840782", "77777777-7777-4777-8777-777777777777"},
+           {"1a5fe8ac-a804-8a5d-7cbd-56bd83184568", "88888888-8888-4888-8888-888888888888"}}},
          {"99999999-9999-4999-8999-999999999999", "66666666-6666-4666-8666-666666666666",
           {0.0, 0.0, 0.5156}, {0.0, 0.0, 0.0}}},
         std::string("{\"format\":\"homeworldz-linkset-v1\",\"parts\":[{\"name\":\"Crate\","
@@ -135,9 +137,21 @@ int main() {
         const auto& sent = outbound.sitters[index];
         const auto& read = inbound->sitters[index];
         if (read.agent_id != sent.agent_id || read.prim_object_id != sent.prim_object_id ||
-            read.position != sent.position || read.rotation != sent.rotation)
+            read.position != sent.position || read.rotation != sent.rotation ||
+            read.animations.size() != sent.animations.size())
             return 1;
+        for (std::size_t played = 0; played < sent.animations.size(); ++played)
+            if (read.animations[played].animation_id != sent.animations[played].animation_id ||
+                read.animations[played].source_id != sent.animations[played].source_id)
+                return 1;
     }
+    if (inbound->sitters[0].animations.size() != 2 || !inbound->sitters[1].animations.empty())
+        return 1;
+    // An animation without its source is a rider half-described.
+    if (homeworldz::region::parse_object_transit(std::string(document).replace(
+            document.find(",\"88888888-8888-4888-8888-888888888888\"]"),
+            std::string_view(",\"88888888-8888-4888-8888-888888888888\"").size(), "")))
+        return 1;
     // A source that predates seated crossings sends no riders at all, which is
     // an empty list and not a malformed document.
     {
