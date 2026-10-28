@@ -5100,8 +5100,12 @@ int main(int argc, char* argv[]) {
     };
     // Ends a seat without moving the avatar: what every departure needs, and
     // the first half of standing up. The seat's scripts lose their permission
-    // and the animations they started, and hear the link change.
-    const auto release_seat = [&](const std::string& key, std::chrono::steady_clock::time_point when)
+    // and the animations they started, and hear the link change. A departure
+    // passes `departing` and tells no viewer: the avatar is killed for this
+    // region's viewers, and its own viewer, now seated by the destination,
+    // would take the late animation list as standing up.
+    const auto release_seat = [&](const std::string& key, std::chrono::steady_clock::time_point when,
+                                  bool departing = false)
         -> std::optional<LiveAvatar::Seat> {
         const auto found = avatars.find(key);
         if (found == avatars.end() || !found->second.seat) return std::nullopt;
@@ -5124,7 +5128,7 @@ int main(int argc, char* argv[]) {
                    seat_objects.contains(entry.first.substr(0, entry.first.find('|')));
         });
         if (seat.prim != 0) tell_linkset_changed(seat.root);
-        publish_avatar_animations(key, when);
+        if (!departing) publish_avatar_animations(key, when);
         std::cout << "{\"level\":\"info\",\"message\":\"avatar seat released\",\"agent\":"
                   << homeworldz::api::json_string(live.user_id) << ",\"prim\":" << seat.prim
                   << "}" << std::endl;
@@ -5474,7 +5478,7 @@ int main(int argc, char* argv[]) {
                                            const std::string& session_id,
                                            bool demoting = false) {
         // A seat ends with whoever leaves it, however they leave.
-        static_cast<void>(release_seat(endpoint, std::chrono::steady_clock::now()));
+        static_cast<void>(release_seat(endpoint, std::chrono::steady_clock::now(), true));
         // Tell the remaining viewers to remove this avatar's rezzed
         // representation. Every avatar-removal path (logout, disconnect/timeout,
         // duplicate-login replacement, and teleport/crossing source-retirement
