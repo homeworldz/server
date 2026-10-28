@@ -13,8 +13,8 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="47">47%</progress>
- <strong>47%</strong>
+  <progress data-color="primary" max="100" value="48">48%</progress>
+ <strong>48%</strong>
 </label>
 </p>
 
@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="97" aria-label="Phase 2 progress: 97%">97%</progress> | 97% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="98" aria-label="Phase 2 progress: 98%">98%</progress> | 98% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -139,10 +139,10 @@ Vehicle crossings follow vehicles, in Phase 6.
 - [x] Contain avatars and physical objects at a border with no neighbor.
 - [x] Resolve border neighbors from grid records and current leases.
 - [x] Cross a single object between regions with its identity, ownership, permissions, and contents.
-- [ ] Cross complete linksets between regions.
+- [x] Cross complete linksets between regions.
 - [ ] Carry a physical object's motion continuously across a border.
 - [ ] Cross attachments as part of their avatar bundle.
-- [ ] Cross an object and everyone sitting on it as one bundle.
+- [x] Cross an object and everyone sitting on it as one bundle.
 - [ ] Prevent a crossing from duplicating or losing events and collisions.
 
 ### Seeing across a region border
