@@ -135,6 +135,7 @@ Vehicle crossings follow vehicles, in Phase 6.
 
 - [x] Sit on a prim, at its sit target or a default seat, with unsit, camera placement, and seated animation.
 - [x] Sit on the ground.
+- [ ] Sit on an object in a neighboring region, crossing into that region to sit.
 - [x] Define what happens to every kind of entity that moves off a region ([ADR 0037](adr/0037-object-border-crossings.md)).
 - [x] Contain avatars and physical objects at a border with no neighbor.
 - [x] Resolve border neighbors from grid records and current leases.
