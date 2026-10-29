@@ -8504,7 +8504,33 @@ int main(int argc, char* argv[]) {
                         } else if (action == "prepare-arrival") {
                             const auto body = http_request_body(request);
                             const auto transit = homeworldz::region::parse_object_transit(body);
-                            if (!transit || transit->id != transit_id ||
+                            // An object already here under the same id would
+                            // be a second copy, and a viewer holds one object
+                            // per id: it draws one and loses the other's local
+                            // id, so a sit on the hidden copy is drawn
+                            // unparented. Refused, the source keeps its own.
+                            std::string already_here;
+                            if (transit) {
+                                if (entity_id_by_object_id(transit->object_id) != 0)
+                                    already_here = transit->object_id;
+                                for (const auto& child_id : transit->child_object_ids)
+                                    if (already_here.empty() && !child_id.empty() &&
+                                        entity_id_by_object_id(child_id) != 0)
+                                        already_here = child_id;
+                            }
+                            if (!already_here.empty()) {
+                                std::cout << "{\"level\":\"error\",\"message\":\"object crossing "
+                                             "refused, object already present\",\"transitId\":"
+                                          << homeworldz::api::json_string(transit_id)
+                                          << ",\"objectId\":"
+                                          << homeworldz::api::json_string(already_here) << "}"
+                                          << std::endl;
+                                response = homeworldz::http::response_for_content(
+                                    request, 409, "application/json",
+                                    homeworldz::api::to_json(homeworldz::api::Error{
+                                        "object_already_present",
+                                        "an object with this id is already in the region"}));
+                            } else if (!transit || transit->id != transit_id ||
                                 !inbound_objects.stage(*transit, registration->region_id(),
                                                        arrival_now)) {
                                 response = homeworldz::http::response_for_content(
