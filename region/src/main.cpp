@@ -1187,10 +1187,19 @@ std::optional<homeworldz::viewer::StaticObject> static_object_from_entity(
     object.parent_local_id = static_cast<std::uint32_t>(entity.parent_id);
     // A worn prim is drawn on its wearer's attachment joint only if the State
     // byte says which joint. Parenting alone puts it at the avatar's origin.
-    object.state = homeworldz::viewer::attachment_state(entity.attachment_point);
+    // A worn linkset's other prims say the same joint, as Halcyon sends them:
+    // the scene keeps the point on the root alone, but a viewer reads a prim
+    // without it as rezzed, and plays its editing arm motion at one being worn.
+    // Only a prim whose parent is the avatar is put on the joint, so the
+    // children still draw relative to their root.
+    const auto* worn_root = &entity;
+    if (entity.attachment_point == 0 && entity.parent_id != 0)
+        if (const auto* parent = scene.find(entity.parent_id); parent && parent->attachment_point != 0)
+            worn_root = parent;
+    object.state = homeworldz::viewer::attachment_state(worn_root->attachment_point);
     // And which item it is, or the viewer cannot tell two worn objects apart.
-    if (entity.attachment_point != 0)
-        if (const auto worn_item = homeworldz::viewer::parse_uuid(entity.attachment_item_id))
+    if (worn_root->attachment_point != 0)
+        if (const auto worn_item = homeworldz::viewer::parse_uuid(worn_root->attachment_item_id))
             object.attachment_item_id = *worn_item;
     object.id = *object_id;
     object.owner_id = *owner_id;
@@ -3864,13 +3873,71 @@ int main(int argc, char* argv[]) {
         return digest.substr(0, 8) + "-" + digest.substr(8, 4) + "-" + digest.substr(12, 4) +
                "-" + digest.substr(16, 4) + "-" + digest.substr(20, 12);
     };
+    // A worn object as it was when it went on, by root entity: what tells a
+    // detach whether anything changed while it was worn.
+    std::unordered_map<homeworldz::scene::EntityId, std::string> worn_baselines;
+    const auto serialize_worn_object = [&](const homeworldz::scene::Entity& root) {
+        std::vector<const homeworldz::scene::Entity*> children;
+        for (const auto& [candidate_id, candidate] : scene.entities())
+            if (candidate.parent_id == root.id) children.push_back(&candidate);
+        return homeworldz::asset::serialize_linkset_asset(root, children);
+    };
+    // A worn object goes back to its inventory item as it is now when it comes
+    // off, as a viewer expects: where it sat on its joint, and every edit made
+    // while it was worn. Wearing never wrote the item, so without this the
+    // next wear came from the object as it was before, at the joint itself.
+    // Unchanged since it went on, nothing is written.
+    const auto save_worn_object = [&](homeworldz::scene::EntityId root_id) {
+        const auto* root = scene.find(root_id);
+        if (!root || root->attachment_point == 0 || root->attachment_item_id.empty() ||
+            root->owner_id.empty() || !viewer_grid || !storage)
+            return;
+        const auto content_text = serialize_worn_object(*root);
+        const auto baseline = worn_baselines.find(root_id);
+        const bool unchanged = baseline != worn_baselines.end() && baseline->second == content_text;
+        if (baseline != worn_baselines.end()) worn_baselines.erase(baseline);
+        if (unchanged) return;
+        const auto owner_id = root->owner_id;
+        const auto item_id = root->attachment_item_id;
+        const auto asset_id = homeworldz::viewer::random_uuid();
+        bool saved = false;
+        try {
+            const auto content = std::span(
+                reinterpret_cast<const std::byte*>(content_text.data()), content_text.size());
+            const auto metadata = storage->store_asset(asset_id, root->creator_id, content);
+            const bool registered = viewer_grid->register_asset(
+                metadata.viewer_id, metadata.creator_id, metadata.sha256, metadata.size,
+                region_public_endpoint, true) &&
+                // Write-through before the item names it (ADR 0026).
+                viewer_grid->store_vault_asset(metadata.viewer_id, content);
+            // A texture applied while worn is now named by the owner's item.
+            if (registered)
+                static_cast<void>(vault_asset_closure({{metadata.viewer_id, 6}}, "detach"));
+            saved = registered &&
+                viewer_grid->update_inventory_item_asset(owner_id, item_id, asset_id);
+        } catch (const std::exception& error) {
+            std::cerr << "{\"level\":\"error\",\"message\":\"worn object not saved\",\"itemId\":"
+                      << homeworldz::api::json_string(item_id) << ",\"error\":"
+                      << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+        }
+        // A copy fetched ahead of a crossing names the old asset.
+        if (saved) prefetched_items.erase(prefetch_key(owner_id, item_id));
+        std::cout << "{\"level\":" << (saved ? "\"info\"" : "\"warn\"")
+                  << ",\"message\":\"worn object saved to inventory\",\"itemId\":"
+                  << homeworldz::api::json_string(item_id) << ",\"assetId\":"
+                  << homeworldz::api::json_string(asset_id) << ",\"saved\":"
+                  << (saved ? "true" : "false") << "}" << std::endl;
+    };
     // `defer_into`, when given, collects the viewer kill instead of sending it:
     // a departing wearer's attachments go with its avatar's delayed kill (see
     // pending_departure_kills). Session clients are still told at once.
+    //
+    // Every way off goes through here, so every way off saves the object first.
     const auto remove_attachment_linkset = [&](homeworldz::scene::EntityId root_id,
                                                std::chrono::steady_clock::time_point when,
                                                std::string_view spare = {},
                                                std::vector<std::uint32_t>* defer_into = nullptr) {
+        save_worn_object(root_id);
         std::vector<homeworldz::scene::EntityId> part_ids;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.parent_id == root_id) part_ids.push_back(candidate_id);
@@ -4562,7 +4629,9 @@ int main(int argc, char* argv[]) {
                                      homeworldz::scene::EntityId wearer_id,
                                      const std::string& item_id, std::uint8_t requested_point,
                                      bool keep_others, bool record,
-                                     std::chrono::steady_clock::time_point when) -> WearOutcome {
+                                     std::chrono::steady_clock::time_point when,
+                                     const std::optional<homeworldz::grid::WornPlacement>&
+                                         placement = std::nullopt) -> WearOutcome {
         // indra's ATTACHMENT_RIGHT_HAND: where an item with no remembered point
         // goes, matching what a viewer expects from a plain Wear.
         //
@@ -4632,12 +4701,21 @@ int main(int argc, char* argv[]) {
             else if (item->asset_type != 6 || item->inventory_type != 6)
                 outcome.refused = "inventory item is not an object";
             else {
+                // Read first: the object itself remembers where it was last
+                // worn, and that decides the point before anything is displaced.
+                const auto asset_started = std::chrono::steady_clock::now();
+                auto content = read_federated_asset(item->asset_id);
+                auto linkset = homeworldz::asset::parse_linkset_asset(content);
+                outcome.asset_time = std::chrono::steady_clock::now() - asset_started;
                 // A plain Wear sends point 0 and leaves the choice to the
                 // region. indra keeps the point an item was last worn on in the
-                // low byte of its inventory flags.
+                // low byte of its inventory flags; an object taken off here
+                // carries it in its asset.
                 if (outcome.point == 0)
                     outcome.point = static_cast<std::uint8_t>(item->flags & 0xffU) &
                                     attachment_point_mask;
+                if (outcome.point == 0 && linkset)
+                    outcome.point = linkset->root.attachment_point & attachment_point_mask;
                 if (outcome.point == 0) outcome.point = attachment_point_right_hand;
                 // Wearing replaces the point's occupant, and re-wearing an item
                 // already on moves it rather than doubling it. "Attach To >"
@@ -4666,10 +4744,20 @@ int main(int argc, char* argv[]) {
                             user_id, displaced_item, 0, false));
                 }
                 outcome.build_time = std::chrono::steady_clock::now() - displace_started;
-                const auto asset_started = std::chrono::steady_clock::now();
-                const auto content = read_federated_asset(item->asset_id);
-                const auto linkset = homeworldz::asset::parse_linkset_asset(content);
-                outcome.asset_time = std::chrono::steady_clock::now() - asset_started;
+                // Moving an item already worn saved it as it came off, under a
+                // new asset: wear that, not the copy read before it.
+                const bool moved = std::any_of(displaced.begin(), displaced.end(),
+                    [&](const auto& entry) { return entry.second == item_id; });
+                if (moved && viewer_grid) {
+                    const auto reread_started = std::chrono::steady_clock::now();
+                    auto current = viewer_grid->lookup_inventory_item(user_id, item_id);
+                    if (current.item) {
+                        lookup = std::move(current);
+                        content = read_federated_asset(item->asset_id);
+                        linkset = homeworldz::asset::parse_linkset_asset(content);
+                    }
+                    outcome.asset_time += std::chrono::steady_clock::now() - reread_started;
+                }
                 const auto build_started = std::chrono::steady_clock::now();
                 if (!linkset) outcome.refused = "object asset did not parse";
                 else {
@@ -4700,11 +4788,23 @@ int main(int argc, char* argv[]) {
                     // parented to an avatar the physics world does not know as a
                     // parent. Worn means carried.
                     entity->physical = false;
-                    // Worn at the joint itself: the offset an object was last
-                    // taken off at is not stored anywhere yet, so there is
-                    // nothing truthful to restore.
+                    // Where it sat when last taken off, if that was on this
+                    // joint; on another joint the old offset means nothing, and
+                    // it goes on the joint itself. A crossing's own placement,
+                    // live rather than saved, overrides both.
                     entity->local_position = {};
                     entity->local_rotation = {};
+                    if (asset.attachment_point != 0 &&
+                        (asset.attachment_point & attachment_point_mask) == outcome.point) {
+                        entity->local_position = asset.attached_position;
+                        entity->local_rotation = asset.rotation;
+                    }
+                    if (placement) {
+                        entity->local_position = {placement->position[0],
+                            placement->position[1], placement->position[2]};
+                        entity->local_rotation = {placement->rotation[0],
+                            placement->rotation[1], placement->rotation[2]};
+                    }
                     for (const auto& child_asset : linkset->children) {
                         const auto child_id = scene.create(
                             child_asset.name.empty() ? "Primitive" : child_asset.name);
@@ -4736,6 +4836,7 @@ int main(int argc, char* argv[]) {
                         child->local_rotation = child_asset.local_rotation;
                         homeworldz::scene::update_linked_world_transform(*child, *entity);
                     }
+                    worn_baselines[root_id] = serialize_worn_object(*entity);
                     outcome.worn = true;
                     // The worn object stands in this region, so its closure must
                     // be servable from here (ADR 0026).
@@ -4925,7 +5026,8 @@ int main(int argc, char* argv[]) {
             // one point, and rezzing the second must not evict the first.
             // record=false: this list is the record.
             const auto outcome = wear_attachment(user_id, wearer_id, item.item_id,
-                                                 item.attachment_point, true, false, when);
+                                                 item.attachment_point, true, false, when,
+                                                 item.placement);
             job.lookup_time += outcome.lookup_time;
             job.asset_time += outcome.asset_time;
             job.build_time += outcome.build_time;
@@ -5908,6 +6010,64 @@ int main(int argc, char* argv[]) {
     // pass against a neighbour that is answering 409 would be a busy loop
     // against another region's HTTP server.
     std::unordered_set<std::string> offered_child_agents;
+    // What each established offer said, and to whom, by the same key: a worn
+    // set that changes afterwards is sent again in the same offer, which the
+    // neighbour takes as an update to the child it already holds.
+    struct OfferedChildDocument {
+        std::string endpoint;
+        homeworldz::region::ChildAgent agent;
+    };
+    std::unordered_map<std::string, OfferedChildDocument> offered_child_documents;
+    // Sessions whose worn set changed since their neighbours last heard it.
+    // Told when the wearer stops editing, or before a crossing, not per drag.
+    std::unordered_set<std::string> worn_set_changed;
+    // What a wearer has on, as a neighbour needs it: item, joint, and where
+    // each sits on its joint now.
+    const auto worn_set_of = [&](std::string_view user_id) {
+        std::vector<homeworldz::grid::WornAttachment> worn;
+        for (const auto& [entity_id, entity] : scene.entities()) {
+            static_cast<void>(entity_id);
+            if (entity.attachment_point == 0 || entity.owner_id != user_id ||
+                entity.attachment_item_id.empty())
+                continue;
+            worn.push_back({entity.attachment_item_id, entity.attachment_point,
+                homeworldz::grid::WornPlacement{
+                    {entity.local_position.x, entity.local_position.y, entity.local_position.z},
+                    {entity.local_rotation.x, entity.local_rotation.y, entity.local_rotation.z}}});
+        }
+        return worn;
+    };
+    // Tells each neighbour holding this session as a child what it wears now.
+    // Synchronous, like the offer itself, and only for a session marked changed.
+    const auto refresh_neighbor_worn = [&](const LiveAvatar& live) {
+        if (!worn_set_changed.erase(live.session_id)) return;
+        const auto worn = worn_set_of(live.user_id);
+        const auto prefix = live.session_id + '|';
+        std::size_t told = 0;
+        std::size_t offers = 0;
+        for (auto& [pair_key, offered] : offered_child_documents) {
+            if (!pair_key.starts_with(prefix) || offered.agent.worn == worn) continue;
+            ++offers;
+            offered.agent.worn = worn;
+            int status = 0;
+            try {
+                auto transport =
+                    homeworldz::grid::socket_transport(offered.endpoint, service_token);
+                if (transport &&
+                    !homeworldz::region::parse_child_agent_acceptance(
+                        homeworldz::grid::establish_child_agent(*transport,
+                            homeworldz::region::encode_child_agent_request(offered.agent),
+                            &status)).empty())
+                    ++told;
+            } catch (const std::exception&) {
+            }
+        }
+        if (offers != 0)
+            std::cout << "{\"level\":" << (told == offers ? "\"info\"" : "\"warn\"")
+                      << ",\"message\":\"worn set refreshed for neighbors\",\"worn\":"
+                      << worn.size() << ",\"neighbors\":" << offers << ",\"told\":" << told
+                      << "}" << std::endl;
+    };
     // The seed each neighbour minted, by session and neighbour region id.
     //
     // A crossing must repeat it verbatim. The viewer already established that
@@ -5965,6 +6125,8 @@ int main(int argc, char* argv[]) {
         // still marked as made would never be made again.
         std::erase_if(offered_child_agents,
                       [&](const std::string& key) { return key.starts_with(prefix); });
+        std::erase_if(offered_child_documents,
+                      [&](const auto& entry) { return entry.first.starts_with(prefix); });
         std::erase_if(announced_child_seeds,
                       [&](const auto& entry) { return entry.first.starts_with(prefix); });
         if (!told.empty())
@@ -6057,13 +6219,7 @@ int main(int argc, char* argv[]) {
                 // The worn set from this region's own scene rather than the
                 // grid: the attachments are standing here, so their items and
                 // points are already in hand and no read is needed.
-                for (const auto& [entity_id, entity] : scene.entities()) {
-                    static_cast<void>(entity_id);
-                    if (entity.attachment_point == 0 || entity.owner_id != live.user_id ||
-                        entity.attachment_item_id.empty())
-                        continue;
-                    child.worn.push_back({entity.attachment_item_id, entity.attachment_point});
-                }
+                child.worn = worn_set_of(live.user_id);
                 child.texture_entry = dressed->second.texture_entry;
                 child.visual_params = dressed->second.visual_params;
                 child.cof_version = dressed->second.serial;
@@ -6111,6 +6267,7 @@ int main(int argc, char* argv[]) {
                 }
                 // Established: this pair is done for the life of the session.
                 offered_child_agents.insert(pair_key);
+                offered_child_documents[pair_key] = {neighbor.public_endpoint, child};
                 child_agent_retry_at.erase(pair_key);
                 // The neighbour record IS the facet: the grid resolves a
                 // neighbour to the square facet that borders this one, with its
@@ -14409,6 +14566,10 @@ int main(int argc, char* argv[]) {
                             homeworldz::viewer::decode_object_deselect(packet->payload);
                         if (object_deselect && object_deselect->agent_id == identity->agent_id &&
                             object_deselect->session_id == identity->session_id) {
+                            // The edit is over: neighbours learn where worn
+                            // objects ended up, once, rather than at every step.
+                            if (const auto editor = avatars.find(endpoint); editor != avatars.end())
+                                refresh_neighbor_worn(editor->second);
                             for (const auto local_id : object_deselect->local_ids) {
                                 const auto selected = physics_edit_selections.find(endpoint);
                                 if (selected == physics_edit_selections.end())
@@ -14717,6 +14878,10 @@ int main(int argc, char* argv[]) {
                                 if (update.rotation)
                                     rotation = {(*update.rotation)[0], (*update.rotation)[1],
                                                 (*update.rotation)[2]};
+                                // Moving something worn changes where the wearer's
+                                // neighbours must put it; they hear when it ends.
+                                if (entity->attachment_point != 0 && (update.position || update.rotation))
+                                    worn_set_changed.insert(homeworldz::viewer::format_uuid(identity->session_id));
                                 if (update.scale && entity->parent_id == 0 && linked_update) {
                                     homeworldz::scene::Vector3 factors{
                                         (*update.scale)[0] / entity->scale.x,
@@ -16001,6 +16166,8 @@ int main(int argc, char* argv[]) {
                                       worn->attachment_point,
                                       (worn->attachment_point & homeworldz::viewer::attachment_add) != 0,
                                       true, now);
+                            if (outcome.worn)
+                                worn_set_changed.insert(homeworldz::viewer::format_uuid(identity->session_id));
                             std::cout << "{\"level\":"
                                       << (outcome.worn && outcome.recorded ? "\"info\"" : "\"warn\"")
                                       << ",\"message\":\"attachment "
@@ -16067,7 +16234,11 @@ int main(int argc, char* argv[]) {
                                         (object.attachment_point &
                                          homeworldz::viewer::attachment_add) != 0,
                                         true, now);
-                                    if (outcome.worn) ++attached;
+                                    if (outcome.worn) {
+                                        ++attached;
+                                        worn_set_changed.insert(
+                                            homeworldz::viewer::format_uuid(identity->session_id));
+                                    }
                                     if (outcome.inconclusive) ++inconclusive;
                                     std::cout << "{\"level\":"
                                               << (outcome.worn && outcome.recorded
@@ -16122,6 +16293,7 @@ int main(int argc, char* argv[]) {
                                 if (!remove_attachment_linkset(root_id, now).empty()) ++detached;
                             const bool forgotten = detached == 0 || !viewer_grid ||
                                 viewer_grid->set_attachment_worn(user_id, item_id, 0, false);
+                            if (detached > 0) worn_set_changed.insert(homeworldz::viewer::format_uuid(identity->session_id));
                             std::cout << "{\"level\":" << (detached > 0 && forgotten
                                               ? "\"info\"" : "\"warn\"")
                                       << ",\"message\":\"attachment detached into inventory\""
@@ -16178,8 +16350,8 @@ int main(int argc, char* argv[]) {
                                     viewer_grid->set_attachment_worn(user_id, detached_item, 0, false))
                                     ++forgotten;
                             }
-                            // The inventory item was never removed by wearing, so
-                            // taking off needs no inventory write to keep the item.
+                            // The item itself was written as each came off.
+                            if (detached > 0) worn_set_changed.insert(homeworldz::viewer::format_uuid(identity->session_id));
                             std::cout << "{\"level\":" << (detached == detach->local_ids.size() &&
                                                            forgotten == detached
                                               ? "\"info\"" : "\"warn\"")
@@ -17390,6 +17562,9 @@ int main(int argc, char* argv[]) {
                             throw std::runtime_error("grid rejected border crossing preparation");
                         auto destination = homeworldz::grid::socket_transport(
                             crossing->destination.public_endpoint, service_token);
+                        // An edit not yet told to the neighbour goes first, so
+                        // the promotion dresses the avatar as it stands.
+                        refresh_neighbor_worn(avatar);
                         if (!homeworldz::grid::prepare_avatar_arrival(*destination, transit_id))
                             throw std::runtime_error("destination rejected border crossing preparation");
                         const auto target_handle =
@@ -17684,14 +17859,7 @@ int main(int argc, char* argv[]) {
                         static_cast<float>(standing.x + region_grid_x * 256),
                         static_cast<float>(standing.y + region_grid_y * 256),
                         static_cast<float>(standing.z)};
-                    for (const auto& [entity_id, entity] : scene.entities()) {
-                        static_cast<void>(entity_id);
-                        if (entity.attachment_point == 0 ||
-                            entity.owner_id != live->second.user_id ||
-                            entity.attachment_item_id.empty())
-                            continue;
-                        child.worn.push_back({entity.attachment_item_id, entity.attachment_point});
-                    }
+                    child.worn = worn_set_of(live->second.user_id);
                     if (const auto dressed = avatar_appearances.find(endpoint);
                         dressed != avatar_appearances.end()) {
                         child.texture_entry = dressed->second.texture_entry;
@@ -18428,6 +18596,9 @@ int main(int argc, char* argv[]) {
                 return true;
             };
             std::erase_if(offered_child_agents, session_is_gone);
+            std::erase_if(offered_child_documents, [&](const auto& entry) {
+                return session_is_gone(entry.first);
+            });
             std::erase_if(child_agent_retry_at, [&](const auto& entry) {
                 return session_is_gone(entry.first);
             });

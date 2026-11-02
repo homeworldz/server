@@ -246,7 +246,18 @@ std::optional<std::vector<grid::WornAttachment>> json_worn_array(
         // question mistaken for an answer.
         if (item.empty() || !point || *point < 1.0 || *point > 127.0)
             return std::nullopt;
-        worn.push_back({std::string(item), static_cast<std::uint8_t>(*point)});
+        // Both or neither: an offset without its rotation is half a placement.
+        const auto position = json_number_array<3>(element, "position");
+        const auto rotation = json_number_array<3>(element, "rotation");
+        if (position.has_value() != rotation.has_value()) return std::nullopt;
+        std::optional<grid::WornPlacement> placement;
+        if (position) {
+            for (const auto& values : {*position, *rotation})
+                for (const auto value : values)
+                    if (!std::isfinite(value)) return std::nullopt;
+            placement = grid::WornPlacement{*position, *rotation};
+        }
+        worn.push_back({std::string(item), static_cast<std::uint8_t>(*point), placement});
         rest.remove_prefix(close + 1);
     }
     return worn;
@@ -567,9 +578,13 @@ std::string encode_child_agent_request(const ChildAgent& agent) {
     std::string worn{'['};
     for (std::size_t index = 0; index < agent.worn.size(); ++index) {
         if (index != 0) worn.push_back(',');
-        worn += "{\"itemId\":" + quoted_string(agent.worn[index].item_id) +
-            ",\"attachmentPoint\":" +
-            std::to_string(static_cast<unsigned>(agent.worn[index].attachment_point)) + "}";
+        const auto& entry = agent.worn[index];
+        worn += "{\"itemId\":" + quoted_string(entry.item_id) +
+            ",\"attachmentPoint\":" + std::to_string(static_cast<unsigned>(entry.attachment_point));
+        if (entry.placement)
+            worn += ",\"position\":" + number_array(entry.placement->position) +
+                    ",\"rotation\":" + number_array(entry.placement->rotation);
+        worn += "}";
     }
     worn.push_back(']');
     // All-or-nothing: see has_appearance in the header.

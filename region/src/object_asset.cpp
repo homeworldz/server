@@ -249,7 +249,9 @@ std::string object_json(const scene::Entity& entity, bool child) {
         texture_entry[index * 2] = hex[value >> 4];
         texture_entry[index * 2 + 1] = hex[value & 0x0f];
     }
-    const auto& rotation = child ? entity.local_rotation : entity.rotation;
+    // A worn root's rotation is the one it wears at, relative to its joint.
+    const auto& rotation =
+        child || entity.attachment_point != 0 ? entity.local_rotation : entity.rotation;
     auto result = "{\"format\":\"homeworldz-object-v1\",\"creatorId\":" +
         json_string(entity.creator_id) + ",\"name\":" + json_string(entity.name) +
         ",\"scale\":[" + std::to_string(entity.scale.x) + ',' +
@@ -326,6 +328,9 @@ std::string object_json(const scene::Entity& entity, bool child) {
         entity.camera_at_offset.y != 0.0 || entity.camera_at_offset.z != 0.0)
         result += ",\"cameraEyeOffset\":" + vector_json(entity.camera_eye_offset) +
             ",\"cameraAtOffset\":" + vector_json(entity.camera_at_offset);
+    if (!child && entity.attachment_point != 0)
+        result += ",\"attachmentPoint\":" + std::to_string(entity.attachment_point) +
+            ",\"attachedPosition\":" + vector_json(entity.local_position);
     if (child)
         result += ",\"localPosition\":[" + std::to_string(entity.local_position.x) + ',' +
             std::to_string(entity.local_position.y) + ',' +
@@ -545,6 +550,12 @@ std::optional<ObjectAsset> parse_object_asset(std::span<const std::byte> content
         vector_after(text, R"("cameraEyeOffset":[)").value_or(scene::Vector3{});
     result.camera_at_offset =
         vector_after(text, R"("cameraAtOffset":[)").value_or(scene::Vector3{});
+    // Absent on anything never worn and taken off.
+    if (const auto point = integer_after<unsigned>(text, R"("attachmentPoint":)");
+        point && *point <= 255)
+        result.attachment_point = static_cast<std::uint8_t>(*point);
+    result.attached_position =
+        vector_after(text, R"("attachedPosition":[)").value_or(scene::Vector3{});
     result.local_rotation = result.rotation;
     if (const auto sculpt_id = string_after(text, R"("sculptId":")")) {
         const auto sculpt_type = integer_after<unsigned>(text, R"("sculptType":)");

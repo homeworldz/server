@@ -234,7 +234,9 @@ int main() {
     visitor.home_region_id = std::string(destination);
     visitor.seed = "seed-one";
     visitor.position = {10.0F, 20.0F, 30.0F};
-    visitor.worn = {{"66666666-6666-4666-8666-666666666666", 33},
+    visitor.worn = {{"66666666-6666-4666-8666-666666666666", 33,
+                     homeworldz::grid::WornPlacement{{-0.33013, 0.25947, 0.15929},
+                                                     {0.5, -0.25, 0.125}}},
                     {"77777777-7777-4777-8777-777777777777", 5}};
     if (children.establish(visitor, now).seed != "seed-one") return 1;
     if (children.size(now) != 1) return 1;
@@ -286,6 +288,10 @@ int main() {
         decoded->worn[0].attachment_point != 33 ||
         decoded->worn[1].item_id != visitor.worn[1].item_id ||
         decoded->worn[1].attachment_point != 5) return 1;
+    // Where each sits on its joint rides along, and an entry without one is
+    // still an entry: the grid's own list never has placements.
+    if (decoded->worn[0].placement != visitor.worn[0].placement ||
+        decoded->worn[1].placement) return 1;
     // The seed is the destination's to mint. A request that names one is
     // accepted with the name dropped, not honoured: a source that could choose
     // it could choose a capability path on a region it does not run.

@@ -73,6 +73,11 @@ struct ObjectAsset {
     std::uint8_t click_action{};
     scene::Vector3 camera_eye_offset;
     scene::Vector3 camera_at_offset;
+    // Where a worn object sat when it was taken off: the joint, and the root's
+    // offset from it. Its rotation is the root's `rotation`, which for a worn
+    // object is relative to the joint. Zero is a never-worn object.
+    std::uint8_t attachment_point{};
+    scene::Vector3 attached_position;
 };
 
 struct LinksetAsset {

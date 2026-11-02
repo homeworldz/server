@@ -1,3 +1,4 @@
+#include <cmath>
 #include "homeworldz/object_asset.h"
 #include "homeworldz/viewer_protocol.h"
 
@@ -72,6 +73,23 @@ int main() {
     child.camera_eye_offset = {-1.5, 0.0, 1.0};
     child.camera_at_offset = {1.0, 0.0, 0.25};
     const std::array<const homeworldz::scene::Entity*, 1> children{&child};
+    // Taken off a joint, the root keeps the joint, its offset, and the rotation
+    // it wore at - not its world rotation - so the next wear puts it back.
+    {
+        auto worn = root;
+        worn.attachment_point = 2;
+        worn.local_position = {-0.33013, 0.25947, 0.15929};
+        worn.local_rotation = {0.5, -0.25, 0.125};
+        const auto worn_text = homeworldz::asset::serialize_linkset_asset(worn, children);
+        const auto taken_off = homeworldz::asset::parse_linkset_asset(std::span(
+            reinterpret_cast<const std::byte*>(worn_text.data()), worn_text.size()));
+        if (!taken_off || taken_off->root.attachment_point != 2 ||
+            std::abs(taken_off->root.attached_position.x + 0.33013) > 1e-5 ||
+            std::abs(taken_off->root.attached_position.z - 0.15929) > 1e-5 ||
+            taken_off->root.rotation.x != 0.5 || taken_off->root.rotation.z != 0.125 ||
+            taken_off->children.size() != 1 || taken_off->children[0].attachment_point != 0)
+            return 1;
+    }
     const auto linkset_text = homeworldz::asset::serialize_linkset_asset(root, children);
     const auto linkset = homeworldz::asset::parse_linkset_asset(std::span(
         reinterpret_cast<const std::byte*>(linkset_text.data()), linkset_text.size()));

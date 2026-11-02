@@ -293,9 +293,21 @@ struct SystemFolder {
 // One worn item, as the grid records it: the inventory item and the point. The
 // object asset is resolved through inventory at attach time rather than stored,
 // so a worn item that changed comes back as it is now.
+// Where a worn object sits on its joint right now: its root's offset, and its
+// rotation's imaginary part. Carried region to region with the worn set, so a
+// crossing dresses the avatar as it stands rather than as its items were saved.
+struct WornPlacement {
+    std::array<double, 3> position{};
+    std::array<double, 3> rotation{};
+    bool operator==(const WornPlacement&) const = default;
+};
+
 struct WornAttachment {
     std::string item_id;
     std::uint8_t attachment_point{};
+    // Absent from the grid's own list, which knows only what is worn where.
+    std::optional<WornPlacement> placement;
+    bool operator==(const WornAttachment&) const = default;
 };
 
 struct TaskInventoryTransferRequest {
