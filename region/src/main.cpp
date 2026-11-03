@@ -3904,7 +3904,9 @@ int main(int argc, char* argv[]) {
         try {
             const auto content = std::span(
                 reinterpret_cast<const std::byte*>(content_text.data()), content_text.size());
-            const auto metadata = storage->store_asset(asset_id, root->creator_id, content);
+            // The wearer uploads it, whoever made the object: the grid takes a
+            // re-pointed item's asset only from the item's owner.
+            const auto metadata = storage->store_asset(asset_id, owner_id, content);
             const bool registered = viewer_grid->register_asset(
                 metadata.viewer_id, metadata.creator_id, metadata.sha256, metadata.size,
                 region_public_endpoint, true) &&
