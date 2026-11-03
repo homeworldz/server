@@ -191,8 +191,8 @@ Vehicle crossings follow vehicles, in Phase 6.
 ### Attachments
 
 - [x] Wear inventory objects on named attachment points with permissions, ownership, and persistence.
-- [ ] Wear an attachment at the offset it was last worn at.
-- [ ] Save a worn object's edits and placement to its inventory item when it is taken off.
+- [x] Wear an attachment at the offset it was last worn at.
+- [x] Save a worn object's edits and placement to its inventory item when it is taken off.
 - [ ] Mark every prim of a worn object with its attachment point, as viewers expect.
 - [x] Restore worn attachments on login and on arrival in any region.
 - [ ] Define the order of attachment, seated-avatar, physics, viewer, and script events.
