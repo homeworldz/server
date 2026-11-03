@@ -3860,10 +3860,15 @@ int main(int argc, char* argv[]) {
     // crossing looks to the viewer like the object it already knows. Two
     // regions briefly holding the same id is exactly right: it is one object,
     // mid-hand-off, and only one of them has the wearer.
+    //
+    // Its child prims too, by link order. A fresh child id on every wear gave
+    // the viewer a second copy of each child mid-crossing, both naming the
+    // worn item, and it dropped the root and kept an orphaned child.
     const auto worn_object_id = [](std::string_view user_id, std::string_view item_id,
-                                   std::uint8_t point) {
-        const auto seed = std::string(user_id) + " homeworldz-worn-object " +
-                          std::string(item_id) + " " + std::to_string(point);
+                                   std::uint8_t point, std::size_t child = 0) {
+        auto seed = std::string(user_id) + " homeworldz-worn-object " +
+                    std::string(item_id) + " " + std::to_string(point);
+        if (child != 0) seed += " child " + std::to_string(child);
         const auto bytes = std::as_bytes(std::span{seed.data(), seed.size()});
         auto digest = homeworldz::crypto::sha256_hex(bytes);
         digest.resize(32);
@@ -4813,7 +4818,8 @@ int main(int argc, char* argv[]) {
                         entity_ids.push_back(child_id);
                         auto* child = scene.find(child_id);
                         if (!child) throw std::runtime_error("create attachment child");
-                        child->object_id = homeworldz::viewer::random_uuid();
+                        child->object_id = worn_object_id(user_id, item_id, outcome.point,
+                                                          entity_ids.size() - 1);
                         child->owner_id = user_id;
                         child->creator_id = child_asset.creator_id.empty()
                             ? item->creator_id : child_asset.creator_id;
