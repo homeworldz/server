@@ -1303,6 +1303,12 @@ bool release_child_agent(Transport& destination, std::string_view target) {
     return status == 204 || status == 200;
 }
 
+int update_child_agent_view(Transport& destination, std::string_view session_id,
+                            std::string_view document) {
+    return destination.send("PUT", "/api/v1/child-agents/" + std::string(session_id) + "/view",
+                            std::string(document)).status_code;
+}
+
 bool confirm_avatar_arrival(Transport& source, std::string_view transit_id) {
     const auto status = source.send(
         "POST", "/api/v1/transits/" + std::string(transit_id) + "/arrived", {}).status_code;

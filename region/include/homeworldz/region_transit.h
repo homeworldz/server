@@ -252,6 +252,12 @@ struct ChildAgent {
     // against its own region corner, which put a viewer at the wrong facet
     // (2026-08-21). A single frame both ends already know cannot be misread.
     std::array<float, 3> position{};
+    // Where the viewer is looking from, in the same absolute frame, and how far
+    // it draws. A neighbour shows a child only what lies within draw distance
+    // of the camera. Zero draw distance is "not stated" and shows everything,
+    // which is what every child was shown before views existed.
+    std::array<float, 3> camera{};
+    float draw_distance{};
     // What the avatar is wearing, carried by the source rather than read here.
     // The source already holds it; a destination that fetched it would do one
     // grid read per neighbour per session, and those reads would land on the
@@ -310,6 +316,55 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
 std::string encode_child_agent_acceptance(std::string_view seed);
 std::string parse_child_agent_acceptance(std::string_view document);
 
+// What the home region tells a neighbour as the avatar moves: where it is,
+// where its camera is, and how far it draws, all in absolute grid metres like
+// ChildAgent::position. The neighbour filters what it shows the child by it.
+struct ChildAgentView {
+    std::array<float, 3> position{};
+    std::array<float, 3> camera{};
+    float draw_distance{};
+
+    bool operator==(const ChildAgentView&) const = default;
+};
+std::string encode_child_agent_view(const ChildAgentView& view);
+// Nullopt unless all three are present and finite, and draw distance positive:
+// a view the neighbour cannot read must not replace one it can.
+std::optional<ChildAgentView> parse_child_agent_view(std::string_view document);
+
+// Whether a view has changed enough since `sent` to tell the neighbours again:
+// the camera moved `camera_metres` or more, or the draw distance changed. Rate
+// limited by the caller, so that a camera swept back and forth is not a stream
+// of region-to-region calls.
+bool child_view_changed(const ChildAgentView& sent, const ChildAgentView& current,
+                        double camera_metres = 8.0);
+
+// One thing a neighbour could show a child: an object linkset by its root, or
+// an avatar. `requires_id` is non-zero for a subject that cannot be shown
+// without another — a seated avatar without its seat — and is shown only when
+// that one is.
+struct InterestCandidate {
+    std::uint32_t id{};
+    std::array<double, 3> position{};
+    double radius{};
+    std::uint32_t requires_id{};
+};
+
+// What to introduce and what to remove so that a child holds exactly the
+// candidates within draw distance of its camera. `camera` is in the same frame
+// as the candidates. Draw distance zero or less shows everything.
+//
+// Entering is in candidate order with dependants after what they depend on, so
+// a seat reaches the viewer before its rider. Leaving lists dependants first
+// for the same reason in reverse, and includes known ids that are no longer
+// candidates at all.
+struct InterestChanges {
+    std::vector<std::uint32_t> entering;
+    std::vector<std::uint32_t> leaving;
+};
+InterestChanges child_interest_changes(std::span<const InterestCandidate> candidates,
+                                       const std::unordered_set<std::uint32_t>& known,
+                                       std::array<double, 3> camera, double draw_distance);
+
 // How long a child agent survives without being heard from. Long enough that a
 // quiet neighbour is not dropped, short enough that a session which ended stops
 // being counted within minutes.
@@ -341,6 +396,12 @@ public:
     // nothing else needs to send anything.
     bool renew(std::string_view session_id, std::chrono::steady_clock::time_point now,
                std::chrono::seconds lifetime = default_child_lifetime);
+    // The home region said where the avatar is looking now. Renews as well:
+    // the home only sends a view for a session that is still there. Answers
+    // whether there was a child to update.
+    bool update_view(std::string_view session_id, const ChildAgentView& view,
+                     std::chrono::steady_clock::time_point now,
+                     std::chrono::seconds lifetime = default_child_lifetime);
     const ChildAgent* find(std::string_view session_id,
                            std::chrono::steady_clock::time_point now);
     // The crossing arrived: this session is not a child here any more. Returns

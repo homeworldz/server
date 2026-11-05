@@ -689,5 +689,99 @@ int main() {
         if (decide_child_release(ended, &held, false, false) != ChildReleaseAction::forget)
             return 56;
     }
+
+    // A child's view: what the home region tells a neighbour as the avatar
+    // moves, and what the neighbour shows it from that (ADR 0038).
+    {
+        using homeworldz::region::ChildAgentView;
+        const ChildAgentView view{{1.0F, 2.0F, 3.0F}, {4.5F, -5.0F, 6.0F}, 128.0F};
+        const auto wire = homeworldz::region::encode_child_agent_view(view);
+        if (homeworldz::region::parse_child_agent_view(wire) != view) return 71;
+        // Each part is required, and an unusable draw distance is not a view.
+        if (homeworldz::region::parse_child_agent_view(
+                R"({"position":[1,2,3],"camera":[4,5,6]})")) return 72;
+        if (homeworldz::region::parse_child_agent_view(
+                R"({"position":[1,2,3],"drawDistance":64})")) return 72;
+        if (homeworldz::region::parse_child_agent_view(
+                R"({"position":[1,2,3],"camera":[4,5,6],"drawDistance":0})")) return 72;
+
+        // Told again when the camera moves far enough or the draw distance
+        // changes, and not for small camera moves.
+        auto nudged = view;
+        nudged.camera[0] += 7.0F;
+        if (homeworldz::region::child_view_changed(view, nudged)) return 73;
+        nudged.camera[0] += 1.5F;
+        if (!homeworldz::region::child_view_changed(view, nudged)) return 73;
+        auto farther = view;
+        farther.draw_distance = 256.0F;
+        if (!homeworldz::region::child_view_changed(view, farther)) return 73;
+
+        // The establishment carries a view when it has one and parses it back,
+        // and an offer stating none leaves the one already held.
+        homeworldz::region::ChildAgent watcher = visitor;
+        watcher.session_id = "55555555-5555-4555-8555-555555555555";
+        watcher.camera = {100.0F, 200.0F, 30.0F};
+        watcher.draw_distance = 96.0F;
+        const auto offered = homeworldz::region::parse_child_agent_request(
+            homeworldz::region::encode_child_agent_request(watcher));
+        if (!offered || offered->camera != watcher.camera || offered->draw_distance != 96.0F)
+            return 74;
+        std::string reason;
+        if (homeworldz::region::parse_child_agent_request(
+                R"({"agentId":"a","sessionId":"s","homeRegionId":"h","circuitCode":1,)"
+                R"("position":[1,2,3],"worn":[],"camera":[1,2,3]})", &reason) ||
+            reason != "view_half")
+            return 75;
+        homeworldz::region::ChildAgentRegistry registry;
+        registry.establish(*offered, now);
+        auto silent = *offered;
+        silent.draw_distance = 0.0F;
+        silent.camera = {};
+        if (registry.establish(silent, now).draw_distance != 96.0F) return 76;
+        // A view updates a child that exists, renews it, and finds nothing
+        // for one that does not.
+        const ChildAgentView moved{{10.0F, 10.0F, 10.0F}, {20.0F, 20.0F, 20.0F}, 64.0F};
+        if (!registry.update_view(watcher.session_id, moved, now + 290s)) return 77;
+        const auto* held = registry.find(watcher.session_id, now + 500s);
+        if (!held || held->camera != moved.camera || held->draw_distance != 64.0F) return 77;
+        if (registry.update_view("no-such-session", moved, now)) return 77;
+
+        using homeworldz::region::InterestCandidate;
+        // Camera at the origin, 64 m draw distance. 1 is near, 2 is far, 3 is
+        // far but big enough to reach into range, 4 sits on 1, 5 sits on 2.
+        const std::vector<InterestCandidate> candidates{
+            {1, {10.0, 0.0, 0.0}, 1.0, 0},
+            {2, {100.0, 0.0, 0.0}, 1.0, 0},
+            {3, {70.0, 0.0, 0.0}, 8.0, 0},
+            {4, {10.0, 0.0, 1.0}, 0.5, 1},
+            {5, {100.0, 0.0, 1.0}, 0.5, 2},
+        };
+        const auto first = homeworldz::region::child_interest_changes(
+            candidates, {}, {0.0, 0.0, 0.0}, 64.0);
+        // The rider after its seat; nothing sitting on something out of range.
+        if (first.entering != std::vector<std::uint32_t>{1, 3, 4} || !first.leaving.empty())
+            return 78;
+        // Held already: nothing to say.
+        const std::unordered_set<std::uint32_t> holding{1, 3, 4};
+        const auto steady = homeworldz::region::child_interest_changes(
+            candidates, holding, {0.0, 0.0, 0.0}, 64.0);
+        if (!steady.entering.empty() || !steady.leaving.empty()) return 79;
+        // The camera moves away: the rider leaves before its seat, and 2 and 5
+        // come in in the same order as a first look.
+        const auto turned = homeworldz::region::child_interest_changes(
+            candidates, holding, {140.0, 0.0, 0.0}, 64.0);
+        if (turned.entering != std::vector<std::uint32_t>{2, 5} ||
+            turned.leaving != std::vector<std::uint32_t>{4, 1})
+            return 80;
+        // Something held that is no longer a candidate at all — deleted, or
+        // gone from this region — leaves too.
+        const auto vanished = homeworldz::region::child_interest_changes(
+            candidates, {1, 3, 4, 9}, {0.0, 0.0, 0.0}, 64.0);
+        if (vanished.leaving != std::vector<std::uint32_t>{9}) return 81;
+        // No draw distance stated shows everything, as before views existed.
+        const auto unfiltered = homeworldz::region::child_interest_changes(
+            candidates, {}, {0.0, 0.0, 0.0}, 0.0);
+        if (unfiltered.entering != std::vector<std::uint32_t>{1, 2, 3, 4, 5}) return 82;
+    }
     return 0;
 }

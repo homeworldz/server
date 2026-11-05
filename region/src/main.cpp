@@ -3834,6 +3834,47 @@ int main(int argc, char* argv[]) {
                     deliver(*route, child);
         }
     };
+    // What each child has been shown, by session (ADR 0038): object linksets
+    // by their root, and avatars. A neighbour shows a child only what lies
+    // within draw distance of its camera; the interest sweep introduces and
+    // removes, and every update to a child goes only to one that holds its
+    // subject. An update for something the viewer was never shown is not a
+    // harmless extra: a full ObjectUpdate introduces it.
+    std::unordered_map<std::string, std::unordered_set<std::uint32_t>> child_interest;
+    // What a child is shown or not for an entity: the top of its parent chain,
+    // which is a linkset's root, or for an attachment its wearer's avatar.
+    const auto interest_subject_of = [&](homeworldz::scene::EntityId entity_id) {
+        const auto* top = scene.find(entity_id);
+        if (!top) return static_cast<std::uint32_t>(entity_id);
+        while (top->parent_id != 0) {
+            const auto* parent = scene.find(top->parent_id);
+            if (!parent) break;
+            top = parent;
+        }
+        return static_cast<std::uint32_t>(top->id);
+    };
+    // for_each_child_circuit, for an update about `subject`: only children
+    // that hold it. Removals do not use this — a kill for an id a viewer never
+    // held is ignored by it, so those still go to everyone.
+    const auto for_each_child_circuit_holding = [&](std::uint32_t subject, int facet,
+                                                    std::chrono::steady_clock::time_point when,
+                                                    auto&& deliver) {
+        for_each_child_circuit(facet, when,
+            [&](const std::string& route, const homeworldz::region::ChildAgent& child) {
+                const auto known = child_interest.find(child.session_id);
+                if (known == child_interest.end() || !known->second.contains(subject)) return;
+                deliver(route, child);
+            });
+    };
+    // An avatar that left: no child holds it any more. Without this, one that
+    // left and came back between two sweeps would still be counted as held,
+    // and never introduced again after its departure's kill.
+    const auto forget_for_children = [&](std::uint32_t subject) {
+        for (auto& [session, known] : child_interest) {
+            static_cast<void>(session);
+            known.erase(subject);
+        }
+    };
     // An attachment is an ordinary scene entity parented to its wearer's avatar
     // entity, with a non-zero attachment_point. Taking one off has to reach both
     // viewers and sessions, and it happens from three places: wearing something
@@ -4073,6 +4114,7 @@ int main(int argc, char* argv[]) {
             });
         }
         // Sessions watching from a neighbour (ADR 0038) must see it go too.
+        forget_for_children(static_cast<std::uint32_t>(entity_id));
         for_each_child_circuit(every_facet, kill_now,
             [&](const std::string& route, const auto& child) {
                 if (child.session_id == found->second.session_id) return;
@@ -4243,8 +4285,9 @@ int main(int argc, char* argv[]) {
         // circuit came up stayed frozen where it was: a snapshot, not a view.
         //
         // A child's session has no avatar here by definition, so this cannot
-        // double-send to anyone the loop above already reached.
-        for_each_child_circuit(facet, when,
+        // double-send to anyone the loop above already reached. Only to a
+        // child that holds it: the interest sweep introduces it to the rest.
+        for_each_child_circuit_holding(interest_subject_of(entity.id), facet, when,
             [&](const std::string& route, const homeworldz::region::ChildAgent& child) {
                 const auto object =
                     static_object_from_entity(scene, entity, child.agent_id, falcon);
@@ -5187,7 +5230,8 @@ int main(int argc, char* argv[]) {
                 static_cast<void>(send_udp(viewer_server, recipient_endpoint, *outgoing));
         }
         const auto& standing = found->second.controller.state().position;
-        for_each_child_circuit(facet_of_position(standing.x, standing.y), when,
+        for_each_child_circuit_holding(static_cast<std::uint32_t>(found->second.entity_id),
+            facet_of_position(standing.x, standing.y), when,
             [&](const std::string& route, const auto& child) {
                 if (child.session_id == found->second.session_id) return;
                 if (const auto outgoing = circuits.send(route, payload, false, when, true))
@@ -5224,7 +5268,8 @@ int main(int argc, char* argv[]) {
                     true, when, true))
                 static_cast<void>(send_udp(viewer_server, route, *outgoing));
         }
-        for_each_child_circuit(facet, when, [&](const std::string& route, const auto& child) {
+        for_each_child_circuit_holding(local_id, facet, when,
+            [&](const std::string& route, const auto& child) {
             if (child.session_id == live.session_id) return;
             if (const auto outgoing = circuits.send(route,
                     avatar_update_for(route, local_id, *agent_id, position, {}, state.rotation),
@@ -5687,6 +5732,7 @@ int main(int argc, char* argv[]) {
             // destination announces the same avatar and the watcher draws two.
             // The departing session is spared like every other path spares it:
             // to its own viewer this kill reads as the avatar being deleted.
+            forget_for_children(static_cast<std::uint32_t>(departing->second.entity_id));
             for_each_child_circuit(every_facet, kill_now,
                 [&](const std::string& route, const auto& child) {
                     if (child.session_id == session_id) return;
@@ -6069,6 +6115,33 @@ int main(int argc, char* argv[]) {
         }
         return worn;
     };
+    // Where an avatar is looking from, as a neighbour needs it: absolute grid
+    // metres, like ChildAgent::position. A viewer's camera arrives in the frame
+    // of the facet its circuit is on (ADR 0036). No camera yet, or no draw
+    // distance, is no view: the neighbour then shows everything, rather than
+    // filtering on a camera this region was never told.
+    const auto view_of = [&](const std::string& key, const LiveAvatar& live) {
+        homeworldz::region::ChildAgentView view;
+        const auto& state = live.controller.state();
+        view.position = {static_cast<float>(state.position.x + region_grid_x * 256),
+                         static_cast<float>(state.position.y + region_grid_y * 256),
+                         static_cast<float>(state.position.z)};
+        if (state.draw_distance <= 0.0F || state.camera_center == std::array<float, 3>{})
+            return view;
+        const auto facet = live.transport == AvatarTransport::session ? 0 : endpoint_facet_of(key);
+        view.camera = {
+            static_cast<float>(state.camera_center[0] + facet_origin_x(facet) + region_grid_x * 256),
+            static_cast<float>(state.camera_center[1] + facet_origin_y(facet) + region_grid_y * 256),
+            state.camera_center[2]};
+        view.draw_distance = state.draw_distance;
+        return view;
+    };
+    // The view each neighbour was last told, by the offer key, and when.
+    struct ToldChildView {
+        homeworldz::region::ChildAgentView view;
+        std::chrono::steady_clock::time_point at;
+    };
+    std::unordered_map<std::string, ToldChildView> told_child_views;
     // Tells each neighbour holding this session as a child what it wears now.
     // Synchronous, like the offer itself, and only for a session marked changed.
     const auto refresh_neighbor_worn = [&](const LiveAvatar& live) {
@@ -6161,6 +6234,8 @@ int main(int argc, char* argv[]) {
                       [&](const auto& entry) { return entry.first.starts_with(prefix); });
         std::erase_if(announced_child_seeds,
                       [&](const auto& entry) { return entry.first.starts_with(prefix); });
+        std::erase_if(told_child_views,
+                      [&](const auto& entry) { return entry.first.starts_with(prefix); });
         if (!told.empty())
             std::cout << "{\"level\":\"info\",\"message\":\"child agents released\",\"session\":"
                       << homeworldz::api::json_string(session_id)
@@ -6248,6 +6323,11 @@ int main(int argc, char* argv[]) {
                     static_cast<float>(standing.x + region_grid_x * 256),
                     static_cast<float>(standing.y + region_grid_y * 256),
                     static_cast<float>(standing.z)};
+                // And where it is looking, so the neighbour's first look is
+                // already filtered by draw distance.
+                const auto view = view_of(viewer_endpoint, live);
+                child.camera = view.camera;
+                child.draw_distance = view.draw_distance;
                 // The worn set from this region's own scene rather than the
                 // grid: the attachments are standing here, so their items and
                 // points are already in hand and no read is needed.
@@ -6342,6 +6422,55 @@ int main(int argc, char* argv[]) {
             }
         }
         return false;
+    };
+    // Tells one neighbour where one of this region's avatars is looking now, so
+    // it can show that viewer what is within its draw distance (ADR 0038). One
+    // call per pass, like the offers, and per neighbouring process rather than
+    // per facet: a rectangle's facets share one child registry. Sent when the
+    // camera has moved 8 m or the draw distance changed, at most once a second
+    // per neighbour, so a camera swept around is not a stream of calls.
+    const auto send_one_child_view = [&](std::chrono::steady_clock::time_point when) {
+        if (!child_agents_enabled || service_token.empty()) return;
+        std::unordered_set<std::string> considered;
+        for (const auto& [pair_key, offered] : offered_child_documents) {
+            const auto session = pair_key.substr(0, pair_key.find('|'));
+            const auto told_key = session + '|' + offered.endpoint;
+            if (!considered.insert(told_key).second) continue;
+            const auto live = std::find_if(avatars.begin(), avatars.end(),
+                [&](const auto& entry) { return entry.second.session_id == session; });
+            if (live == avatars.end()) continue;
+            const auto view = view_of(live->first, live->second);
+            if (view.draw_distance <= 0.0F) continue;
+            const auto told = told_child_views.find(told_key);
+            if (told != told_child_views.end() &&
+                (when - told->second.at < std::chrono::seconds(1) ||
+                 !homeworldz::region::child_view_changed(told->second.view, view)))
+                continue;
+            int status = 0;
+            try {
+                if (auto transport =
+                        homeworldz::grid::socket_transport(offered.endpoint, service_token))
+                    status = homeworldz::grid::update_child_agent_view(
+                        *transport, session, homeworldz::region::encode_child_agent_view(view));
+            } catch (const std::exception&) {
+            }
+            // Recorded whatever the answer, so a neighbour that refuses is
+            // asked again only when the view changes, not every pass.
+            told_child_views[told_key] = {view, when};
+            // And the offers to that neighbour carry it too, so a re-sent
+            // offer (a worn set change) does not put the camera back.
+            for (auto& [other_key, other] : offered_child_documents)
+                if (other_key.starts_with(session + '|') && other.endpoint == offered.endpoint) {
+                    other.agent.camera = view.camera;
+                    other.agent.draw_distance = view.draw_distance;
+                }
+            if (status != 204)
+                std::cerr << "{\"level\":\"warning\",\"message\":\"child view not taken\""
+                             ",\"session\":" << homeworldz::api::json_string(session)
+                          << ",\"endpoint\":" << homeworldz::api::json_string(offered.endpoint)
+                          << ",\"status\":" << status << "}" << std::endl;
+            return;
+        }
     };
 
     // Estate owner/manager check: the estate owner and any listed manager (and the
@@ -6782,15 +6911,21 @@ int main(int argc, char* argv[]) {
     // parcel overlay, and the objects and avatars that live in that facet —
     // each in facet-local coordinates. The viewer's own avatar is excluded:
     // its object belongs to the primary circuit alone.
+    //
+    // A visitor from a neighbour (ADR 0038) gets only the terrain and parcels
+    // here: what it is shown of the objects and avatars depends on where its
+    // camera is, which the interest sweep decides.
     const auto backfill_child_circuit = [&](const std::string& child_endpoint,
                                             const homeworldz::viewer::UseCircuitCode& identity,
                                             const std::string& viewer_user_id,
+                                            bool include_world,
                                             std::chrono::steady_clock::time_point when) {
         const auto facet = endpoint_facet_of(child_endpoint);
         const auto session_id = homeworldz::viewer::format_uuid(identity.session_id);
         send_facet_terrain_window(child_endpoint, when);
         send_parcel_overlay(child_endpoint,
             homeworldz::viewer::format_uuid(identity.agent_id), when);
+        if (!include_world) return;
         std::size_t objects_sent = 0;
         for (const auto& [entity_id, entity] : scene.entities()) {
             static_cast<void>(entity_id);
@@ -6900,6 +7035,155 @@ int main(int argc, char* argv[]) {
             if (const auto route = circuits.session_endpoint_for_facet(*session_uuid, facet))
                 cleared += farewell_child_circuit(*route, session_id, when);
         return cleared;
+    };
+    // The interest sweep for visitors (ADR 0038): show each child the object
+    // linksets and avatars within draw distance of its camera, and remove what
+    // has left it. The camera comes from the avatar's home region, which
+    // reports it as it moves (PUT /api/v1/child-agents/{session}/view); a
+    // child that has never reported one is shown everything, as all of them
+    // were before.
+    //
+    // Introductions are whole: a linkset root first and then its children, an
+    // avatar with its appearance, its attachments and its animations. A seated
+    // avatar is shown only with its seat, and after it.
+    auto next_child_interest_sweep = std::chrono::steady_clock::time_point{};
+    const auto sweep_child_interest = [&](std::chrono::steady_clock::time_point when) {
+        const auto children = child_agents.live(when);
+        std::erase_if(child_interest, [&](const auto& entry) {
+            return std::none_of(children.begin(), children.end(),
+                [&](const auto& child) { return child.session_id == entry.first; });
+        });
+        if (children.empty()) return;
+        struct Subject {
+            homeworldz::region::InterestCandidate candidate;
+            int facet{};
+            std::string session_id;  // an avatar's own session; empty for an object
+            std::string avatar_key;
+        };
+        std::vector<Subject> subjects;
+        const auto radii = homeworldz::physics::linkset_bounding_radii(scene);
+        for (const auto& [entity_id, entity] : scene.entities()) {
+            if (entity.parent_id != 0 || entity.attachment_point != 0) continue;
+            if (!session_object_visible(entity)) continue;
+            // Kept from every viewer until its riders are announced.
+            if (held_linkset_broadcasts.contains(entity_id)) continue;
+            subjects.push_back({{static_cast<std::uint32_t>(entity_id),
+                                 {entity.position.x, entity.position.y, entity.position.z},
+                                 radii.at(entity_id), 0},
+                                entity_facet(entity), {}, {}});
+        }
+        for (const auto& [key, live] : avatars) {
+            if (live.session_id.empty()) continue;
+            const auto& standing = live.controller.state().position;
+            std::uint32_t seat_root = 0;
+            if (live.seat && live.seat->prim != 0 && !live.seat->riding)
+                seat_root = static_cast<std::uint32_t>(live.seat->root);
+            subjects.push_back({{static_cast<std::uint32_t>(live.entity_id),
+                                 {standing.x, standing.y, standing.z}, 1.0, seat_root},
+                                facet_of_position(standing.x, standing.y), live.session_id, key});
+        }
+        // Crossing departures whose kill is deliberately held back: they stay
+        // held until that kill goes, or the watcher loses the avatar early.
+        std::unordered_set<std::uint32_t> departing;
+        for (const auto& pending : pending_departure_kills)
+            departing.insert(pending.local_ids.begin(), pending.local_ids.end());
+        // Every entity under a subject, children before grandchildren, so an
+        // avatar's attachments and their linked prims go with it.
+        const auto descendants_of = [&](std::uint32_t top) {
+            std::vector<homeworldz::scene::EntityId> below;
+            for (const auto& [candidate_id, candidate] : scene.entities())
+                if (candidate.parent_id == top) below.push_back(candidate_id);
+            for (std::size_t index = 0; index < below.size(); ++index)
+                for (const auto& [candidate_id, candidate] : scene.entities())
+                    if (candidate.parent_id == below[index]) below.push_back(candidate_id);
+            return below;
+        };
+        const auto deliver = [&](const std::string& route, const auto& payload, bool reliable) {
+            if (payload.empty()) return;
+            if (const auto sent = circuits.send(route, payload, reliable, when, true))
+                static_cast<void>(send_udp(viewer_server, route, *sent));
+        };
+        for (const auto& child : children) {
+            const auto session_uuid = homeworldz::viewer::parse_uuid(child.session_id);
+            if (!session_uuid) continue;
+            std::vector<homeworldz::region::InterestCandidate> candidates;
+            std::unordered_map<std::uint32_t, const Subject*> by_id;
+            for (const auto& subject : subjects) {
+                if (!subject.session_id.empty() && subject.session_id == child.session_id) continue;
+                if (!circuits.session_endpoint_for_facet(*session_uuid, subject.facet)) continue;
+                candidates.push_back(subject.candidate);
+                by_id.emplace(subject.candidate.id, &subject);
+            }
+            auto& known = child_interest[child.session_id];
+            const std::array<double, 3> camera{
+                static_cast<double>(child.camera[0]) - region_grid_x * 256.0,
+                static_cast<double>(child.camera[1]) - region_grid_y * 256.0,
+                static_cast<double>(child.camera[2])};
+            const auto changes = homeworldz::region::child_interest_changes(
+                candidates, known, camera, static_cast<double>(child.draw_distance));
+            std::vector<std::uint32_t> kill_ids;
+            for (const auto id : changes.leaving) {
+                if (departing.contains(id)) continue;
+                known.erase(id);
+                if (!scene.find(id)) continue;
+                for (const auto below : descendants_of(id))
+                    kill_ids.push_back(static_cast<std::uint32_t>(below));
+                kill_ids.push_back(id);
+            }
+            if (!kill_ids.empty()) {
+                const auto kill = homeworldz::viewer::encode_kill_object(kill_ids);
+                for (int facet = 0; facet < facet_count; ++facet)
+                    if (const auto route = circuits.session_endpoint_for_facet(*session_uuid, facet))
+                        deliver(*route, kill, true);
+            }
+            for (const auto id : changes.entering) {
+                const auto* subject = by_id.at(id);
+                const auto route = circuits.session_endpoint_for_facet(*session_uuid, subject->facet);
+                if (!route) continue;
+                const auto send_prim = [&](homeworldz::scene::EntityId prim_id) {
+                    const auto* prim = scene.find(prim_id);
+                    if (!prim) return;
+                    if (const auto object =
+                            static_object_from_entity(scene, *prim, child.agent_id, falcon))
+                        deliver(*route, object_update_for(*route, *object), true);
+                };
+                if (subject->avatar_key.empty()) {
+                    for (const auto prim_id : linkset_of(id)) send_prim(prim_id);
+                    known.insert(id);
+                    continue;
+                }
+                const auto live = avatars.find(subject->avatar_key);
+                if (live == avatars.end()) continue;
+                const auto agent = homeworldz::viewer::parse_uuid(live->second.user_id);
+                if (!agent) continue;
+                const auto viewer_position = live->second.controller.viewer_position();
+                const auto& state = live->second.controller.state();
+                deliver(*route, avatar_update_for(*route, id, *agent,
+                    {static_cast<float>(viewer_position.x), static_cast<float>(viewer_position.y),
+                     static_cast<float>(viewer_position.z)},
+                    {static_cast<float>(state.velocity.x), static_cast<float>(state.velocity.y),
+                     static_cast<float>(state.velocity.z)},
+                    state.rotation), true);
+                // Announced undressed, an avatar rezzes as a cloud.
+                if (const auto dressed = avatar_appearances.find(subject->avatar_key);
+                    dressed != avatar_appearances.end())
+                    deliver(*route, homeworldz::viewer::encode_avatar_appearance({
+                        dressed->second.agent_id, dressed->second.serial,
+                        dressed->second.texture_entry, dressed->second.visual_params,
+                        {}, dressed->second.appearance_version}), true);
+                for (const auto below : descendants_of(id)) send_prim(below);
+                deliver(*route, homeworldz::viewer::encode_avatar_animation(
+                    {*agent, avatar_animations[subject->avatar_key]}), true);
+                known.insert(id);
+            }
+            if (!changes.entering.empty() || !kill_ids.empty())
+                std::cout << "{\"level\":\"info\",\"message\":\"child interest changed\""
+                             ",\"session\":" << homeworldz::api::json_string(child.session_id)
+                          << ",\"entered\":" << changes.entering.size()
+                          << ",\"left\":" << kill_ids.size()
+                          << ",\"holding\":" << known.size()
+                          << ",\"drawDistance\":" << child.draw_distance << "}" << std::endl;
+        }
     };
     // Tell a viewer to drop this region on every facet it holds for a session,
     // and close those circuits. For a session that is only a child here; a
@@ -7407,6 +7691,7 @@ int main(int argc, char* argv[]) {
         // viewer must never be told its avatar was deleted.
         std::erase_if(pending_departure_kills, [&](const PendingDepartureKill& pending) {
             if (pending.due > http_now) return false;
+            for (const auto id : pending.local_ids) forget_for_children(id);
             const auto kill = homeworldz::viewer::encode_kill_object(pending.local_ids);
             std::size_t kill_recipients = 0;
             for (const auto& [recipient_endpoint, recipient] : avatars) {
@@ -7683,7 +7968,8 @@ int main(int argc, char* argv[]) {
                         // so the wearer-only exclusion above cannot apply.
                         if (const auto wearer = avatars.find(key); wearer != avatars.end()) {
                             const auto& standing = wearer->second.controller.state().position;
-                            for_each_child_circuit(
+                            for_each_child_circuit_holding(
+                                static_cast<std::uint32_t>(wearer->second.entity_id),
                                 facet_of_position(standing.x, standing.y), sent_at,
                                 [&](const std::string& route, const auto& child) {
                                     if (child.session_id == wearer->second.session_id) return;
@@ -8388,7 +8674,46 @@ int main(int argc, char* argv[]) {
                     // heard from again, but neither is one that is merely
                     // quiet, and only its home region can tell the two apart.
                     constexpr std::string_view child_release_prefix = "/api/v1/child-agents/";
-                    if (response.path.starts_with(child_release_prefix)) {
+                    // Where a child's avatar is looking now, from its home
+                    // region (ADR 0038). The interest sweep filters on it.
+                    constexpr std::string_view child_view_suffix = "/view";
+                    if (response.path.starts_with(child_release_prefix) &&
+                        response.path.ends_with(child_view_suffix)) {
+                        const auto authorization =
+                            homeworldz::http::request_header_value(request, "Authorization");
+                        const auto session_id = response.path.substr(child_release_prefix.size(),
+                            response.path.size() - child_release_prefix.size() -
+                                child_view_suffix.size());
+                        const auto view = homeworldz::region::parse_child_agent_view(
+                            http_request_body(request));
+                        if (response.method != "PUT") {
+                            response = homeworldz::http::response_for_content(
+                                request, 405, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "method_not_allowed", "a child agent view requires PUT"}));
+                        } else if (service_token.empty() ||
+                                   authorization != "Bearer " + service_token) {
+                            response = homeworldz::http::response_for_content(
+                                request, 401, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "unauthorized", "a valid grid service token is required"}));
+                        } else if (session_id.empty() || !view) {
+                            response = homeworldz::http::response_for_content(
+                                request, 400, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "invalid_request",
+                                    "a session id and a position, camera and draw distance are required"}));
+                        } else if (!child_agents.update_view(
+                                       session_id, *view, std::chrono::steady_clock::now())) {
+                            response = homeworldz::http::response_for_content(
+                                request, 404, "application/json",
+                                homeworldz::api::to_json(homeworldz::api::Error{
+                                    "not_found", "no child agent is held for that session"}));
+                        } else {
+                            response = homeworldz::http::response_for_content(
+                                request, 204, "application/json", {});
+                        }
+                    } else if (response.path.starts_with(child_release_prefix)) {
                         const auto authorization =
                             homeworldz::http::request_header_value(request, "Authorization");
                         const auto release = homeworldz::region::parse_child_release_target(
@@ -10467,7 +10792,8 @@ int main(int argc, char* argv[]) {
                                 }
                             if (!child_user.empty()) {
                                 child_backfilled.insert(endpoint);
-                                backfill_child_circuit(endpoint, *identity, child_user, now);
+                                backfill_child_circuit(endpoint, *identity, child_user, !visiting, now);
+                                if (visiting) next_child_interest_sweep = now;
                                 if (visiting)
                                     std::cout << "{\"level\":\"info\",\"message\":\"visiting child "
                                                  "circuit backfilled\",\"facet\":"
@@ -13230,7 +13556,8 @@ int main(int argc, char* argv[]) {
                                 if (const auto wearer = avatars.find(endpoint);
                                     wearer != avatars.end()) {
                                     const auto& standing = wearer->second.controller.state().position;
-                                    for_each_child_circuit(
+                                    for_each_child_circuit_holding(
+                                        static_cast<std::uint32_t>(wearer->second.entity_id),
                                         facet_of_position(standing.x, standing.y), now,
                                         [&](const std::string& route, const auto& child) {
                                             if (child.session_id == wearer->second.session_id) return;
@@ -13288,7 +13615,8 @@ int main(int argc, char* argv[]) {
                             if (const auto emitting = avatars.find(endpoint);
                                 emitting != avatars.end()) {
                                 const auto& standing = emitting->second.controller.state().position;
-                                for_each_child_circuit(
+                                for_each_child_circuit_holding(
+                                    static_cast<std::uint32_t>(emitting->second.entity_id),
                                     facet_of_position(standing.x, standing.y), now,
                                     [&](const std::string& route, const auto& child) {
                                         if (child.session_id == emitting->second.session_id) return;
@@ -14118,7 +14446,8 @@ int main(int argc, char* argv[]) {
                             // arriving session itself is still a child here
                             // (promote runs below) and its own avatar belongs
                             // to its primary alone.
-                            for_each_child_circuit(arrival_facet, now,
+                            for_each_child_circuit_holding(
+                                static_cast<std::uint32_t>(live_avatar.entity_id), arrival_facet, now,
                                 [&](const std::string& route, const auto& child) {
                                     if (child.session_id == session_id) return;
                                     const auto update = avatar_update_for(
@@ -14147,6 +14476,15 @@ int main(int argc, char* argv[]) {
                             // viewer still holds a world it may not.
                             const auto promoted = child_agents.promote(
                                 session_id, std::chrono::steady_clock::now());
+                            // Rooted here now: what it is shown is a primary's.
+                            // What it held as a child is kept for the world
+                            // below, which sends only what it was not shown.
+                            std::unordered_set<std::uint32_t> held_as_child;
+                            if (const auto held = child_interest.find(session_id);
+                                held != child_interest.end()) {
+                                held_as_child = std::move(held->second);
+                                child_interest.erase(held);
+                            }
                             // Tell the region they came from, now, before any of
                             // the work below. Halcyon's own note on this sequence
                             // says the sending side "does an awful lot before
@@ -14213,7 +14551,8 @@ int main(int argc, char* argv[]) {
                             // arrival's animations too, or it glides. The
                             // arriving session is still a child here and is
                             // skipped as everywhere.
-                            for_each_child_circuit(arrival_facet, now,
+                            for_each_child_circuit_holding(
+                                static_cast<std::uint32_t>(live_avatar.entity_id), arrival_facet, now,
                                 [&](const std::string& route, const auto& child) {
                                     if (child.session_id == session_id) return;
                                     if (const auto outgoing = circuits.send(
@@ -14334,7 +14673,8 @@ int main(int argc, char* argv[]) {
                                         // neighbour (ADR 0038); the arriving
                                         // session is still a child here and is
                                         // spared like the wearer above.
-                                        for_each_child_circuit(arrival_facet, now,
+                                        for_each_child_circuit_holding(
+                                static_cast<std::uint32_t>(live_avatar.entity_id), arrival_facet, now,
                                             [&](const std::string& route, const auto& child) {
                                                 if (child.session_id == session_id) return;
                                                 if (const auto outgoing = circuits.send(
@@ -14369,10 +14709,43 @@ int main(int argc, char* argv[]) {
                             if (arrival_seed_served && !world_already_sent)
                                 deliver_arrival_world(
                                     endpoint, arrival_facet, live_avatar.user_id, now);
+                            // A child is shown only what its camera reached,
+                            // so the rest of this facet goes now. Avatars are
+                            // announced to an arrival above whether held or
+                            // not; this covers objects, and the attachments of
+                            // avatars it was not shown.
+                            // On a rectangle the sibling facets' child
+                            // circuits were filtered the same way, and are
+                            // ordinary facet children from now on.
+                            std::size_t unheld_objects = 0;
+                            if (promoted)
+                                for (const auto& [entity_id, entity] : scene.entities()) {
+                                    if (entity.object_id.empty()) continue;
+                                    const auto facet = entity_facet(entity);
+                                    if (facet == arrival_facet && !world_already_sent) continue;
+                                    const auto route = facet == arrival_facet ? endpoint :
+                                        circuits.session_endpoint_for_facet(identity->session_id, facet)
+                                            .value_or(std::string{});
+                                    if (route.empty()) continue;
+                                    const auto subject = interest_subject_of(entity_id);
+                                    if (held_as_child.contains(subject) ||
+                                        subject == static_cast<std::uint32_t>(live_avatar.entity_id))
+                                        continue;
+                                    const auto object = static_object_from_entity(
+                                        scene, entity, live_avatar.user_id, falcon);
+                                    if (!object) continue;
+                                    if (const auto sent = circuits.send(route,
+                                            object_update_for(route, *object), true, now, true)) {
+                                        static_cast<void>(send_udp(viewer_server, route, *sent));
+                                        ++unheld_objects;
+                                    }
+                                }
                             if (world_already_sent)
                                 std::cout << "{\"level\":\"info\",\"message\":\"arrival promoted a child, "
                                              "world already present\",\"facet\":" << arrival_facet
-                                          << ",\"worn\":" << promoted->worn.size() << "}" << std::endl;
+                                          << ",\"worn\":" << promoted->worn.size()
+                                          << ",\"held\":" << held_as_child.size()
+                                          << ",\"unheldObjects\":" << unheld_objects << "}" << std::endl;
                             // The arrival greeting, privately, once the world
                             // has been backfilled. The name comes from the
                             // account the grid knows, in its legacy two-part
@@ -15308,7 +15681,8 @@ int main(int argc, char* argv[]) {
                                             static_cast<void>(send_udp(
                                                 viewer_server, route, *sent));
                                     }
-                                    for_each_child_circuit(duplicate_facet, now,
+                                    for_each_child_circuit_holding(
+                                        interest_subject_of(entity->id), duplicate_facet, now,
                                         [&](const std::string& route, const auto& child) {
                                             const auto object = static_object_from_entity(
                                                 scene, *entity, child.agent_id, falcon);
@@ -15808,7 +16182,8 @@ int main(int argc, char* argv[]) {
                                     // A watcher next door (ADR 0038) never owns
                                     // the new prim, so the selection flag above
                                     // cannot apply to it.
-                                    for_each_child_circuit(added_facet, now,
+                                    for_each_child_circuit_holding(
+                                        interest_subject_of(entity->id), added_facet, now,
                                         [&](const std::string& route, const auto& child) {
                                             const auto object = static_object_from_entity(
                                                 scene, *entity, child.agent_id, falcon);
@@ -16781,7 +17156,8 @@ int main(int argc, char* argv[]) {
                         }
                         // And to sessions watching from a neighbour (ADR
                         // 0038), who backfilled before this avatar existed.
-                        for_each_child_circuit(spawned_facet, now,
+                        for_each_child_circuit_holding(
+                            static_cast<std::uint32_t>(entity), spawned_facet, now,
                             [&](const std::string& route, const auto& child) {
                                 if (child.session_id == inbound.session_id) return;
                                 const auto announce = avatar_update_for(
@@ -17763,7 +18139,8 @@ int main(int argc, char* argv[]) {
                     // too, or the avatar slides instead of walking. Routed on
                     // the facet the avatar stands on — the one circuit that
                     // knows its object.
-                    for_each_child_circuit(
+                    for_each_child_circuit_holding(
+                        static_cast<std::uint32_t>(avatar.entity_id),
                         facet_of_position(avatar.controller.state().position.x,
                                           avatar.controller.state().position.y),
                         now,
@@ -17831,7 +18208,8 @@ int main(int argc, char* argv[]) {
                     // where the backfill put it — the avatar form of af33d53.
                     // The mover's own session is skipped by the same rule as
                     // everywhere: its avatar belongs to its primary alone.
-                    for_each_child_circuit(standing_facet, now,
+                    for_each_child_circuit_holding(
+                        static_cast<std::uint32_t>(avatar.entity_id), standing_facet, now,
                         [&](const std::string& route, const auto& child) {
                             if (child.session_id == avatar.session_id) return;
                             const auto update = avatar_update_for(
@@ -17907,6 +18285,10 @@ int main(int argc, char* argv[]) {
                         static_cast<float>(standing.x + region_grid_x * 256),
                         static_cast<float>(standing.y + region_grid_y * 256),
                         static_cast<float>(standing.z)};
+                    // Its camera as it left, until its new home reports one.
+                    const auto view = view_of(endpoint, live->second);
+                    child.camera = view.camera;
+                    child.draw_distance = view.draw_distance;
                     child.worn = worn_set_of(live->second.user_id);
                     if (const auto dressed = avatar_appearances.find(endpoint);
                         dressed != avatar_appearances.end()) {
@@ -17961,6 +18343,20 @@ int main(int argc, char* argv[]) {
             clear_viewer_endpoint(endpoint, session_id, demoted.has_value());
             if (demoted) {
                 const auto& child = child_agents.establish(*demoted, now);
+                // As the primary it was shown everything here, so as a child
+                // it holds everything; the interest sweep removes what its
+                // camera no longer reaches.
+                auto& held = child_interest[session_id];
+                held.clear();
+                for (const auto& [entity_id, entity] : scene.entities())
+                    if (entity.parent_id == 0 && entity.attachment_point == 0 &&
+                        session_object_visible(entity))
+                        held.insert(static_cast<std::uint32_t>(entity_id));
+                for (const auto& [other_key, other] : avatars) {
+                    static_cast<void>(other_key);
+                    if (other.session_id != session_id)
+                        held.insert(static_cast<std::uint32_t>(other.entity_id));
+                }
                 std::cout << "{\"level\":\"info\",\"message\":\"departed avatar demoted to child\""
                              ",\"sessionId\":" << homeworldz::api::json_string(session_id)
                           << ",\"worn\":" << child.worn.size()
@@ -18135,13 +18531,14 @@ int main(int argc, char* argv[]) {
                                 entity_id, SentDynamicTransform{state, now});
                     }
                 }
-                // Sessions watching from a neighbour (ADR 0038): no interest
-                // filter — the child's recorded position goes stale the moment
-                // its avatar moves at home, and filtering on it would freeze
-                // exactly the border cases the circuit exists for. The cache
-                // still throttles unchanged transforms, keyed by the child's
-                // facet route the way viewers key by their primary.
-                for_each_child_circuit(entity_facet(*entity), now,
+                // Sessions watching from a neighbour (ADR 0038): those that
+                // hold the object. Their interest follows the camera the home
+                // region reports, and the interest sweep owns entering and
+                // leaving. The cache still throttles unchanged transforms,
+                // keyed by the child's facet route the way viewers key by
+                // their primary.
+                for_each_child_circuit_holding(
+                    interest_subject_of(entity_id), entity_facet(*entity), now,
                     [&](const std::string& route, const auto& child) {
                         auto& child_cache = sent_dynamic_transforms[route];
                         const auto previous = child_cache.find(entity_id);
@@ -18264,7 +18661,8 @@ int main(int argc, char* argv[]) {
                 // Sessions watching from a neighbour (ADR 0038) partition the
                 // same way: kill on their old-facet circuit, fresh updates on
                 // the new one below, or the entity draws twice.
-                for_each_child_circuit(from_facet, now,
+                for_each_child_circuit_holding(
+                    static_cast<std::uint32_t>(root_id), from_facet, now,
                     [&](const std::string& route, const auto& child) {
                         if (!crossing_session.empty() && child.session_id == crossing_session)
                             return;
@@ -18336,7 +18734,8 @@ int main(int argc, char* argv[]) {
                 // (ADR 0038), mirroring the recipient loop above: the avatar
                 // form re-announces and re-dresses the mover with its
                 // attachments as objects; anything else is objects throughout.
-                for_each_child_circuit(facet, now,
+                for_each_child_circuit_holding(
+                    static_cast<std::uint32_t>(root_id), facet, now,
                     [&](const std::string& new_route, const auto& child) {
                         if (!crossing_session.empty() && child.session_id == crossing_session)
                             return;
@@ -18621,6 +19020,11 @@ int main(int argc, char* argv[]) {
         if (now >= next_child_agent_offer) {
             next_child_agent_offer = now + std::chrono::milliseconds(250);
             static_cast<void>(offer_one_child_agent());
+            send_one_child_view(now);
+        }
+        if (now >= next_child_interest_sweep) {
+            next_child_interest_sweep = now + std::chrono::milliseconds(250);
+            sweep_child_interest(now);
         }
         // One attachment per tick for an avatar that has just arrived. The
         // arrival itself already completed; this is the wardrobe catching up.
@@ -18651,6 +19055,9 @@ int main(int argc, char* argv[]) {
                 return session_is_gone(entry.first);
             });
             std::erase_if(announced_child_seeds, [&](const auto& entry) {
+                return session_is_gone(entry.first);
+            });
+            std::erase_if(told_child_views, [&](const auto& entry) {
                 return session_is_gone(entry.first);
             });
             // A child that is no longer held is a viewer this region has

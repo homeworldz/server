@@ -587,6 +587,16 @@ std::string encode_child_agent_request(const ChildAgent& agent) {
         worn += "}";
     }
     worn.push_back(']');
+    // Only a stated view is sent; zero draw distance means none was.
+    std::string view;
+    if (agent.draw_distance > 0.0F) {
+        const std::array<double, 3> camera{
+            static_cast<double>(agent.camera[0]),
+            static_cast<double>(agent.camera[1]),
+            static_cast<double>(agent.camera[2])};
+        view = ",\"camera\":" + number_array(camera) +
+            ",\"drawDistance\":" + std::to_string(agent.draw_distance);
+    }
     // All-or-nothing: see has_appearance in the header.
     std::string appearance;
     if (agent.has_appearance()) {
@@ -606,7 +616,7 @@ std::string encode_child_agent_request(const ChildAgent& agent) {
         ",\"homeRegionId\":" + quoted_string(agent.home_region_id) +
         ",\"facetGridX\":" + std::to_string(agent.facet_grid_x) +
         ",\"facetGridY\":" + std::to_string(agent.facet_grid_y) +
-        ",\"position\":" + number_array(position) +
+        ",\"position\":" + number_array(position) + view +
         ",\"worn\":" + worn + appearance + "}";
 }
 
@@ -686,6 +696,20 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
         static_cast<float>((*position)[0]),
         static_cast<float>((*position)[1]),
         static_cast<float>((*position)[2])};
+    // The view is optional, as a source that predates it sends none, but a
+    // camera without a draw distance (or the reverse) is not a smaller view.
+    const auto camera = json_number_array<3>(document, "camera");
+    const auto draw_distance = json_number_field(document, "drawDistance");
+    if (camera.has_value() != draw_distance.has_value()) return refuse("view_half");
+    if (camera) {
+        for (const auto value : *camera)
+            if (!std::isfinite(value)) return refuse("camera_not_finite");
+        if (!std::isfinite(*draw_distance) || *draw_distance <= 0.0)
+            return refuse("draw_distance");
+        agent.camera = {static_cast<float>((*camera)[0]), static_cast<float>((*camera)[1]),
+                        static_cast<float>((*camera)[2])};
+        agent.draw_distance = static_cast<float>(*draw_distance);
+    }
     // Whatever the request said about a seed is not carried: see the header.
     agent.seed.clear();
     return agent;
@@ -697,6 +721,103 @@ std::string encode_child_agent_acceptance(std::string_view seed) {
 
 std::string parse_child_agent_acceptance(std::string_view document) {
     return std::string{json_string_field(document, "seed")};
+}
+
+std::string encode_child_agent_view(const ChildAgentView& view) {
+    const auto widen = [](const std::array<float, 3>& values) {
+        return std::array<double, 3>{static_cast<double>(values[0]),
+                                     static_cast<double>(values[1]),
+                                     static_cast<double>(values[2])};
+    };
+    return std::string{"{\"position\":"} + number_array(widen(view.position)) +
+        ",\"camera\":" + number_array(widen(view.camera)) +
+        ",\"drawDistance\":" + std::to_string(view.draw_distance) + "}";
+}
+
+std::optional<ChildAgentView> parse_child_agent_view(std::string_view document) {
+    const auto position = json_number_array<3>(document, "position");
+    const auto camera = json_number_array<3>(document, "camera");
+    const auto draw_distance = json_number_field(document, "drawDistance");
+    if (!position || !camera || !draw_distance) return std::nullopt;
+    for (const auto value : *position)
+        if (!std::isfinite(value)) return std::nullopt;
+    for (const auto value : *camera)
+        if (!std::isfinite(value)) return std::nullopt;
+    if (!std::isfinite(*draw_distance) || *draw_distance <= 0.0) return std::nullopt;
+    ChildAgentView view;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        view.position[axis] = static_cast<float>((*position)[axis]);
+        view.camera[axis] = static_cast<float>((*camera)[axis]);
+    }
+    view.draw_distance = static_cast<float>(*draw_distance);
+    return view;
+}
+
+bool child_view_changed(const ChildAgentView& sent, const ChildAgentView& current,
+                        double camera_metres) {
+    if (sent.draw_distance != current.draw_distance) return true;
+    double squared = 0.0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const auto delta = static_cast<double>(current.camera[axis]) -
+            static_cast<double>(sent.camera[axis]);
+        squared += delta * delta;
+    }
+    return squared >= camera_metres * camera_metres;
+}
+
+InterestChanges child_interest_changes(std::span<const InterestCandidate> candidates,
+                                       const std::unordered_set<std::uint32_t>& known,
+                                       std::array<double, 3> camera, double draw_distance) {
+    const auto in_range = [&](const InterestCandidate& candidate) {
+        if (draw_distance <= 0.0) return true;
+        double squared = 0.0;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const auto delta = candidate.position[axis] - camera[axis];
+            squared += delta * delta;
+        }
+        const auto reach = draw_distance + (std::max)(0.0, candidate.radius);
+        return squared <= reach * reach;
+    };
+    // Independent subjects first, so that a dependant can ask whether what it
+    // requires is shown.
+    std::unordered_set<std::uint32_t> shown;
+    for (const auto& candidate : candidates)
+        if (candidate.requires_id == 0 && in_range(candidate)) shown.insert(candidate.id);
+    std::vector<std::uint32_t> dependants_shown;
+    for (const auto& candidate : candidates)
+        if (candidate.requires_id != 0 && shown.contains(candidate.requires_id) &&
+            in_range(candidate))
+            dependants_shown.push_back(candidate.id);
+    shown.insert(dependants_shown.begin(), dependants_shown.end());
+
+    InterestChanges changes;
+    for (const auto& candidate : candidates)
+        if (candidate.requires_id == 0 && shown.contains(candidate.id) &&
+            !known.contains(candidate.id))
+            changes.entering.push_back(candidate.id);
+    for (const auto& candidate : candidates)
+        if (candidate.requires_id != 0 && shown.contains(candidate.id) &&
+            !known.contains(candidate.id))
+            changes.entering.push_back(candidate.id);
+    // Leaving: dependants, then everything else, then what is not a candidate
+    // any more. The last is sorted only so that the result does not depend on
+    // the hash order of `known`.
+    std::unordered_set<std::uint32_t> candidate_ids;
+    for (const auto& candidate : candidates) candidate_ids.insert(candidate.id);
+    for (const auto& candidate : candidates)
+        if (candidate.requires_id != 0 && known.contains(candidate.id) &&
+            !shown.contains(candidate.id))
+            changes.leaving.push_back(candidate.id);
+    for (const auto& candidate : candidates)
+        if (candidate.requires_id == 0 && known.contains(candidate.id) &&
+            !shown.contains(candidate.id))
+            changes.leaving.push_back(candidate.id);
+    std::vector<std::uint32_t> gone;
+    for (const auto id : known)
+        if (!candidate_ids.contains(id)) gone.push_back(id);
+    std::sort(gone.begin(), gone.end());
+    changes.leaving.insert(changes.leaving.end(), gone.begin(), gone.end());
+    return changes;
 }
 
 const ChildAgent& ChildAgentRegistry::establish(
@@ -713,6 +834,14 @@ const ChildAgent& ChildAgentRegistry::establish(
         // facet of this region that borders where it stands, and each of those
         // is a separate sim to the viewer. Keeping a single seed per record
         // answered the second facet with the first facet's URL.
+        //
+        // An offer that states no view leaves the one already held: views
+        // arrive on their own call, and a re-sent offer saying nothing about
+        // the camera has not said it moved.
+        if (agent.draw_distance <= 0.0F) {
+            agent.camera = existing->second.agent.camera;
+            agent.draw_distance = existing->second.agent.draw_distance;
+        }
         existing->second.agent = std::move(agent);
         existing->second.agent.seed =
             existing->second.seeds.try_emplace(facet, offered_seed).first->second;
@@ -733,6 +862,20 @@ bool ChildAgentRegistry::renew(std::string_view session_id,
     purge(now);
     const auto found = entries_.find(std::string(session_id));
     if (found == entries_.end()) return false;
+    found->second.expires_at = now + lifetime;
+    return true;
+}
+
+bool ChildAgentRegistry::update_view(std::string_view session_id, const ChildAgentView& view,
+                                     std::chrono::steady_clock::time_point now,
+                                     std::chrono::seconds lifetime) {
+    if (session_id.empty()) return false;
+    purge(now);
+    const auto found = entries_.find(std::string(session_id));
+    if (found == entries_.end()) return false;
+    found->second.agent.position = view.position;
+    found->second.agent.camera = view.camera;
+    found->second.agent.draw_distance = view.draw_distance;
     found->second.expires_at = now + lifetime;
     return true;
 }

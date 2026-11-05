@@ -558,6 +558,13 @@ std::string establish_child_agent(Transport& destination, std::string_view docum
 // session moved on rather than ended.
 bool release_child_agent(Transport& destination, std::string_view target);
 
+// Tell a neighbour where a session it holds as a child is looking now
+// (region::encode_child_agent_view), so it can show that viewer what is within
+// its draw distance. Returns the HTTP status, 0 when nothing answered: 204 is
+// taken, 404 means the neighbour holds no child for the session.
+int update_child_agent_view(Transport& destination, std::string_view session_id,
+                            std::string_view document);
+
 // Tell the region an avatar just left that the avatar is here now, so it can
 // stop being their home without waiting to be told by the grid.
 //

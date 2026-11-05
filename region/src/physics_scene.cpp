@@ -157,23 +157,45 @@ double linkset_mass(const scene::Scene& scene, const scene::Entity& root) {
     return std::max(0.001, result);
 }
 
+namespace {
+
+double part_radius(const scene::Entity& entity) {
+    return 0.5 * std::sqrt(entity.scale.x * entity.scale.x +
+                           entity.scale.y * entity.scale.y +
+                           entity.scale.z * entity.scale.z);
+}
+
+double child_reach(const scene::Entity& child) {
+    const auto offset = std::sqrt(
+        child.local_position.x * child.local_position.x +
+        child.local_position.y * child.local_position.y +
+        child.local_position.z * child.local_position.z);
+    return offset + part_radius(child);
+}
+
+}  // namespace
+
 double linkset_bounding_radius(const scene::Scene& scene, const scene::Entity& root) {
-    const auto part_radius = [](const scene::Entity& entity) {
-        return 0.5 * std::sqrt(entity.scale.x * entity.scale.x +
-                               entity.scale.y * entity.scale.y +
-                               entity.scale.z * entity.scale.z);
-    };
     double result = part_radius(root);
     for (const auto& [entity_id, child] : scene.entities()) {
         static_cast<void>(entity_id);
         if (child.parent_id != root.id) continue;
-        const auto offset = std::sqrt(
-            child.local_position.x * child.local_position.x +
-            child.local_position.y * child.local_position.y +
-            child.local_position.z * child.local_position.z);
-        result = std::max(result, offset + part_radius(child));
+        result = std::max(result, child_reach(child));
     }
     return result;
+}
+
+std::unordered_map<scene::EntityId, double> linkset_bounding_radii(const scene::Scene& scene) {
+    std::unordered_map<scene::EntityId, double> radii;
+    for (const auto& [entity_id, entity] : scene.entities())
+        if (entity.parent_id == 0) radii.emplace(entity_id, part_radius(entity));
+    for (const auto& [entity_id, child] : scene.entities()) {
+        static_cast<void>(entity_id);
+        if (child.parent_id == 0) continue;
+        if (const auto root = radii.find(child.parent_id); root != radii.end())
+            root->second = std::max(root->second, child_reach(child));
+    }
+    return radii;
 }
 
 scene::Vector3 rotate_vector(scene::Vector3 value, const std::array<double, 4>& rotation) {

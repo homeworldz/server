@@ -234,5 +234,18 @@ int main() {
         !close(physics::linkset_bounding_radius(
             linked_scene, *linked_scene.find(root_id)), 2.8660254037844386))
         return 16;
+    // The one-pass form agrees with the per-root one, for every root.
+    const auto radii = physics::linkset_bounding_radii(linked_scene);
+    for (const auto& [entity_id, entity] : linked_scene.entities()) {
+        if (entity.parent_id != 0) {
+            if (radii.contains(entity_id)) return 17;
+            continue;
+        }
+        const auto found = radii.find(entity_id);
+        if (found == radii.end() ||
+            !close(found->second, physics::linkset_bounding_radius(linked_scene, entity)))
+            return 17;
+    }
+    if (!close(radii.at(root_id), 2.8660254037844386)) return 17;
     return 0;
 }

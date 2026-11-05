@@ -34,6 +34,10 @@ double pyramid_mass(scene::Vector3 scale, double density);
 double entity_mass(const scene::Entity& entity);
 double linkset_mass(const scene::Scene& scene, const scene::Entity& root);
 double linkset_bounding_radius(const scene::Scene& scene, const scene::Entity& root);
+// linkset_bounding_radius for every root at once, in one pass over the scene
+// rather than one per root. Keyed by root id; a root with no children has its
+// own radius.
+std::unordered_map<scene::EntityId, double> linkset_bounding_radii(const scene::Scene& scene);
 scene::Vector3 rotate_vector(scene::Vector3 value, const std::array<double, 4>& rotation);
 scene::Vector3 rotated_box_half_extents(
     scene::Vector3 scale, const std::array<double, 4>& rotation);
