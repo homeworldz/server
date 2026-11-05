@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="98" aria-label="Phase 2 progress: 98%">98%</progress> | 98% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="99" aria-label="Phase 2 progress: 99%">99%</progress> | 99% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -120,7 +120,7 @@ client.
 ### Teleports and avatar crossings
 
 - [x] Keep appearance, inventory, and Current Outfit stable through a teleport between regions.
-- [ ] Keep avatar appearance stable while sitting and crossing region borders.
+- [x] Keep avatar appearance stable while sitting and crossing region borders.
 - [x] Build an idempotent two-region handoff transaction.
 - [x] Teleport between regions with arrival placement, source retirement, and last-location login.
 - [x] Teleport within a region without a grid transit.
