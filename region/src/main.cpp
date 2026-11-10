@@ -859,6 +859,93 @@ private:
     bool stopping_{};
 };
 
+// Sends child-agent views (ADR 0038) from a thread that is not the region's.
+//
+// A view is told to a neighbour and its answer is only ever logged, so nothing
+// on the main thread needs to wait for it. Waiting was not merely slow: on
+// 2026-11-10 Nova sent Lazy 2 a view in the same instant Lazy 2 sent Nova a
+// child-agent offer, each main thread sat inside its own call unable to answer
+// the other's, and both regions stopped for the 20 s client deadline while an
+// avatar was crossing between them.
+//
+// One pending view per session and neighbour: a newer one replaces one not yet
+// sent, so a neighbour that is down costs one deadline at a time, not a queue.
+class ChildViewSender {
+public:
+    explicit ChildViewSender(std::string service_token)
+        : service_token_(std::move(service_token)), worker_([this] { serve(); }) {}
+
+    ~ChildViewSender() { stop(); }
+
+    ChildViewSender(const ChildViewSender&) = delete;
+    ChildViewSender& operator=(const ChildViewSender&) = delete;
+
+    void send(std::string endpoint, std::string session, std::string body) {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            pending_[session + '|' + endpoint] = Job{std::move(endpoint), std::move(session),
+                                                     std::move(body)};
+        }
+        ready_.notify_one();
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (stopping_) return;
+            stopping_ = true;
+            pending_.clear();
+        }
+        ready_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+
+private:
+    struct Job {
+        std::string endpoint;
+        std::string session;
+        std::string body;
+    };
+
+    void serve() {
+        for (;;) {
+            Job job;
+            {
+                std::unique_lock<std::mutex> guard(mutex_);
+                ready_.wait(guard, [this] { return stopping_ || !pending_.empty(); });
+                if (stopping_) return;
+                auto next = pending_.begin();
+                job = std::move(next->second);
+                pending_.erase(next);
+            }
+            int status = 0;
+            try {
+                if (auto transport =
+                        homeworldz::grid::socket_transport(job.endpoint, service_token_))
+                    status = homeworldz::grid::update_child_agent_view(*transport, job.session,
+                                                                        job.body);
+            } catch (const std::exception&) {
+            }
+            if (status != 204) {
+                // One write, so the line cannot interleave with the main thread's.
+                std::ostringstream line;
+                line << "{\"level\":\"warning\",\"message\":\"child view not taken\""
+                        ",\"session\":" << homeworldz::api::json_string(job.session)
+                     << ",\"endpoint\":" << homeworldz::api::json_string(job.endpoint)
+                     << ",\"status\":" << status << "}\n";
+                std::cerr << line.str() << std::flush;
+            }
+        }
+    }
+
+    std::string service_token_;
+    std::map<std::string, Job> pending_;
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    bool stopping_{};
+    std::thread worker_;
+};
+
 struct InternalAssetRequest {
     std::string asset_id;
     bool replicate{};
@@ -6429,6 +6516,7 @@ int main(int argc, char* argv[]) {
     // per facet: a rectangle's facets share one child registry. Sent when the
     // camera has moved 8 m or the draw distance changed, at most once a second
     // per neighbour, so a camera swept around is not a stream of calls.
+    ChildViewSender child_views(service_token);
     const auto send_one_child_view = [&](std::chrono::steady_clock::time_point when) {
         if (!child_agents_enabled || service_token.empty()) return;
         std::unordered_set<std::string> considered;
@@ -6446,14 +6534,9 @@ int main(int argc, char* argv[]) {
                 (when - told->second.at < std::chrono::seconds(1) ||
                  !homeworldz::region::child_view_changed(told->second.view, view)))
                 continue;
-            int status = 0;
-            try {
-                if (auto transport =
-                        homeworldz::grid::socket_transport(offered.endpoint, service_token))
-                    status = homeworldz::grid::update_child_agent_view(
-                        *transport, session, homeworldz::region::encode_child_agent_view(view));
-            } catch (const std::exception&) {
-            }
+            // Off this thread: see ChildViewSender for the deadlock it ends.
+            child_views.send(offered.endpoint, session,
+                             homeworldz::region::encode_child_agent_view(view));
             // Recorded whatever the answer, so a neighbour that refuses is
             // asked again only when the view changes, not every pass.
             told_child_views[told_key] = {view, when};
@@ -6464,11 +6547,6 @@ int main(int argc, char* argv[]) {
                     other.agent.camera = view.camera;
                     other.agent.draw_distance = view.draw_distance;
                 }
-            if (status != 204)
-                std::cerr << "{\"level\":\"warning\",\"message\":\"child view not taken\""
-                             ",\"session\":" << homeworldz::api::json_string(session)
-                          << ",\"endpoint\":" << homeworldz::api::json_string(offered.endpoint)
-                          << ",\"status\":" << status << "}" << std::endl;
             return;
         }
     };
