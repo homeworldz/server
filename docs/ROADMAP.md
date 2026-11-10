@@ -13,8 +13,8 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Legacy (Firestorm-compatible) services:</span>
-  <progress data-color="primary" max="100" value="45">45%</progress>
- <strong>45%</strong>
+  <progress data-color="primary" max="100" value="46">46%</progress>
+ <strong>46%</strong>
 </label>
 </p>
 
@@ -29,7 +29,7 @@ client.
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="72" aria-label="Phase 2 progress: 72%">72%</progress> | 72% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="77" aria-label="Phase 2 progress: 77%">77%</progress> | 77% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
@@ -151,9 +151,9 @@ Vehicle crossings follow vehicles, in Phase 6.
 - [x] Reduce a border crossing to promoting a circuit the viewer already holds.
 - [x] Clear what a region showed a watching viewer when it restarts or its child expires.
 - [x] Drop the regions a viewer has left behind after a far teleport.
-- [ ] Serve objects to a viewer in a neighboring region, filtered by its camera and draw distance.
-- [ ] Serve avatars to a viewer in a neighboring region the same way.
-- [ ] Tell a neighboring viewer when something leaves its interest.
+- [x] Serve objects to a viewer in a neighboring region, filtered by its camera and draw distance.
+- [x] Serve avatars to a viewer in a neighboring region the same way.
+- [x] Tell a neighboring viewer when something leaves its interest.
 - [ ] Define what a viewer is shown when a neighbor is unreachable, restarting, or newly online.
 
 ### World navigation
