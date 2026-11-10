@@ -271,6 +271,11 @@ int main() {
                 std::ofstream output(source / "12345678-1234-4234-8234-123456789abc.settings", std::ios::binary);
                 output.write(reinterpret_cast<const char*>(content.data()), static_cast<std::streamsize>(content.size()));
             }
+            // The standard animations a viewer without its own copies fetches.
+            {
+                std::ofstream output(source / "2408fe9e-df1d-1d7d-f4ff-1384fa7b350f.animatn", std::ios::binary);
+                output.write(reinterpret_cast<const char*>(content.data()), static_cast<std::streamsize>(content.size()));
+            }
             // A texture's canonical form is a modern image (ADR 0033 M3), so
             // PNG imports as an asset like any other.
             {
@@ -288,7 +293,9 @@ int main() {
             }
             constexpr std::string_view importer = "33333333-3333-4333-8333-333333333333";
             if (storage.import_asset_directory(path / "missing", importer) != 0 ||
-                storage.import_asset_directory(path / "source", importer) != 6 ||
+                storage.import_asset_directory(path / "source", importer) != 7 ||
+                storage.read_asset("2408fe9e-df1d-1d7d-f4ff-1384fa7b350f") !=
+                    std::vector<std::byte>(content.begin(), content.end()) ||
                 storage.read_asset("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa") !=
                     std::vector<std::byte>(content.begin(), content.end()) ||
                 storage.read_asset("cccccccc-cccc-4ccc-8ccc-cccccccccccc") !=

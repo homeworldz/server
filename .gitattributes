@@ -17,6 +17,7 @@
 *.j2c  binary
 *.tga  binary
 *.ogg  binary
+*.animatn binary
 *.raw  binary
 # Wearables and settings are text-shaped and are content-addressed all the
 # same: a vault asset's identity is the SHA-256 of its bytes, so normalising a

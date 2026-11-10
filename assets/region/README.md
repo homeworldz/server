@@ -20,6 +20,13 @@ settings on a new grid. The standard default-day settings asset is sourced
 from OpenSimulator's BSD-licensed asset set; its upstream notice is retained
 beside the asset.
 
+`viewer-standard/animations/` holds the Second Life standard animations — stand,
+walk, sit, fly and the rest — by the UUID a viewer fetches. They are Linden
+Research's own files, under the **LGPL 2.1 rather than this repository's MIT
+licence**; their `NOTICE.md` and licence text are beside them. Firestorm carries
+copies and never asks for them; a viewer without its own (Aurora) does, and
+without them its avatars T-pose.
+
 `viewer-standard/sounds/` holds the OpenSimulator `OSSnd*` replacement sounds
 from the same BSD-licensed set, each copied to the viewer UUID that Firestorm's
 `settings.xml` names for it (`UISndClick`, `UISndTyping`, and so on). One file

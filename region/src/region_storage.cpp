@@ -1094,6 +1094,10 @@ std::size_t RegionStorage::import_asset_directory(const std::filesystem::path& d
         // ship the legacy form as the canonical, which is the inversion the
         // mesh pipeline exists to remove.
         //
+        // `.animatn` is the standard viewer animations under
+        // viewer-standard/animations, which a viewer without its own copies
+        // fetches by fixed UUID.
+        //
         // `.glb` and `.object` were added for bundled mesh content: a canonical
         // glTF mesh, and the `homeworldz-object-v1` wrapper that gives it a place
         // in inventory. Bundling a mesh needs both, because a viewer rezzes an
@@ -1114,7 +1118,7 @@ std::size_t RegionStorage::import_asset_directory(const std::filesystem::path& d
             (extension != ".j2c" && extension != ".png" && extension != ".jpg" &&
              extension != ".jpeg" && extension != ".ogg" && extension != ".bodypart" &&
              extension != ".clothing" && extension != ".settings" &&
-             extension != ".glb" && extension != ".object"))
+             extension != ".glb" && extension != ".object" && extension != ".animatn"))
             continue;
         // The filename *is* the asset id, so a stem that is not a UUID is not
         // an asset - it is a file that happens to share an extension with one.
