@@ -5885,16 +5885,21 @@ int main(int argc, char* argv[]) {
             return entry.first.starts_with(endpoint + '|');
         });
         sent_dynamic_transforms.erase(endpoint);
-        std::erase_if(pending_event_responses, [&](const PendingEventResponse& pending) {
-            if (pending.session_id != session_id) return false;
-            close_socket(pending.client);
-            std::cout << "{\"level\":\"info\",\"message\":\"event poll closed unanswered\","
-                         "\"reason\":\"session left\",\"session\":"
-                      << homeworldz::api::json_string(session_id) << ",\"visit\":"
-                      << homeworldz::api::json_string(pending.visit_id)
-                      << ",\"demoting\":" << (demoting ? "true" : "false") << "}" << std::endl;
-            return true;
-        });
+        // A demoted session keeps its polls: this region still serves the
+        // viewer as a neighbour, and it is the queue a quick return is told
+        // on. Closed unanswered, Firestorm did not poll this region again for
+        // up to half a minute, and a crossing back out of it waited that long
+        // for a poll to carry its CrossedRegion (2026-11-12).
+        if (!demoting)
+            std::erase_if(pending_event_responses, [&](const PendingEventResponse& pending) {
+                if (pending.session_id != session_id) return false;
+                close_socket(pending.client);
+                std::cout << "{\"level\":\"info\",\"message\":\"event poll closed unanswered\","
+                             "\"reason\":\"session left\",\"session\":"
+                          << homeworldz::api::json_string(session_id) << ",\"visit\":"
+                          << homeworldz::api::json_string(pending.visit_id) << "}" << std::endl;
+                return true;
+            });
         // A departing viewer's child circuits go with it (ADR 0036): each is
         // removed from the registry and told DisableSimulator, or it lingers
         // in the viewer as a dead neighbor until its ping timeout. Children
@@ -9647,6 +9652,32 @@ int main(int argc, char* argv[]) {
                                     request, 200, "application/llsd+xml",
                                     homeworldz::viewer::event_queue_xml(++event_id, events));
                             } else {
+                                // A viewer holds one poll per queue. A second
+                                // on the same queue means it gave up on the
+                                // first (Firestorm restarts a region's poll
+                                // when it refetches capabilities), so the old
+                                // one is answered empty and dropped rather than
+                                // left to be chosen for the next event, which
+                                // would go to a connection nobody reads.
+                                std::erase_if(pending_event_responses,
+                                    [&](const PendingEventResponse& older) {
+                                        if (older.session_id != session_id ||
+                                            older.visit_id != capability_visit_id)
+                                            return false;
+                                        const auto superseded = homeworldz::http::response_for_content(
+                                            older.request, 200, "application/llsd+xml",
+                                            homeworldz::viewer::event_queue_xml(++event_id));
+                                        static_cast<void>(send_all(older.client, superseded.content));
+                                        finish_http_response(older.client);
+                                        close_socket(older.client);
+                                        std::cout << "{\"level\":\"info\",\"message\":\"event poll "
+                                                     "superseded\",\"session\":"
+                                                  << homeworldz::api::json_string(session_id)
+                                                  << ",\"visit\":"
+                                                  << homeworldz::api::json_string(capability_visit_id)
+                                                  << "}" << std::endl;
+                                        return true;
+                                    });
                                 pending_event_responses.push_back(PendingEventResponse{
                                     client, std::string(request), session_id,
                                     std::chrono::steady_clock::now() + std::chrono::seconds(20),
