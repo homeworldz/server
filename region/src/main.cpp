@@ -4660,8 +4660,13 @@ int main(int argc, char* argv[]) {
             return false;
         }
         std::vector<std::uint32_t> killed;
-        for (const auto part : part_ids)
+        for (const auto part : part_ids) {
+            // Its body too, or the object it was stays behind as an invisible
+            // solid: an avatar that stood up where the seat had been stood on
+            // a seat already in the next region (2026-11-12).
+            remove_physics_object(part);
             if (scene.remove(part)) killed.push_back(static_cast<std::uint32_t>(part));
+        }
         try {
             storage->save_snapshot(scene);
         } catch (const std::exception& error) {
