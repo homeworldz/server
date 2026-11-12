@@ -2131,7 +2131,12 @@ int main(int argc, char* argv[]) {
                 // most of those assets are scene content no inventory names.
             }
         }
-        if (storage->load_snapshot(scene)) {
+        const bool restored_scene = storage->load_snapshot(scene);
+        // Numbered from this region's own start, so no two regions hand a
+        // viewer the same local id for one avatar (local_id_seed says why).
+        if (registration)
+            scene.reserve_ids_from(homeworldz::scene::local_id_seed(registration->region_id()));
+        if (restored_scene) {
             std::cout << "{\"level\":\"info\",\"message\":\"scene snapshot restored\",\"revision\":"
                       << scene.revision() << ",\"entities\":" << scene.size() << "}" << std::endl;
             std::size_t repaired_texture_entries = 0;
@@ -3596,12 +3601,10 @@ int main(int argc, char* argv[]) {
     // (region, local id) it no longer holds and does nothing. The kill still
     // matters for a watcher that cannot see the destination, which would
     // otherwise keep a frozen avatar at the border; it now loses it two
-    // seconds later. Attachments are rebuilt with fresh ids, but the avatar's
-    // own entity outlives its departure and is reused when the same agent
-    // arrives again — so an avatar that comes back inside the two seconds
-    // would be killed by its own pending departure. Arrival cancels it
-    // (cancel_departure_kill); twenty crossings on the seam showed the same
-    // ids, 49 and 52, on every visit.
+    // seconds later. Attachments are rebuilt with fresh ids, and a viewer's
+    // avatar is renumbered on every arrival, so a kill cannot catch a return.
+    // A session client's avatar still reuses its entity, so that arrival
+    // cancels the kill (cancel_departure_kill).
     struct PendingDepartureKill {
         std::vector<std::uint32_t> local_ids;
         std::string spare_session;
@@ -4335,22 +4338,17 @@ int main(int argc, char* argv[]) {
     // 0036): ObjectUpdate on each viewer's circuit for the entity's facet —
     // primary or child — skipping viewers without one. Viewer wire only;
     // session delivery stays with the callers, whose batching differs.
-    // Linksets that crossed in carrying riders, by root, kept from viewers until
-    // their riders have been announced here (or the hold runs out). A viewer
-    // told of the seat first moves everything parented to it - the rider and
-    // the rider's attachments - into this region, and an avatar whose local id
-    // happens to match the one it had in the last region is then never mapped
-    // here: Firestorm records a new local id only when the id or the region
-    // changed. Every attachment's parent then fails to resolve and is taken
-    // off (2026-11-03). Told of the avatar first, the viewer keeps it on its
-    // old seat until the seat arrives, as it does for a rider ahead of its
-    // object.
-    std::unordered_map<homeworldz::scene::EntityId, std::chrono::steady_clock::time_point>
-        held_linkset_broadcasts;
+    // A crossed linkset is told to viewers as soon as it lands, root first, so
+    // its riders arrive after it: a viewer can only resolve a parent it already
+    // holds. Told of the seat, a viewer re-homes it and everything parented to
+    // it; the rider then arrives under a local id it has never had (avatars are
+    // renumbered on every arrival), so the viewer maps it and keeps it seated.
+    // Until 2026-11-11 the seat was held back until its rider was announced,
+    // because a rider whose id matched in both regions was never remapped and
+    // lost its attachments; that order made Aurora read the rider as getting
+    // off, and stop its sit.
     const auto send_entity_update = [&](const homeworldz::scene::Entity& entity,
                                         std::chrono::steady_clock::time_point when) {
-        if (held_linkset_broadcasts.contains(entity.parent_id == 0 ? entity.id : entity.parent_id))
-            return;
         const auto facet = entity_facet(entity);
         for (const auto& [recipient_endpoint, recipient] : avatars) {
             const auto route = facet_route_for(recipient_endpoint, facet);
@@ -4481,9 +4479,6 @@ int main(int argc, char* argv[]) {
                       << std::endl;
             return false;
         }
-        // As long as its riders are expected (see held_linkset_broadcasts).
-        if (!transit.sitters.empty())
-            held_linkset_broadcasts[created.front()] = when + std::chrono::seconds(60);
         for (const auto entity_id : created) {
             const auto* entity = scene.find(entity_id);
             if (!entity) continue;
@@ -5284,13 +5279,6 @@ int main(int argc, char* argv[]) {
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.parent_id == root_id) children.push_back(candidate_id);
         return homeworldz::region::link_order(root_id, std::move(children));
-    };
-    // Ends a hold on a crossed linkset and tells viewers of it, root first.
-    const auto release_held_linkset = [&](homeworldz::scene::EntityId root_id,
-                                          std::chrono::steady_clock::time_point when) {
-        if (!held_linkset_broadcasts.erase(root_id)) return;
-        for (const auto prim_id : linkset_of(root_id))
-            if (const auto* prim = scene.find(prim_id)) send_entity_update(*prim, when);
     };
     const auto occupant_key_of = [&](homeworldz::scene::EntityId prim_id) -> std::string {
         for (const auto& [key, live] : avatars)
@@ -7143,8 +7131,6 @@ int main(int argc, char* argv[]) {
         for (const auto& [entity_id, entity] : scene.entities()) {
             if (entity.parent_id != 0 || entity.attachment_point != 0) continue;
             if (!session_object_visible(entity)) continue;
-            // Kept from every viewer until its riders are announced.
-            if (held_linkset_broadcasts.contains(entity_id)) continue;
             subjects.push_back({{static_cast<std::uint32_t>(entity_id),
                                  {entity.position.x, entity.position.y, entity.position.z},
                                  radii.at(entity_id), 0},
@@ -14127,8 +14113,16 @@ int main(int argc, char* argv[]) {
                                     }
                                 }
                                 for (const auto duplicate : duplicates) scene.remove(duplicate);
+                                // A fresh local id on every arrival, keeping
+                                // what the stored entity remembers (where, which
+                                // way, flying). As Halcyon does: an id a viewer
+                                // was given in another region, or here on an
+                                // earlier visit, is never handed out again. A
+                                // departure's deferred kill names the old id,
+                                // so it fires harmlessly rather than being
+                                // cancelled by the return.
                                 if (entity == 0) entity = scene.create(name, initial_spawn);
-                                cancel_departure_kill(entity);
+                                else entity = scene.renumber(entity);
                                 auto* persisted = scene.find(entity);
                                 // A transit's arrival position is local to the
                                 // facet the viewer was handed, since to the
@@ -14417,21 +14411,10 @@ int main(int argc, char* argv[]) {
                                     const auto* seat_root =
                                         seat_prim ? scene.find(root_of(seat_prim->id)) : nullptr;
                                     if (seat_prim && seat_root && now < rider.expires &&
-                                        occupant_key_of(seat_prim->id).empty()) {
+                                        occupant_key_of(seat_prim->id).empty())
                                         place_on_seat(endpoint, avatars.at(endpoint), *seat_prim,
                                                       *seat_root, rider.pose, now, rider.animations);
-                                        // Announced seated, so its seat can be
-                                        // shown, once no other rider is still
-                                        // to come.
-                                        const auto root_id = seat_root->id;
-                                        const bool others_expected = std::any_of(
-                                            expected_riders.begin(), expected_riders.end(),
-                                            [&](const auto& entry) {
-                                                return root_of(entity_id_by_object_id(
-                                                           entry.second.prim_object_id)) == root_id;
-                                            });
-                                        if (!others_expected) release_held_linkset(root_id, now);
-                                    } else
+                                    else
                                         std::cout << "{\"level\":\"warn\",\"message\":\"rider "
                                                      "arrived without its seat\",\"primObjectId\":"
                                                   << homeworldz::api::json_string(rider.prim_object_id)
@@ -17630,11 +17613,6 @@ int main(int argc, char* argv[]) {
         for (auto& closure : pending_crossing_closures)
             materialize_asset_closure(std::move(closure), "object crossing");
         pending_crossing_closures.clear();
-        // A rider that never came: show the object anyway.
-        std::vector<homeworldz::scene::EntityId> expired_holds;
-        for (const auto& [root_id, expires] : held_linkset_broadcasts)
-            if (expires <= now) expired_holds.push_back(root_id);
-        for (const auto root_id : expired_holds) release_held_linkset(root_id, now);
         for (const auto entity_id : pending_crossing_scripts) {
             const auto* entity = scene.find(entity_id);
             if (!entity) continue;

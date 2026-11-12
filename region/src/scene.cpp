@@ -307,4 +307,36 @@ void Scene::restore(std::uint64_t revision, std::vector<Entity> entities) {
     simulation_steps_ = 0;
 }
 
+void Scene::reserve_ids_from(EntityId first) {
+    next_id_ = (std::max)(next_id_, first);
+}
+
+EntityId Scene::renumber(EntityId id) {
+    auto found = entities_.extract(id);
+    if (found.empty()) return 0;
+    const auto renumbered = next_id_++;
+    found.key() = renumbered;
+    found.mapped().id = renumbered;
+    entities_.insert(std::move(found));
+    ++revision_;
+    return renumbered;
+}
+
+EntityId local_id_seed(std::string_view region_uuid) {
+    std::string digits;
+    for (const char c : region_uuid)
+        if (c != '-') digits.push_back(c);
+    if (digits.size() != 32) return 0;
+    std::uint32_t value = 0;
+    for (const char c : digits.substr(0, 4) + digits.substr(28, 4)) {
+        std::uint32_t nibble = 0;
+        if (c >= '0' && c <= '9') nibble = static_cast<std::uint32_t>(c - '0');
+        else if (c >= 'a' && c <= 'f') nibble = static_cast<std::uint32_t>(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') nibble = static_cast<std::uint32_t>(c - 'A' + 10);
+        else return 0;
+        value = (value << 4) | nibble;
+    }
+    return 0x40000000ULL + (value & 0x7FFFFFFFU);
+}
+
 } // namespace homeworldz::scene

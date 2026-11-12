@@ -207,5 +207,43 @@ int main() {
     if ((linkset_effective.owner & homeworldz::scene::permission_copy) != 0 ||
         (linkset_effective.next_owner & homeworldz::scene::permission_copy) != 0)
         return 1;
+
+    // A region's ids start from its UUID: first and last four hex digits,
+    // folded into the middle half of the 32-bit range.
+    using homeworldz::scene::local_id_seed;
+    if (local_id_seed("60ed06a2-dbd0-40f8-bd3f-e23786752f81") != 0xA0ED2F81ULL) return 2;
+    if (local_id_seed("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF") != 0xBFFFFFFFULL) return 3;
+    if (local_id_seed("00000000-0000-0000-0000-000000000000") != 0x40000000ULL) return 4;
+    if (local_id_seed("not-a-uuid") != 0 ||
+        local_id_seed("60ed06a2-dbd0-40f8-bd3f-e23786752f8g") != 0)
+        return 5;
+    // Two regions differing only in the middle of their UUIDs share a seed;
+    // differing at either end, they do not.
+    if (local_id_seed("4aa21394-7aa9-4294-bf3b-584dca7a62a3") ==
+        local_id_seed("60ed06a2-dbd0-40f8-bd3f-e23786752f81"))
+        return 6;
+
+    // The seed moves the counter up past restored ids, never back.
+    homeworldz::scene::Scene seeded;
+    homeworldz::scene::Entity stored;
+    stored.id = 7;
+    stored.name = "stored";
+    seeded.restore(1, {stored});
+    seeded.reserve_ids_from(0x40000000ULL);
+    if (seeded.create("first") != 0x40000000ULL) return 7;
+    seeded.reserve_ids_from(5);
+    if (seeded.create("second") != 0x40000001ULL) return 8;
+    if (!seeded.find(7)) return 9;
+
+    // Renumbering keeps the entity's state under a new id and frees the old.
+    auto* moving = seeded.find(7);
+    moving->position = {1.0, 2.0, 3.0};
+    const auto renumbered = seeded.renumber(7);
+    if (renumbered != 0x40000002ULL) return 10;
+    const auto* moved = seeded.find(renumbered);
+    if (!moved || moved->id != renumbered || moved->name != "stored" || moved->position.y != 2.0)
+        return 11;
+    if (seeded.find(7) || seeded.size() != 3) return 12;
+    if (seeded.renumber(7) != 0) return 13;
     return 0;
 }

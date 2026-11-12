@@ -196,6 +196,11 @@ public:
     const Entity* find(EntityId id) const;
     void step(double seconds);
     void restore(std::uint64_t revision, std::vector<Entity> entities);
+    // Ids from here on are at least `first`; never moves the counter back.
+    void reserve_ids_from(EntityId first);
+    // Moves an entity, state and all, to a newly allocated id and returns it.
+    // 0 if there is no such entity. Nothing may name the old id as its parent.
+    EntityId renumber(EntityId id);
 
     std::size_t size() const { return entities_.size(); }
     std::uint64_t revision() const { return revision_; }
@@ -210,5 +215,14 @@ private:
 };
 
 EffectivePermissions effective_permissions(const Scene& scene, const Entity& selected);
+
+// Where a region starts numbering its entities, taken from its UUID: the first
+// and last four hex digits as one 32-bit value, mapped into the middle half of
+// the 32-bit range. A viewer names objects by (region, 32-bit local id), and
+// Firestorm re-homes a seat's rider with the seat, so a rider whose id is the
+// same in both regions is never remapped and loses its attachments. Halcyon
+// starts each region at a random point in the same range; this is the same
+// spread, made repeatable. 0 for a string that is not a UUID.
+EntityId local_id_seed(std::string_view region_uuid);
 
 } // namespace homeworldz::scene
