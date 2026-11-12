@@ -5883,6 +5883,11 @@ int main(int argc, char* argv[]) {
         std::erase_if(pending_event_responses, [&](const PendingEventResponse& pending) {
             if (pending.session_id != session_id) return false;
             close_socket(pending.client);
+            std::cout << "{\"level\":\"info\",\"message\":\"event poll closed unanswered\","
+                         "\"reason\":\"session left\",\"session\":"
+                      << homeworldz::api::json_string(session_id) << ",\"visit\":"
+                      << homeworldz::api::json_string(pending.visit_id)
+                      << ",\"demoting\":" << (demoting ? "true" : "false") << "}" << std::endl;
             return true;
         });
         // A departing viewer's child circuits go with it (ADR 0036): each is
@@ -7922,6 +7927,14 @@ int main(int argc, char* argv[]) {
             if (!finished && (http_now >= entry->deadline || http_now >= entry->expires)) {
                 close_socket(entry->client);
                 finished = true;
+                // A request that never completed is closed without a reply,
+                // which a viewer reads as "server returned nothing".
+                const auto line_end = entry->buffer.find("\r\n");
+                std::cout << "{\"level\":\"warning\",\"message\":\"http request incomplete at "
+                             "deadline\",\"bytes\":" << entry->buffer.size() << ",\"line\":"
+                          << homeworldz::api::json_string(entry->buffer.substr(
+                                 0, line_end == std::string::npos ? 120 : (std::min)(line_end, std::size_t{120})))
+                          << "}" << std::endl;
             }
             if (finished) {
                 const bool dispatching = ready_client == entry->client;
@@ -9634,6 +9647,11 @@ int main(int argc, char* argv[]) {
                                     std::chrono::steady_clock::now() + std::chrono::seconds(20),
                                     capability_visit_id});
                                 response_deferred = true;
+                                std::cout << "{\"level\":\"info\",\"message\":\"event poll parked\","
+                                             "\"session\":" << homeworldz::api::json_string(session_id)
+                                          << ",\"visit\":" << homeworldz::api::json_string(capability_visit_id)
+                                          << ",\"parked\":" << pending_event_responses.size() << "}"
+                                          << std::endl;
                             }
                         } else if (authorized && texture && homeworldz::viewer::parse_uuid(texture->texture)) {
                             try {
