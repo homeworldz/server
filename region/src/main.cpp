@@ -946,6 +946,110 @@ private:
     std::thread worker_;
 };
 
+// Makes the calls to other regions whose answers nothing waits for, from a
+// thread that is not the region's: an arrival's confirmation to the region it
+// came from, a session's release to its neighbours, a worn set changed under a
+// child a neighbour holds. Between regions across the Internet each was a round
+// trip during which this region simulated nothing, and two regions calling each
+// other at once stalled both (see ChildViewSender).
+//
+// In order, unlike views, which only the newest matters for: a release sent
+// after the offer that followed it would end the child the offer made. The
+// offer itself still waits for its answer on the main thread, so it asks
+// pending() first and is deferred while a call for the same session and
+// neighbour has not finished.
+class NeighborCallSender {
+public:
+    using Call = std::function<bool(homeworldz::grid::Transport&)>;
+
+    explicit NeighborCallSender(std::string service_token)
+        : service_token_(std::move(service_token)), worker_([this] { serve(); }) {}
+
+    ~NeighborCallSender() { stop(); }
+
+    NeighborCallSender(const NeighborCallSender&) = delete;
+    NeighborCallSender& operator=(const NeighborCallSender&) = delete;
+
+    void send(std::string endpoint, std::string session, std::string what, Call call) {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (stopping_) return;
+            queue_.push_back(Job{std::move(endpoint), std::move(session), std::move(what),
+                                 std::move(call)});
+        }
+        ready_.notify_one();
+    }
+
+    // Whether a call for this session to this endpoint is queued or under way.
+    bool pending(std::string_view endpoint, std::string_view session) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        const auto matches = [&](const Job& job) {
+            return job.endpoint == endpoint && job.session == session;
+        };
+        return (in_flight_ && matches(*in_flight_)) ||
+               std::any_of(queue_.begin(), queue_.end(), matches);
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (stopping_) return;
+            stopping_ = true;
+            queue_.clear();
+        }
+        ready_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+
+private:
+    struct Job {
+        std::string endpoint;
+        std::string session;
+        std::string what;
+        Call call;
+    };
+
+    void serve() {
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> guard(mutex_);
+                in_flight_.reset();
+                ready_.wait(guard, [this] { return stopping_ || !queue_.empty(); });
+                if (stopping_) return;
+                in_flight_ = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            const auto& job = *in_flight_;
+            bool done = false;
+            try {
+                if (auto transport =
+                        homeworldz::grid::socket_transport(job.endpoint, service_token_))
+                    done = job.call(*transport);
+            } catch (const std::exception&) {
+            }
+            if (!done) {
+                // One write, so the line cannot interleave with the main thread's.
+                std::ostringstream line;
+                line << "{\"level\":\"warning\",\"message\":\"neighbor call failed\""
+                        ",\"call\":" << homeworldz::api::json_string(job.what)
+                     << ",\"session\":" << homeworldz::api::json_string(job.session)
+                     << ",\"endpoint\":" << homeworldz::api::json_string(job.endpoint) << "}\n";
+                std::cerr << line.str() << std::flush;
+            }
+        }
+    }
+
+    std::string service_token_;
+    std::deque<Job> queue_;
+    // Read by pending() while the call runs, so it is only ever replaced under
+    // the lock; the worker reads the job it holds without it.
+    std::optional<Job> in_flight_;
+    std::mutex mutex_;
+    std::condition_variable ready_;
+    bool stopping_{};
+    std::thread worker_;
+};
+
 struct InternalAssetRequest {
     std::string asset_id;
     bool replicate{};
@@ -6235,36 +6339,30 @@ int main(int argc, char* argv[]) {
         std::chrono::steady_clock::time_point at;
     };
     std::unordered_map<std::string, ToldChildView> told_child_views;
-    // Tells each neighbour holding this session as a child what it wears now.
-    // Synchronous, like the offer itself, and only for a session marked changed.
+    NeighborCallSender neighbor_calls(service_token);
+    // Tells each neighbour holding this session as a child what it wears now,
+    // only for a session marked changed. Sent from neighbor_calls; a neighbour
+    // that does not take it is logged there.
     const auto refresh_neighbor_worn = [&](const LiveAvatar& live) {
         if (!worn_set_changed.erase(live.session_id)) return;
         const auto worn = worn_set_of(live.user_id);
         const auto prefix = live.session_id + '|';
-        std::size_t told = 0;
         std::size_t offers = 0;
         for (auto& [pair_key, offered] : offered_child_documents) {
             if (!pair_key.starts_with(prefix) || offered.agent.worn == worn) continue;
             ++offers;
             offered.agent.worn = worn;
-            int status = 0;
-            try {
-                auto transport =
-                    homeworldz::grid::socket_transport(offered.endpoint, service_token);
-                if (transport &&
-                    !homeworldz::region::parse_child_agent_acceptance(
-                        homeworldz::grid::establish_child_agent(*transport,
-                            homeworldz::region::encode_child_agent_request(offered.agent),
-                            &status)).empty())
-                    ++told;
-            } catch (const std::exception&) {
-            }
+            neighbor_calls.send(offered.endpoint, live.session_id, "worn set refresh",
+                [document = homeworldz::region::encode_child_agent_request(offered.agent)](
+                    homeworldz::grid::Transport& transport) {
+                    return !homeworldz::region::parse_child_agent_acceptance(
+                        homeworldz::grid::establish_child_agent(transport, document)).empty();
+                });
         }
         if (offers != 0)
-            std::cout << "{\"level\":" << (told == offers ? "\"info\"" : "\"warn\"")
-                      << ",\"message\":\"worn set refreshed for neighbors\",\"worn\":"
-                      << worn.size() << ",\"neighbors\":" << offers << ",\"told\":" << told
-                      << "}" << std::endl;
+            std::cout << "{\"level\":\"info\",\"message\":\"worn set refresh sent to neighbors\","
+                         "\"worn\":" << worn.size() << ",\"neighbors\":" << offers << "}"
+                      << std::endl;
     };
     // The seed each neighbour minted, by session and neighbour region id.
     //
@@ -6308,13 +6406,10 @@ int main(int argc, char* argv[]) {
                 // One call per neighbouring process: a rectangle presents as
                 // several facets, and they share one child registry.
                 if (!told.insert(neighbor.public_endpoint).second) break;
-                try {
-                    if (auto transport = homeworldz::grid::socket_transport(
-                            neighbor.public_endpoint, service_token))
-                        static_cast<void>(homeworldz::grid::release_child_agent(
-                            *transport, target));
-                } catch (const std::exception&) {
-                }
+                neighbor_calls.send(neighbor.public_endpoint, session_id, "child release",
+                    [target](homeworldz::grid::Transport& transport) {
+                        return homeworldz::grid::release_child_agent(transport, target);
+                    });
                 break;
             }
         }
@@ -6395,6 +6490,10 @@ int main(int argc, char* argv[]) {
                     waiting != child_agent_retry_at.end() &&
                     std::chrono::steady_clock::now() < waiting->second)
                     continue;
+                // Not past a release still on its way there: arriving first,
+                // this offer's child would be the one the release ends. Offered
+                // on a later pass instead, once that call is done.
+                if (neighbor_calls.pending(neighbor.public_endpoint, live.session_id)) continue;
                 homeworldz::region::ChildAgent child;
                 child.agent_id = homeworldz::viewer::format_uuid(*agent);
                 child.session_id = live.session_id;
@@ -14608,14 +14707,13 @@ int main(int argc, char* argv[]) {
                                     if (neighbor.id != arrival->source_region_id ||
                                         neighbor.public_endpoint.empty())
                                         continue;
-                                    try {
-                                        if (auto transport = homeworldz::grid::socket_transport(
-                                                neighbor.public_endpoint, service_token))
-                                            static_cast<void>(
-                                                homeworldz::grid::confirm_avatar_arrival(
-                                                    *transport, arrival->id));
-                                    } catch (const std::exception&) {
-                                    }
+                                    neighbor_calls.send(neighbor.public_endpoint, session_id,
+                                        "arrival confirmation",
+                                        [transit_id = arrival->id](
+                                            homeworldz::grid::Transport& transport) {
+                                            return homeworldz::grid::confirm_avatar_arrival(
+                                                transport, transit_id);
+                                        });
                                     break;
                                 }
                             }
