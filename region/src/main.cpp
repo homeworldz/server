@@ -6033,20 +6033,23 @@ int main(int argc, char* argv[]) {
         // crossing — the viewer's only queue was the arrival facet's, the
         // CrossedRegion telling it to move on never left the server, and the
         // ceremony re-signaled forever (found live the same evening).
+        //
+        // Within that, the newest poll: a viewer can briefly hold more than one
+        // on a queue, and an older one may be a poller it has since abandoned.
         const auto primary = session_primary_facet(session_id);
         auto pending = primary ?
-            std::find_if(pending_event_responses.begin(), pending_event_responses.end(),
+            std::find_if(pending_event_responses.rbegin(), pending_event_responses.rend(),
                 [&](const PendingEventResponse& candidate) {
                     return candidate.session_id == session_id &&
                            event_poll_facet(candidate.session_id, candidate.visit_id) == *primary;
                 }) :
-            pending_event_responses.end();
-        if (pending == pending_event_responses.end())
-            pending = std::find_if(pending_event_responses.begin(), pending_event_responses.end(),
+            pending_event_responses.rend();
+        if (pending == pending_event_responses.rend())
+            pending = std::find_if(pending_event_responses.rbegin(), pending_event_responses.rend(),
                 [&](const PendingEventResponse& candidate) {
                     return candidate.session_id == session_id;
                 });
-        if (pending == pending_event_responses.end()) return;
+        if (pending == pending_event_responses.rend()) return;
         const auto events = take_viewer_events(session_id);
         const auto response = homeworldz::http::response_for_content(
             pending->request, 200, "application/llsd+xml",
@@ -6059,7 +6062,7 @@ int main(int argc, char* argv[]) {
                   << ",\"method\":" << homeworldz::api::json_string(response.method)
                   << ",\"path\":" << homeworldz::api::json_string(response.path)
                   << ",\"status\":" << response.status_code << "}" << std::endl;
-        pending_event_responses.erase(pending);
+        pending_event_responses.erase(std::next(pending).base());
     };
     // Queue one event-queue event for a session.
     //
@@ -9652,32 +9655,16 @@ int main(int argc, char* argv[]) {
                                     request, 200, "application/llsd+xml",
                                     homeworldz::viewer::event_queue_xml(++event_id, events));
                             } else {
-                                // A viewer holds one poll per queue. A second
-                                // on the same queue means it gave up on the
-                                // first (Firestorm restarts a region's poll
-                                // when it refetches capabilities), so the old
-                                // one is answered empty and dropped rather than
-                                // left to be chosen for the next event, which
-                                // would go to a connection nobody reads.
-                                std::erase_if(pending_event_responses,
-                                    [&](const PendingEventResponse& older) {
-                                        if (older.session_id != session_id ||
-                                            older.visit_id != capability_visit_id)
-                                            return false;
-                                        const auto superseded = homeworldz::http::response_for_content(
-                                            older.request, 200, "application/llsd+xml",
-                                            homeworldz::viewer::event_queue_xml(++event_id));
-                                        static_cast<void>(send_all(older.client, superseded.content));
-                                        finish_http_response(older.client);
-                                        close_socket(older.client);
-                                        std::cout << "{\"level\":\"info\",\"message\":\"event poll "
-                                                     "superseded\",\"session\":"
-                                                  << homeworldz::api::json_string(session_id)
-                                                  << ",\"visit\":"
-                                                  << homeworldz::api::json_string(capability_visit_id)
-                                                  << "}" << std::endl;
-                                        return true;
-                                    });
+                                // A second poll on the same queue is parked
+                                // beside the first, not in place of it. A
+                                // viewer can hold two live pollers on one
+                                // queue for a while after a crossing; answering
+                                // the older empty sent it straight back to
+                                // answer the newer, and the two traded places
+                                // every round trip for seconds (Nova,
+                                // 2026-11-12). The flush sends to the newest,
+                                // which is never the abandoned one, and the
+                                // rest expire at their deadline.
                                 pending_event_responses.push_back(PendingEventResponse{
                                     client, std::string(request), session_id,
                                     std::chrono::steady_clock::now() + std::chrono::seconds(20),
