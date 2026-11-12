@@ -19242,18 +19242,33 @@ int main(int argc, char* argv[]) {
                 }
                 return true;
             };
-            std::erase_if(offered_child_agents, session_is_gone);
+            std::unordered_set<std::string> still_children;
+            for (const auto& child : child_agents.live(now))
+                still_children.insert(child.session_id);
+            // Offers outlive a crossing away: a session this region still holds
+            // as a child is one whose viewer still holds the neighbours it was
+            // offered. Forgotten here, the avatar's next return re-offered them,
+            // and each neighbour re-sent its handshake and the viewer the same
+            // seed while it was still fetching that region's capabilities — the
+            // duplicate-seed race, which cost Lazy 2 its event queue and a
+            // crossing 8.3 s (2026-11-12). Only on the 30 s tick, so only a
+            // return after a sweep had run did it.
+            const auto offers_lapsed = [&](const std::string& pair_key) {
+                if (!session_is_gone(pair_key)) return false;
+                return !still_children.contains(pair_key.substr(0, pair_key.find('|')));
+            };
+            std::erase_if(offered_child_agents, offers_lapsed);
             std::erase_if(offered_child_documents, [&](const auto& entry) {
-                return session_is_gone(entry.first);
+                return offers_lapsed(entry.first);
             });
             std::erase_if(child_agent_retry_at, [&](const auto& entry) {
-                return session_is_gone(entry.first);
+                return offers_lapsed(entry.first);
             });
             std::erase_if(announced_child_seeds, [&](const auto& entry) {
-                return session_is_gone(entry.first);
+                return offers_lapsed(entry.first);
             });
             std::erase_if(told_child_views, [&](const auto& entry) {
-                return session_is_gone(entry.first);
+                return offers_lapsed(entry.first);
             });
             // A child that is no longer held is a viewer this region has
             // stopped serving, and it is still holding everything this region
@@ -19266,9 +19281,6 @@ int main(int argc, char* argv[]) {
             // region the viewer just walked into, one tick after arriving. An
             // avatar under that session is the proof it was promoted, which is
             // the same question `session_is_gone` already asks.
-            std::unordered_set<std::string> still_children;
-            for (const auto& child : child_agents.live(now))
-                still_children.insert(child.session_id);
             for (const auto& session : watched_child_sessions) {
                 if (still_children.contains(session)) continue;
                 if (!session_is_gone(session + "|")) continue;
