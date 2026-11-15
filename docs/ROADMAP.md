@@ -21,22 +21,22 @@ client.
 <p>
 <label class="roadmap-overall-progress">
  <span>Modern Homeworldz client + back-end:</span>
-  <progress data-color="primary" max="100" value="38">38%</progress>
- <strong>38%</strong>
+  <progress data-color="primary" max="100" value="39">39%</progress>
+ <strong>39%</strong>
 </label>
 </p>
 
 | Phase | Progress | Estimate |
 | --- | --- | ---: |
 | 1. Functional Single-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="100" aria-label="Phase 1 progress: 100%">100%</progress> | 100% |
-| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="77" aria-label="Phase 2 progress: 77%">77%</progress> | 77% |
+| 2. Connected Multi-region World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="78" aria-label="Phase 2 progress: 78%">78%</progress> | 78% |
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
 | 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="19" aria-label="Phase 6 progress: 19%">19%</progress> | 19% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="25" aria-label="Phase 7 progress: 25%">25%</progress> | 25% |
-| 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="3" aria-label="Phase 8 progress: 3%">3%</progress> | 3% |
-| 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="66" aria-label="Phase 9 progress: 66%">66%</progress> | 66% |
+| 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="4" aria-label="Phase 8 progress: 4%">4%</progress> | 4% |
+| 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="70" aria-label="Phase 9 progress: 70%">70%</progress> | 70% |
 | 10. Modern Client Support | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="10" aria-label="Phase 10 progress: 10%">10%</progress> | 10% |
 | 11. Economy and Marketplace | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="0" aria-label="Phase 11 progress: 0%">0%</progress> | 0% |
 
@@ -172,7 +172,6 @@ Vehicle crossings follow vehicles, in Phase 6.
 - [x] Commit an inventory item only once everything it references is durable.
 - [x] Treat region copies of vault-held assets as an evictable cache.
 - [x] Backfill existing inventory-referenced assets into the vault.
-- [ ] Tier rarely used vault blobs onto slower S3-compatible storage.
 
 ## Phase 3: Interactive Physical World
 
@@ -352,22 +351,17 @@ glTF (GLB) is the stored format, and each client is served a derived rendition.
 
 - [ ] Establish repeatable concurrency, scene, physics, inventory, asset, crossing, script, and network benchmarks.
 - [ ] Implement packet prioritization, backpressure, and adaptive update rates for crowded regions.
-- [ ] Scale central services horizontally where measurements justify it.
 - [ ] Publish tested capacity envelopes.
 
 ### Compatibility
 
 - [ ] Maintain conformance tests against the supported Firestorm release.
-- [ ] Add read-only legacy inventory access only if its benefit justifies the cost.
 - [x] Support thin and headless clients such as LibreMetaverse.
 - [ ] Validate Halcyon/InWorldz LSL extensions without admitting OpenSimulator ones.
 - [ ] Document import and migration tools.
 
 ### Physics and service extensions
 
-- [ ] Promote the PhysX 5 adapter to an optional supported physics plugin.
-- [ ] Stabilize versioned plugin contracts where they have proven value.
-- [ ] Define safe extension points for grid services.
 - [ ] Keep transfer and persistence contracts identical across physics implementations.
 
 ### Release readiness
@@ -404,7 +398,6 @@ The first-party client's wire surface, replacing LLUDP while legacy viewers keep
 - [x] Filter avatar traffic by interest for session clients.
 - [ ] Filter avatar traffic by interest for viewers.
 - [ ] Serve home-hosted regions through the call-home relay.
-- [ ] Add WebTransport as a second transport when its RFC publishes.
 
 ## Phase 10: Modern Client Support
 
@@ -428,5 +421,18 @@ What a creator can sell and how value moves.
 
 - [ ] Decide whether credits stay display-only or become a transferable balance.
 - [ ] Implement auditable balances, transactions, sales, payments, gifts, and refunds.
-- [ ] Treat external payments and marketplace integration as separate security projects.
 - [ ] Record whether an asset may be sold, separately from whether it may be transferred.
+
+## Potential (Deferred) Future Work
+
+Wanted, but not needed for 1.0. Not counted in any phase's percentage or in the
+overall bars.
+
+- [ ] Tier rarely used vault blobs onto slower S3-compatible storage.
+- [ ] Promote the PhysX 5 adapter to an optional supported physics plugin.
+- [ ] Stabilize versioned plugin contracts where they have proven value.
+- [ ] Define safe extension points for grid services.
+- [ ] Add read-only legacy inventory access only if its benefit justifies the cost.
+- [ ] Scale central services horizontally where measurements justify it.
+- [ ] Add WebTransport as a second transport when its RFC publishes.
+- [ ] Treat external payments and marketplace integration as separate security projects.
