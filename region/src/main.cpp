@@ -954,10 +954,11 @@ private:
 // other at once stalled both (see ChildViewSender).
 //
 // In order, unlike views, which only the newest matters for: a release sent
-// after the offer that followed it would end the child the offer made. The
-// offer itself still waits for its answer on the main thread, so it asks
-// pending() first and is deferred while a call for the same session and
-// neighbour has not finished.
+// after the offer that followed it would end the child the offer made. Child
+// agent offers go through here too, so a release and an offer to one neighbour
+// arrive there in the order this region made them. An offer's answer is
+// wanted, and its call hands it back to the main thread itself; `failed` is
+// for a call that could not even be made.
 class NeighborCallSender {
 public:
     using Call = std::function<bool(homeworldz::grid::Transport&)>;
@@ -970,24 +971,15 @@ public:
     NeighborCallSender(const NeighborCallSender&) = delete;
     NeighborCallSender& operator=(const NeighborCallSender&) = delete;
 
-    void send(std::string endpoint, std::string session, std::string what, Call call) {
+    void send(std::string endpoint, std::string session, std::string what, Call call,
+              std::function<void()> failed = {}) {
         {
             std::lock_guard<std::mutex> guard(mutex_);
             if (stopping_) return;
             queue_.push_back(Job{std::move(endpoint), std::move(session), std::move(what),
-                                 std::move(call)});
+                                 std::move(call), std::move(failed)});
         }
         ready_.notify_one();
-    }
-
-    // Whether a call for this session to this endpoint is queued or under way.
-    bool pending(std::string_view endpoint, std::string_view session) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        const auto matches = [&](const Job& job) {
-            return job.endpoint == endpoint && job.session == session;
-        };
-        return (in_flight_ && matches(*in_flight_)) ||
-               std::any_of(queue_.begin(), queue_.end(), matches);
     }
 
     void stop() {
@@ -1007,6 +999,7 @@ private:
         std::string session;
         std::string what;
         Call call;
+        std::function<void()> failed;
     };
 
     void serve() {
@@ -1035,14 +1028,14 @@ private:
                      << ",\"session\":" << homeworldz::api::json_string(job.session)
                      << ",\"endpoint\":" << homeworldz::api::json_string(job.endpoint) << "}\n";
                 std::cerr << line.str() << std::flush;
+                if (job.failed) job.failed();
             }
         }
     }
 
     std::string service_token_;
     std::deque<Job> queue_;
-    // Read by pending() while the call runs, so it is only ever replaced under
-    // the lock; the worker reads the job it holds without it.
+    // The job the worker holds while its call runs.
     std::optional<Job> in_flight_;
     std::mutex mutex_;
     std::condition_variable ready_;
@@ -6273,13 +6266,11 @@ int main(int argc, char* argv[]) {
     // region, so that when it crosses there the crossing is a promotion instead
     // of an avatar built from nothing.
     //
-    // Deliberately NOT on the arrival path, and deliberately one at a time. The
-    // establishment is a synchronous POST to a neighbour, and the arrival path
-    // is already the slowest thing this region does; up to eight of them in the
-    // tick that answers CompleteAgentMovement would make the stall it is meant
-    // to remove considerably worse. So the offers trickle out afterwards, one
-    // per pass, and a session simply becomes ready to cross a border a moment
-    // after it can walk toward one.
+    // Deliberately NOT on the arrival path, and one per pass. Each is a POST to
+    // a neighbour, now made from neighbor_calls rather than this thread, and
+    // the arrival path is already the slowest thing this region does. So the
+    // offers trickle out afterwards, and a session simply becomes ready to
+    // cross a border a moment after it can walk toward one.
     //
     // Each pair is offered once. A refusal is remembered too: retrying every
     // pass against a neighbour that is answering 409 would be a busy loop
@@ -6340,6 +6331,28 @@ int main(int argc, char* argv[]) {
     };
     std::unordered_map<std::string, ToldChildView> told_child_views;
     NeighborCallSender neighbor_calls(service_token);
+    // Child agent offers sent on neighbor_calls and not yet answered, by offer
+    // key, with what the answer needs to be announced. An answer whose offer is
+    // no longer here — released, or its session gone — is dropped.
+    struct ChildOfferInFlight {
+        std::string session_id;
+        homeworldz::grid::RegionNeighbor neighbor;
+        homeworldz::region::ChildAgent child;
+    };
+    std::unordered_map<std::string, ChildOfferInFlight> child_offers_in_flight;
+    // Answers posted by the worker and taken on this thread. Shared, because a
+    // call still running at shutdown outlives this scope.
+    struct ChildOfferAnswer {
+        std::string pair_key;
+        std::string seed;
+        int status{};
+        std::string error;
+    };
+    struct ChildOfferAnswers {
+        std::mutex mutex;
+        std::vector<ChildOfferAnswer> answers;
+    };
+    const auto child_offer_answers = std::make_shared<ChildOfferAnswers>();
     // Tells each neighbour holding this session as a child what it wears now,
     // only for a session marked changed. Sent from neighbor_calls; a neighbour
     // that does not take it is logged there.
@@ -6413,6 +6426,20 @@ int main(int argc, char* argv[]) {
                 break;
             }
         }
+        // And neighbours an offer is still on its way to. Queued behind that
+        // offer, so the release ends the child the offer makes; the answer
+        // finds no offer here and is dropped.
+        for (const auto& [pair_key, offer] : child_offers_in_flight) {
+            if (!pair_key.starts_with(prefix) || offer.neighbor.public_endpoint.empty())
+                continue;
+            if (!told.insert(offer.neighbor.public_endpoint).second) continue;
+            neighbor_calls.send(offer.neighbor.public_endpoint, session_id, "child release",
+                [target](homeworldz::grid::Transport& transport) {
+                    return homeworldz::grid::release_child_agent(transport, target);
+                });
+        }
+        std::erase_if(child_offers_in_flight,
+                      [&](const auto& entry) { return entry.first.starts_with(prefix); });
         // Released now rather than at the next 30-second sweep: an avatar that
         // teleports away and straight back is the same session, and an offer
         // still marked as made would never be made again.
@@ -6490,10 +6517,7 @@ int main(int argc, char* argv[]) {
                     waiting != child_agent_retry_at.end() &&
                     std::chrono::steady_clock::now() < waiting->second)
                     continue;
-                // Not past a release still on its way there: arriving first,
-                // this offer's child would be the one the release ends. Offered
-                // on a later pass instead, once that call is done.
-                if (neighbor_calls.pending(neighbor.public_endpoint, live.session_id)) continue;
+                if (child_offers_in_flight.contains(pair_key)) continue;
                 homeworldz::region::ChildAgent child;
                 child.agent_id = homeworldz::viewer::format_uuid(*agent);
                 child.session_id = live.session_id;
@@ -6528,92 +6552,138 @@ int main(int argc, char* argv[]) {
                 child.visual_params = dressed->second.visual_params;
                 child.cof_version = dressed->second.serial;
                 child.appearance_version = dressed->second.appearance_version;
-                std::string seed;
-                // Zero until the neighbour answers, and zero is itself an
-                // answer: nothing was refused, nothing was reached.
-                int established_status = 0;
-                try {
-                    auto transport = homeworldz::grid::socket_transport(
-                        neighbor.public_endpoint, service_token);
-                    if (transport)
-                        seed = homeworldz::region::parse_child_agent_acceptance(
-                            homeworldz::grid::establish_child_agent(*transport,
-                                homeworldz::region::encode_child_agent_request(child),
-                                &established_status));
-                } catch (const std::exception& error) {
-                    std::cerr << "{\"level\":\"warning\",\"message\":\"child agent not established\""
-                                 ",\"neighborId\":" << homeworldz::api::json_string(neighbor.id)
-                              << ",\"error\":" << homeworldz::api::json_string(error.what())
-                              << "}" << std::endl;
-                }
-                if (seed.empty()) {
-                    // Not remembered as done — tried again after a pause. The
-                    // pause is what keeps this off a busy loop against a
-                    // neighbour that is genuinely refusing; the retry is what
-                    // stops a neighbour that was merely slow to start from
-                    // costing this session its child agent for good.
-                    child_agent_retry_at[pair_key] =
-                        std::chrono::steady_clock::now() + child_agent_retry_interval;
-                    // The status is the whole diagnosis and used to be absent:
-                    // 0 is a neighbour that could not be reached, 401 a service
-                    // token that does not match, 409 a home region that is this
-                    // one, 400 a request it could not read. They are different
-                    // problems and read identically without this.
-                    std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
-                                 "child agent refused\",\"neighborId\":"
-                              << homeworldz::api::json_string(neighbor.id)
-                              << ",\"endpoint\":"
-                              << homeworldz::api::json_string(neighbor.public_endpoint)
-                              << ",\"status\":" << established_status
-                              << ",\"retrySeconds\":" << child_agent_retry_interval.count()
-                              << "}" << std::endl;
-                    return true;
-                }
-                // Established: this pair is done for the life of the session.
-                offered_child_agents.insert(pair_key);
-                offered_child_documents[pair_key] = {neighbor.public_endpoint, child};
-                child_agent_retry_at.erase(pair_key);
-                // The neighbour record IS the facet: the grid resolves a
-                // neighbour to the square facet that borders this one, with its
-                // own corner, extent and viewer port (see the /neighbors reply —
-                // "Nova B 2", facet 1, 900/899, port 42113). Announce that and
-                // nothing computed from it.
-                const auto simulator = simulator_event_endpoint(
-                    neighbor.public_endpoint, neighbor.viewer_port);
-                if (!simulator) {
-                    std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
-                                 "endpoint unresolved\",\"neighborId\":"
-                              << homeworldz::api::json_string(neighbor.id) << "}" << std::endl;
-                    return true;
-                }
-                // Both events or neither: a neighbour announced without a seed
-                // that answers stalls the viewer, which is what
-                // enqueue_facet_child_events guards for facets.
-                const auto announced_handle =
-                    (static_cast<std::uint64_t>(neighbor.grid_x * 256) << 32) |
-                    static_cast<std::uint32_t>(neighbor.grid_y * 256);
-                enqueue_viewer_events_together(live.session_id, {
-                    homeworldz::viewer::enable_simulator_event_xml(
-                        announced_handle, *simulator,
-                        static_cast<std::uint32_t>(neighbor.size_x),
-                        static_cast<std::uint32_t>(neighbor.size_y)),
-                    homeworldz::viewer::establish_agent_communication_event_xml({
-                        child.agent_id, simulator_endpoint(*simulator), seed})});
-                announced_child_seeds[live.session_id + '|' + neighbor.id + '|' +
-                    std::to_string(neighbor.grid_x) + ',' +
-                    std::to_string(neighbor.grid_y)] = seed;
-                std::cout << "{\"level\":\"info\",\"message\":\"neighbor announced to viewer\""
-                             ",\"neighbor\":" << homeworldz::api::json_string(neighbor.name)
-                          << ",\"direction\":" << homeworldz::api::json_string(neighbor.direction)
-                          << ",\"grid\":[" << neighbor.grid_x << "," << neighbor.grid_y
-                          << "],\"viewerPort\":" << neighbor.viewer_port
-                          << ",\"worn\":" << child.worn.size()
-                          << ",\"appearance\":" << (child.has_appearance() ? "true" : "false")
-                          << "}" << std::endl;
+                // Sent from neighbor_calls, not made here. The establishment is
+                // a round trip to another region — across the Internet, once
+                // regions are not all on one box — and this thread simulated
+                // nothing while it waited, once per facet of every neighbour,
+                // in the seconds after each arrival. The answer comes back
+                // through take_child_offer_answers.
+                child_offers_in_flight[pair_key] = {live.session_id, neighbor, child};
+                const auto post = [answers = child_offer_answers](ChildOfferAnswer answer) {
+                    std::lock_guard<std::mutex> guard(answers->mutex);
+                    answers->answers.push_back(std::move(answer));
+                };
+                neighbor_calls.send(neighbor.public_endpoint, live.session_id, "child agent offer",
+                    [post, pair_key,
+                     document = homeworldz::region::encode_child_agent_request(child)](
+                        homeworldz::grid::Transport& transport) {
+                        ChildOfferAnswer answer;
+                        answer.pair_key = pair_key;
+                        try {
+                            answer.seed = homeworldz::region::parse_child_agent_acceptance(
+                                homeworldz::grid::establish_child_agent(
+                                    transport, document, &answer.status));
+                        } catch (const std::exception& error) {
+                            answer.error = error.what();
+                        }
+                        post(std::move(answer));
+                        return true;
+                    },
+                    [post, pair_key] {
+                        ChildOfferAnswer answer;
+                        answer.pair_key = pair_key;
+                        post(std::move(answer));
+                    });
                 return true;
             }
         }
         return false;
+    };
+    // What the neighbours said to the offers above, on this thread.
+    const auto take_child_offer_answers = [&]() {
+        std::vector<ChildOfferAnswer> answers;
+        {
+            std::lock_guard<std::mutex> guard(child_offer_answers->mutex);
+            answers.swap(child_offer_answers->answers);
+        }
+        for (auto& answer : answers) {
+            auto flight = child_offers_in_flight.extract(answer.pair_key);
+            if (flight.empty()) continue;
+            const auto& pair_key = answer.pair_key;
+            const auto& session_id = flight.mapped().session_id;
+            const auto& neighbor = flight.mapped().neighbor;
+            const auto& child = flight.mapped().child;
+            const auto& seed = answer.seed;
+            if (!answer.error.empty())
+                std::cerr << "{\"level\":\"warning\",\"message\":\"child agent not established\""
+                             ",\"neighborId\":" << homeworldz::api::json_string(neighbor.id)
+                          << ",\"error\":" << homeworldz::api::json_string(answer.error)
+                          << "}" << std::endl;
+            if (seed.empty()) {
+                // Not remembered as done — tried again after a pause. The
+                // pause is what keeps this off a busy loop against a
+                // neighbour that is genuinely refusing; the retry is what
+                // stops a neighbour that was merely slow to start from
+                // costing this session its child agent for good.
+                child_agent_retry_at[pair_key] =
+                    std::chrono::steady_clock::now() + child_agent_retry_interval;
+                // The status is the whole diagnosis and used to be absent:
+                // 0 is a neighbour that could not be reached, 401 a service
+                // token that does not match, 409 a home region that is this
+                // one, 400 a request it could not read. They are different
+                // problems and read identically without this.
+                std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
+                             "child agent refused\",\"neighborId\":"
+                          << homeworldz::api::json_string(neighbor.id)
+                          << ",\"endpoint\":"
+                          << homeworldz::api::json_string(neighbor.public_endpoint)
+                          << ",\"status\":" << answer.status
+                          << ",\"retrySeconds\":" << child_agent_retry_interval.count()
+                          << "}" << std::endl;
+                continue;
+            }
+            // The avatar may have left while the offer was out. A crossing
+            // releases offers in flight; anything else that ended the session
+            // here leaves the neighbour's child to expire, and the viewer is
+            // not told of a neighbour on behalf of an avatar it no longer has
+            // here.
+            const bool still_here = std::any_of(avatars.begin(), avatars.end(),
+                [&](const auto& entry) { return entry.second.session_id == session_id; });
+            if (!still_here) continue;
+            // Established: this pair is done for the life of the session.
+            offered_child_agents.insert(pair_key);
+            offered_child_documents[pair_key] = {neighbor.public_endpoint, child};
+            child_agent_retry_at.erase(pair_key);
+            // The worn set may have changed while the offer was out, and the
+            // refresh then saw no offer to send it on. Checked again; it sends
+            // only where the neighbour's copy differs.
+            worn_set_changed.insert(session_id);
+            // The neighbour record IS the facet: the grid resolves a
+            // neighbour to the square facet that borders this one, with its
+            // own corner, extent and viewer port (see the /neighbors reply —
+            // "Nova B 2", facet 1, 900/899, port 42113). Announce that and
+            // nothing computed from it.
+            const auto simulator = simulator_event_endpoint(
+                neighbor.public_endpoint, neighbor.viewer_port);
+            if (!simulator) {
+                std::cerr << "{\"level\":\"warning\",\"message\":\"neighbor not announced, "
+                             "endpoint unresolved\",\"neighborId\":"
+                          << homeworldz::api::json_string(neighbor.id) << "}" << std::endl;
+                continue;
+            }
+            // Both events or neither: a neighbour announced without a seed
+            // that answers stalls the viewer, which is what
+            // enqueue_facet_child_events guards for facets.
+            const auto announced_handle =
+                (static_cast<std::uint64_t>(neighbor.grid_x * 256) << 32) |
+                static_cast<std::uint32_t>(neighbor.grid_y * 256);
+            enqueue_viewer_events_together(session_id, {
+                homeworldz::viewer::enable_simulator_event_xml(
+                    announced_handle, *simulator,
+                    static_cast<std::uint32_t>(neighbor.size_x),
+                    static_cast<std::uint32_t>(neighbor.size_y)),
+                homeworldz::viewer::establish_agent_communication_event_xml({
+                    child.agent_id, simulator_endpoint(*simulator), seed})});
+            announced_child_seeds[pair_key] = seed;
+            std::cout << "{\"level\":\"info\",\"message\":\"neighbor announced to viewer\""
+                         ",\"neighbor\":" << homeworldz::api::json_string(neighbor.name)
+                      << ",\"direction\":" << homeworldz::api::json_string(neighbor.direction)
+                      << ",\"grid\":[" << neighbor.grid_x << "," << neighbor.grid_y
+                      << "],\"viewerPort\":" << neighbor.viewer_port
+                      << ",\"worn\":" << child.worn.size()
+                      << ",\"appearance\":" << (child.has_appearance() ? "true" : "false")
+                      << "}" << std::endl;
+        }
     };
     // Tells one neighbour where one of this region's avatars is looking now, so
     // it can show that viewer what is within its draw distance (ADR 0038). One
@@ -9124,6 +9194,19 @@ int main(int argc, char* argv[]) {
                                           static_cast<unsigned>(child.facet));
                             child.seed = region_public_endpoint + "/caps/seed/" +
                                 child.session_id + "/" + child_visit;
+                            // Unless the viewer already holds a seed for that
+                            // facet from this region: a session that stood here
+                            // was handed every facet's seed at arrival, and
+                            // keeps them when it is demoted. Minting the child
+                            // form instead gave Nova 2 a second seed on the
+                            // first crossing into Lazy 2, and Firestorm dropped
+                            // and refetched its capabilities and event poll
+                            // mid-crossing (2026-11-15).
+                            if (const auto seeds = session_facet_seeds.find(child.session_id);
+                                seeds != session_facet_seeds.end())
+                                if (const auto held = seeds->second.find(child.facet);
+                                    held != seeds->second.end())
+                                    child.seed = held->second;
                             const auto now = std::chrono::steady_clock::now();
                             // The number the avatar already has, learned before
                             // it ever stands here. highest_appearance_versions
@@ -19212,6 +19295,9 @@ int main(int argc, char* argv[]) {
         // One child agent offer per pass, and only when nothing else is waiting
         // on this thread. See offer_one_child_agent for why it is not on the
         // arrival path.
+        // Every tick: an answer waiting here is a neighbour the viewer has not
+        // been told of yet.
+        take_child_offer_answers();
         if (now >= next_child_agent_offer) {
             next_child_agent_offer = now + std::chrono::milliseconds(250);
             static_cast<void>(offer_one_child_agent());
