@@ -252,6 +252,23 @@ int main() {
     if (children.size(now + 1s) != 1) return 1;
     // Establishing refreshed the lease, so the original deadline has no effect.
     if (children.find(visitor.session_id, now + 299s) == nullptr) return 1;
+    // Each facet keeps its own first seed, and seeds_of reports them all: the
+    // arrival files them before the promotion drops them.
+    {
+        homeworldz::region::ChildAgentRegistry facets;
+        static_cast<void>(facets.establish(visitor, now));
+        auto sibling = visitor;
+        sibling.facet = 1;
+        sibling.seed = "seed-facet-one";
+        if (facets.establish(sibling, now + 1s).seed != "seed-facet-one") return 1;
+        auto repeated = sibling;
+        repeated.seed = "seed-facet-one-again";
+        static_cast<void>(facets.establish(repeated, now + 1s));
+        if (facets.seeds_of(visitor.session_id, now + 1s) !=
+            std::map<int, std::string>{{0, "seed-one"}, {1, "seed-facet-one"}})
+            return 1;
+        if (!facets.seeds_of("not-a-child", now + 1s).empty()) return 1;
+    }
     // A promotion answers once: an avatar cannot arrive twice, and a retry that
     // appeared to work would leave a child and a root for one session.
     const auto promoted = children.promote(visitor.session_id, now + 2s);

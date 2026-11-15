@@ -410,6 +410,11 @@ public:
     // would leave a child and a root for the same session.
     std::optional<ChildAgent> promote(std::string_view session_id,
                                       std::chrono::steady_clock::time_point now);
+    // The seed held for each facet this session is a child on, by facet; empty
+    // when it is not a child here. Read before promote(), which drops them: a
+    // crossing promotes onto a facet the viewer reached with one of these.
+    std::map<int, std::string> seeds_of(std::string_view session_id,
+                                        std::chrono::steady_clock::time_point now);
     void remove(std::string_view session_id);
     std::size_t size(std::chrono::steady_clock::time_point now);
     // Every live child. The region that owns an object is the region that must

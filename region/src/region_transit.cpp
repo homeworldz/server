@@ -899,6 +899,14 @@ std::optional<ChildAgent> ChildAgentRegistry::promote(
     return promoted;
 }
 
+std::map<int, std::string> ChildAgentRegistry::seeds_of(
+    std::string_view session_id, std::chrono::steady_clock::time_point now) {
+    purge(now);
+    const auto found = entries_.find(std::string(session_id));
+    if (found == entries_.end()) return {};
+    return found->second.seeds;
+}
+
 void ChildAgentRegistry::remove(std::string_view session_id) {
     if (session_id.empty()) return;
     entries_.erase(std::string(session_id));

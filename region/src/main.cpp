@@ -9792,7 +9792,30 @@ int main(int argc, char* argv[]) {
                                     (arrival != session_arrival_facets.end() &&
                                      arrival->second == *establish_facet);
                                 std::string establish_seed;
-                                if (!primary_is_arrival) {
+                                // The seed on file for the avatar's facet is
+                                // the one the viewer holds, whichever queue
+                                // asked. Rebuilt from the poll, a poll on a
+                                // sibling's queue named the bare seed for a
+                                // facet reached by crossing (Lazy, 2026-11-15).
+                                std::string filed_seed;
+                                if (const auto filed = session_facet_seeds.find(session_id);
+                                    establish_facet && filed != session_facet_seeds.end())
+                                    if (const auto held = filed->second.find(*establish_facet);
+                                        held != filed->second.end())
+                                        filed_seed = held->second;
+                                // No avatar here and a child here: the region
+                                // that announced this one already established
+                                // it with the child seed. Naming another one
+                                // here gave Firestorm two seeds for Lazy at
+                                // login, and its two capability fetches cancelled
+                                // each other some thirty times (2026-11-15).
+                                const bool child_only = !establish_facet &&
+                                    child_agents.find(session_id,
+                                                      std::chrono::steady_clock::now()) != nullptr;
+                                if (child_only) {
+                                } else if (!filed_seed.empty()) {
+                                    establish_seed = filed_seed;
+                                } else if (!primary_is_arrival) {
                                     establish_seed = facet_child_seed(session_id, *establish_facet);
                                 } else if (capability_visit_id.empty() ||
                                            (establish_facet &&
@@ -9810,7 +9833,8 @@ int main(int argc, char* argv[]) {
                                     establish_seed =
                                         region_public_endpoint + "/caps/seed/" + session_id;
                                 }
-                                if (authorized_session && !sim_ip_and_port.empty()) {
+                                if (child_only) {
+                                } else if (authorized_session && !sim_ip_and_port.empty()) {
                                     enqueue_viewer_event(session_id,
                                         homeworldz::viewer::establish_agent_communication_event_xml({
                                             authorized_session->agent_id, sim_ip_and_port,
@@ -14758,6 +14782,23 @@ int main(int argc, char* argv[]) {
                             // a child of this region any more, and leaving the
                             // record would let a second arrival believe the
                             // viewer still holds a world it may not.
+                            // The seeds it held as a child go on file first: the
+                            // viewer reached each of those facets with one, and
+                            // a crossing back or a re-offer must repeat it.
+                            const auto child_seeds = child_agents.seeds_of(
+                                session_id, std::chrono::steady_clock::now());
+                            for (const auto& [facet, seed] : child_seeds)
+                                session_facet_seeds[session_id][facet] = seed;
+                            // Any other arrival reached this facet with the
+                            // login seed or its transit's, and that is now the
+                            // one the viewer holds — replacing one kept from an
+                            // earlier stay, which a teleport back does not
+                            // reuse (Nova, 2026-11-15).
+                            if (!child_seeds.contains(arrival_facet))
+                                session_facet_seeds[session_id][arrival_facet] = arrival ?
+                                    region_public_endpoint + "/caps/seed/" + session_id + "/" +
+                                        arrival->id :
+                                    region_public_endpoint + "/caps/seed/" + session_id;
                             const auto promoted = child_agents.promote(
                                 session_id, std::chrono::steady_clock::now());
                             // Rooted here now: what it is shown is a primary's.
@@ -15076,19 +15117,9 @@ int main(int argc, char* argv[]) {
                             // holds a circuit on (a crossing's re-arrival) is
                             // left alone. Squares have no siblings.
                             if (facet_count > 1) {
-                                // The arrival facet's seed is whatever the
-                                // viewer reached this circuit with — the login
-                                // seed, or a transit's suffixed one — so a
-                                // later CrossedRegion back here can repeat it
-                                // verbatim. Recorded only when absent: a
-                                // promotion arrives on a facet whose child
-                                // seed is already on file, and that one is
-                                // the viewer's truth.
-                                session_facet_seeds[session_id].try_emplace(
-                                    arrival_facet,
-                                    arrival ? region_public_endpoint + "/caps/seed/" +
-                                                  session_id + "/" + arrival->id
-                                            : region_public_endpoint + "/caps/seed/" + session_id);
+                                // The arrival facet's seed went on file with
+                                // the promotion above.
+                                //
                                 // The arrival backfill above already carried
                                 // this facet's world; a stray UseCircuitCode
                                 // on this key must not re-send it.
@@ -18602,16 +18633,22 @@ int main(int argc, char* argv[]) {
                     // The record is for the facet it left from, so the seed
                     // below files under that facet and not over a sibling's.
                     child.facet = departing_facet;
-                    if (const auto arrived = session_arrival_facets.find(session_id);
-                        arrived != session_arrival_facets.end() &&
-                        arrived->second == departing_facet) {
-                        child.seed = region_public_endpoint + "/caps/seed/" + session_id;
-                    } else if (const auto seeds = session_facet_seeds.find(session_id);
-                               seeds != session_facet_seeds.end()) {
+                    //
+                    // The seed on file wins: it is what the viewer reached the
+                    // facet with. The bare seed for the arrival facet is right
+                    // only after a login, and filing it after a teleport or a
+                    // crossing made the next crossing back hand Firestorm a
+                    // seed it had never seen (Nova, 2026-11-15).
+                    if (const auto seeds = session_facet_seeds.find(session_id);
+                        seeds != session_facet_seeds.end()) {
                         if (const auto held = seeds->second.find(departing_facet);
                             held != seeds->second.end())
                             child.seed = held->second;
                     }
+                    if (const auto arrived = session_arrival_facets.find(session_id);
+                        child.seed.empty() && arrived != session_arrival_facets.end() &&
+                        arrived->second == departing_facet)
+                        child.seed = region_public_endpoint + "/caps/seed/" + session_id;
                     if (child.seed.empty())
                         child.seed = region_public_endpoint + "/caps/seed/" + session_id +
                             "/0000000c-a9e7-4000-8000-000000000000";
