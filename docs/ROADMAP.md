@@ -202,17 +202,17 @@ Vehicle crossings follow vehicles, in Phase 6.
 
 glTF (GLB) is the stored format, and each client is served a derived rendition.
 
-- [x] M1 static mesh.
-- [x] M2 Firestorm mesh uploads.
-- [x] M3 texture renditions.
-- [x] M3 glTF materials on published faces, so two-sided faces render in viewers.
-- [ ] M3 editing a region-assigned material in a viewer's build tool.
+- [x] Static mesh.
+- [x] Firestorm mesh uploads.
+- [x] Texture renditions.
+- [x] glTF materials on published faces, so two-sided faces render in viewers.
+- [ ] Editing a region-assigned material in a viewer's build tool.
 - [ ] Terrain surface for session clients.
 - [x] Close the texture pipeline's asymmetry.
 - [ ] V-HACD convex decomposition for mesh physics.
 - [x] Regenerate stale renditions.
-- [x] M4 rigged mesh mapped onto the Bento skeleton, for attachments and body wearables.
-- [ ] M5 server-side import of source formats ([ADR 0035](adr/0035-server-side-source-format-import.md)).
+- [x] Rigged mesh mapped onto the Bento skeleton, for attachments and body wearables.
+- [ ] Server-side import of source formats ([ADR 0035](adr/0035-server-side-source-format-import.md)).
   - [x] FBX import.
   - [ ] OBJ and DAE import.
   - [ ] Archive import for sources with external textures.
