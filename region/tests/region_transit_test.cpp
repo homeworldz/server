@@ -55,8 +55,10 @@ int main() {
     if (arrival_gate.mark_seed_served({}, transit.id) ||
         arrival_gate.mark_seed_served(transit.session_id, {}) ||
         arrival_gate.consume_seed(transit.session_id, transit.id)) return 1;
+    if (arrival_gate.seed_served(transit.session_id, transit.id)) return 1;
     if (!arrival_gate.mark_seed_served(transit.session_id, transit.id) ||
         arrival_gate.mark_seed_served(transit.session_id, transit.id) ||
+        !arrival_gate.seed_served(transit.session_id, transit.id) ||
         arrival_gate.size() != 1 ||
         !arrival_gate.consume_seed(transit.session_id, transit.id) ||
         arrival_gate.consume_seed(transit.session_id, transit.id) ||

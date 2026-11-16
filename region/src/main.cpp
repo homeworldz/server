@@ -3557,6 +3557,17 @@ int main(int argc, char* argv[]) {
     // (2026-08-20, KERNELBASE abort straight after process_enable_simulator
     // for a region "already exists and is alive").
     std::unordered_map<std::string, std::unordered_map<int, std::string>> session_facet_seeds;
+    // An arrival that promoted a child here but came by transit: a crossing
+    // reached the facet with the child seed, a teleport with the transit seed
+    // its TeleportFinish carried. Only the viewer fetching the transit seed
+    // tells them apart, so until it does, or a crossing's worth of time has
+    // passed, this region names no seed of its own (Nova, 2026-11-15).
+    struct PendingTransitSeed {
+        std::string transit_id;
+        int facet{};
+        std::chrono::steady_clock::time_point until;
+    };
+    std::unordered_map<std::string, PendingTransitSeed> pending_transit_seeds;
     std::unordered_set<std::string> established_events;
     std::unordered_set<std::string> parcel_overlay_sent;
     std::unordered_map<std::string, LiveAvatar> avatars;
@@ -5955,6 +5966,7 @@ int main(int argc, char* argv[]) {
         // capabilities in place, which is the crash this has caused twice.
         if (!demoting) session_facet_seeds.erase(session_id);
         session_arrival_facets.erase(session_id);
+        pending_transit_seeds.erase(session_id);
         parcel_overlay_sent.erase(session_id);
         queued_viewer_events.erase(session_id);
         capability_arrival_gate.clear_session(session_id);
@@ -9757,6 +9769,16 @@ int main(int argc, char* argv[]) {
                             if (!capability_visit_id.empty())
                                 static_cast<void>(capability_arrival_gate.mark_seed_served(
                                     session_id, capability_visit_id));
+                            // The viewer fetched the transit seed, so this was a
+                            // teleport and that is the seed it now holds here.
+                            if (const auto pending = pending_transit_seeds.find(session_id);
+                                pending != pending_transit_seeds.end() &&
+                                pending->second.transit_id == capability_visit_id) {
+                                session_facet_seeds[session_id][pending->second.facet] =
+                                    region_public_endpoint + "/caps/seed/" + session_id + "/" +
+                                    capability_visit_id;
+                                pending_transit_seeds.erase(pending);
+                            }
                         } else if (authorized && event_queue) {
                             if (established_events.insert(session_id).second) {
                                 // The simulator named here is the facet the
@@ -9818,8 +9840,18 @@ int main(int argc, char* argv[]) {
                                 // facet; the bare guess is the likeliest source
                                 // of the second Lazy seed before the crash
                                 // (2026-11-15).
-                                const bool facet_unknown = !establish_facet && !child_only &&
+                                bool facet_unknown = !establish_facet && !child_only &&
                                     session_facet_seeds.contains(session_id);
+                                // A promoted transit arrival whose kind is not
+                                // known yet: wait for the transit seed fetch,
+                                // or for the window to close on a crossing.
+                                if (const auto pending = pending_transit_seeds.find(session_id);
+                                    pending != pending_transit_seeds.end()) {
+                                    if (std::chrono::steady_clock::now() < pending->second.until)
+                                        facet_unknown = true;
+                                    else
+                                        pending_transit_seeds.erase(pending);
+                                }
                                 if (facet_unknown) established_events.erase(session_id);
                                 if (child_only || facet_unknown) {
                                 } else if (!filed_seed.empty()) {
@@ -14815,6 +14847,21 @@ int main(int argc, char* argv[]) {
                                     region_public_endpoint + "/caps/seed/" + session_id + "/" +
                                         arrival->id :
                                     region_public_endpoint + "/caps/seed/" + session_id;
+                            // A child here and a transit: a crossing promoted
+                            // it, or a teleport came back while this region was
+                            // still holding the child it left (far departures
+                            // keep one for a minute). The teleport's viewer
+                            // holds the transit seed, and naming the child seed
+                            // to it crashed Firestorm (Nova, 2026-11-15).
+                            else if (arrival) {
+                                if (capability_arrival_gate.seed_served(session_id, arrival->id))
+                                    session_facet_seeds[session_id][arrival_facet] =
+                                        region_public_endpoint + "/caps/seed/" + session_id + "/" +
+                                        arrival->id;
+                                else
+                                    pending_transit_seeds[session_id] = {arrival->id, arrival_facet,
+                                        std::chrono::steady_clock::now() + std::chrono::seconds(2)};
+                            }
                             const auto promoted = child_agents.promote(
                                 session_id, std::chrono::steady_clock::now());
                             // Rooted here now: what it is shown is a primary's.

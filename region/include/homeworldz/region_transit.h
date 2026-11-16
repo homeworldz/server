@@ -502,6 +502,8 @@ class CapabilityArrivalGate {
 public:
     bool mark_seed_served(std::string_view session_id, std::string_view visit_id);
     bool consume_seed(std::string_view session_id, std::string_view visit_id);
+    // Whether that seed has been served, leaving it served.
+    bool seed_served(std::string_view session_id, std::string_view visit_id) const;
     void clear_session(std::string_view session_id);
     std::size_t size() const;
 

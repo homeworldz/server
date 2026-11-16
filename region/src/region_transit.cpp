@@ -946,6 +946,12 @@ bool CapabilityArrivalGate::consume_seed(
     return served_seeds_.erase(key(session_id, visit_id)) != 0;
 }
 
+bool CapabilityArrivalGate::seed_served(
+    std::string_view session_id, std::string_view visit_id) const {
+    if (session_id.empty() || visit_id.empty()) return false;
+    return served_seeds_.contains(key(session_id, visit_id));
+}
+
 void CapabilityArrivalGate::clear_session(std::string_view session_id) {
     if (session_id.empty()) return;
     const auto prefix = std::string(session_id) + '|';
