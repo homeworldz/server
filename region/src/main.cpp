@@ -9812,7 +9812,16 @@ int main(int argc, char* argv[]) {
                                 const bool child_only = !establish_facet &&
                                     child_agents.find(session_id,
                                                       std::chrono::steady_clock::now()) != nullptr;
-                                if (child_only) {
+                                // No avatar to place, yet seeds on file: this
+                                // is not a login, so the bare seed below would
+                                // be a guess. Wait for a poll that can name the
+                                // facet; the bare guess is the likeliest source
+                                // of the second Lazy seed before the crash
+                                // (2026-11-15).
+                                const bool facet_unknown = !establish_facet && !child_only &&
+                                    session_facet_seeds.contains(session_id);
+                                if (facet_unknown) established_events.erase(session_id);
+                                if (child_only || facet_unknown) {
                                 } else if (!filed_seed.empty()) {
                                     establish_seed = filed_seed;
                                 } else if (!primary_is_arrival) {
@@ -9833,12 +9842,19 @@ int main(int argc, char* argv[]) {
                                     establish_seed =
                                         region_public_endpoint + "/caps/seed/" + session_id;
                                 }
-                                if (child_only) {
+                                if (child_only || facet_unknown) {
                                 } else if (authorized_session && !sim_ip_and_port.empty()) {
                                     enqueue_viewer_event(session_id,
                                         homeworldz::viewer::establish_agent_communication_event_xml({
                                             authorized_session->agent_id, sim_ip_and_port,
                                             establish_seed}));
+                                    std::cout << "{\"level\":\"info\",\"message\":\"agent communication established\""
+                                                 ",\"session\":" << homeworldz::api::json_string(session_id)
+                                              << ",\"facet\":" << (establish_facet ? *establish_facet : -1)
+                                              << ",\"poll\":" << homeworldz::api::json_string(capability_visit_id)
+                                              << ",\"seed\":" << homeworldz::api::json_string(
+                                                     establish_seed.substr(establish_seed.rfind('/') + 1))
+                                              << "}" << std::endl;
                                 } else if (authorized_session) {
                                     // Emitting the event with an unresolved
                                     // address is worse than omitting it: the
@@ -18185,19 +18201,27 @@ int main(int argc, char* argv[]) {
                             endpoint, standing_facet);
                         std::optional<std::string> facet_seed;
                         if (target_key) {
-                            // Computed, never looked up: the seed the target
-                            // facet's region holds is the bare grid-issued one
-                            // for the facet the session arrived on and the
-                            // deterministic child seed for every other. The
-                            // old bookkeeping lookup could miss and fall back
-                            // wrong, and each mismatch made Firestorm rebuild
-                            // that region's caps mid-crossing — fatal after a
-                            // few round trips (found live, 2026-08-20).
-                            const auto arrival = session_arrival_facets.find(session_id);
-                            facet_seed = (arrival != session_arrival_facets.end() &&
-                                          arrival->second == standing_facet) ?
-                                region_public_endpoint + "/caps/seed/" + session_id :
-                                facet_child_seed(session_id, standing_facet);
+                            // The seed on file is the one the viewer reached
+                            // that facet with. Computed instead, a session that
+                            // came in as a neighbour's child (0000000c seeds)
+                            // was handed a sibling or bare seed it had never
+                            // seen; Firestorm rebuilt the facet's caps
+                            // mid-crossing and crashed on the way back (Lazy,
+                            // 2026-11-15). The rule stays as the fallback: bare
+                            // for the arrival facet, the deterministic child
+                            // seed for every other.
+                            if (const auto filed = session_facet_seeds.find(session_id);
+                                filed != session_facet_seeds.end())
+                                if (const auto held = filed->second.find(standing_facet);
+                                    held != filed->second.end())
+                                    facet_seed = held->second;
+                            if (!facet_seed) {
+                                const auto arrival = session_arrival_facets.find(session_id);
+                                facet_seed = (arrival != session_arrival_facets.end() &&
+                                              arrival->second == standing_facet) ?
+                                    region_public_endpoint + "/caps/seed/" + session_id :
+                                    facet_child_seed(session_id, standing_facet);
+                            }
                         } else {
                             facet_seed = enqueue_facet_child_events(
                                 session_id, agent_id, standing_facet);
@@ -18213,6 +18237,8 @@ int main(int argc, char* argv[]) {
                             std::cout << "{\"level\":\"info\",\"message\":\"avatar facet crossing signaled\""
                                          ",\"fromFacet\":" << circuit_facet
                                       << ",\"toFacet\":" << standing_facet
+                                      << ",\"seed\":" << homeworldz::api::json_string(
+                                             facet_seed->substr(facet_seed->rfind('/') + 1))
                                       << ",\"agent\":" << homeworldz::api::json_string(avatar.user_id)
                                       << "}" << std::endl;
                         }
