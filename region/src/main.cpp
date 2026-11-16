@@ -14842,7 +14842,15 @@ int main(int argc, char* argv[]) {
                             // one the viewer holds — replacing one kept from an
                             // earlier stay, which a teleport back does not
                             // reuse (Nova, 2026-11-15).
-                            if (!child_seeds.contains(arrival_facet))
+                            //
+                            // Not a crossing between this region's own facets:
+                            // that CompleteAgentMovement is the viewer moving
+                            // onto a facet whose seed is already on file, and
+                            // filing the bare seed over it handed Firestorm a
+                            // second seed after every such crossing until it
+                            // crashed (Lazy, 2026-11-15).
+                            if (internal_promotion) {
+                            } else if (!child_seeds.contains(arrival_facet))
                                 session_facet_seeds[session_id][arrival_facet] = arrival ?
                                     region_public_endpoint + "/caps/seed/" + session_id + "/" +
                                         arrival->id :
