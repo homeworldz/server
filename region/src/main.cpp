@@ -215,6 +215,11 @@ struct LiveAvatar {
     std::string outbound_transit_id;
     std::chrono::steady_clock::time_point outbound_transit_expires{};
     std::chrono::steady_clock::time_point next_crossing_attempt{};
+    // A transit arrival's hold against bouncing straight back over the
+    // border it came in by. Region crossings only: a facet line is another
+    // axis, and holding it too kept a corner walk standing in the middle
+    // facet for a second (Nova to Lazy 2 to Lazy, 2026-11-15).
+    std::chrono::steady_clock::time_point next_region_crossing{};
     // How a border crossing held this avatar at the edge, for the one line
     // logged when it is released: from the signal to the release, how many
     // ticks containment had to pull it back, and how far past the edge
@@ -14603,9 +14608,17 @@ int main(int argc, char* argv[]) {
                                 // without one a step still carrying momentum
                                 // back over the line can bounce a viewer
                                 // between two regions.
+                                //
+                                // That hold is against the border it came in
+                                // by, so it gates region crossings alone; a
+                                // facet line only needs the settle a facet
+                                // crossing itself gets.
                                 avatar_iterator->second.next_crossing_attempt =
-                                    now + (arrival ? std::chrono::seconds(1)
-                                                   : std::chrono::seconds(5));
+                                    now + (arrival ? std::chrono::milliseconds(250)
+                                                   : std::chrono::milliseconds(5000));
+                                if (arrival)
+                                    avatar_iterator->second.next_region_crossing =
+                                        now + std::chrono::seconds(1);
                                 avatar_iterator->second.session_id =
                                     homeworldz::viewer::format_uuid(identity->session_id);
                                 // The unsuffixed event poll (login) and the
@@ -18190,9 +18203,11 @@ int main(int argc, char* argv[]) {
                                   << ",\"south\":" << (open.south ? "true" : "false")
                                   << ",\"north\":" << (open.north ? "true" : "false")
                                   << "},\"crossingDeferredMs\":"
-                                  << (avatar.next_crossing_attempt > now
+                                  << ((std::max)(avatar.next_crossing_attempt,
+                                                 avatar.next_region_crossing) > now
                                           ? std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                avatar.next_crossing_attempt - now).count()
+                                                (std::max)(avatar.next_crossing_attempt,
+                                                           avatar.next_region_crossing) - now).count()
                                           : 0)
                                   << "}" << std::endl;
                     }
@@ -18351,7 +18366,8 @@ int main(int argc, char* argv[]) {
                     }
                     continue;
                 }
-                if (crossing && now >= avatar.next_crossing_attempt) {
+                if (crossing && now >= avatar.next_crossing_attempt &&
+                    now >= avatar.next_region_crossing) {
                     const auto* identity = circuits.identity(endpoint);
                     const auto simulator = simulator_event_endpoint(
                         crossing->destination.public_endpoint,
