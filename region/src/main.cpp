@@ -11083,10 +11083,19 @@ int main(int argc, char* argv[]) {
                         // left alone it lingers as a dead neighbor for a ping
                         // timeout, shows red on the minimap, and colliding
                         // with its corpse freezes the next crossing back.
-                        homeworldz::viewer::Packet disable_packet;
-                        disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
-                        static_cast<void>(send_udp(viewer_server, replaced.endpoint,
-                            homeworldz::viewer::encode_packet(disable_packet)));
+                        //
+                        // Only when it IS another facet. The viewer keys a
+                        // region by the simulator's address, so a same-facet
+                        // reconnect from a new viewer port, told to disable
+                        // the old one, drops the facet it just reconnected to:
+                        // a re-announced Lazy reconnected from a new port and
+                        // went to water (2026-11-17).
+                        if (endpoint_facet_of(replaced.endpoint) != endpoint_facet_of(endpoint)) {
+                            homeworldz::viewer::Packet disable_packet;
+                            disable_packet.payload = homeworldz::viewer::encode_disable_simulator();
+                            static_cast<void>(send_udp(viewer_server, replaced.endpoint,
+                                homeworldz::viewer::encode_packet(disable_packet)));
+                        }
                         std::cout << "{\"level\":\"info\",\"message\":\"viewer circuit re-tagged to facet\""
                                      ",\"from\":" << homeworldz::api::json_string(replaced.endpoint)
                                   << ",\"to\":" << homeworldz::api::json_string(endpoint)
