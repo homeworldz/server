@@ -474,6 +474,15 @@ int main() {
     // And an answer with no seed is a refusal, which a source must not announce
     // a neighbour on.
     if (!homeworldz::region::parse_child_agent_acceptance("{}").empty()) return 1;
+    // Held is said only when it is true, and survives the round trip with the
+    // seed beside it.
+    if (homeworldz::region::parse_child_agent_held(
+            homeworldz::region::encode_child_agent_acceptance("/caps/seed/abc"))) return 1;
+    {
+        const auto held = homeworldz::region::encode_child_agent_acceptance("/caps/seed/abc", true);
+        if (!homeworldz::region::parse_child_agent_held(held)) return 1;
+        if (homeworldz::region::parse_child_agent_acceptance(held) != "/caps/seed/abc") return 1;
+    }
     // A farewell to a child circuit names what that circuit was shown, so a
     // viewer whose avatar is next door drops this region's content instead of
     // keeping a frozen copy of it at its last position.

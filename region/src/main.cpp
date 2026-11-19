@@ -6362,6 +6362,7 @@ int main(int argc, char* argv[]) {
     struct ChildOfferAnswer {
         std::string pair_key;
         std::string seed;
+        bool held{};
         int status{};
         std::string error;
     };
@@ -6587,9 +6588,10 @@ int main(int argc, char* argv[]) {
                         ChildOfferAnswer answer;
                         answer.pair_key = pair_key;
                         try {
-                            answer.seed = homeworldz::region::parse_child_agent_acceptance(
-                                homeworldz::grid::establish_child_agent(
-                                    transport, document, &answer.status));
+                            const auto accepted = homeworldz::grid::establish_child_agent(
+                                transport, document, &answer.status);
+                            answer.seed = homeworldz::region::parse_child_agent_acceptance(accepted);
+                            answer.held = homeworldz::region::parse_child_agent_held(accepted);
                         } catch (const std::exception& error) {
                             answer.error = error.what();
                         }
@@ -6665,6 +6667,18 @@ int main(int argc, char* argv[]) {
             // refresh then saw no offer to send it on. Checked again; it sends
             // only where the neighbour's copy differs.
             worn_set_changed.insert(session_id);
+            // The viewer already holds that facet with this very seed (the
+            // neighbour answers with the one on file). Announcing it again made
+            // the viewer reconnect from a new port and refetch the region's
+            // capabilities, and Lazy went to water behind it (2026-11-17).
+            if (answer.held) {
+                announced_child_seeds[pair_key] = seed;
+                std::cout << "{\"level\":\"info\",\"message\":\"neighbor already held by viewer\""
+                             ",\"neighbor\":" << homeworldz::api::json_string(neighbor.name)
+                          << ",\"grid\":[" << neighbor.grid_x << "," << neighbor.grid_y
+                          << "]}" << std::endl;
+                continue;
+            }
             // The neighbour record IS the facet: the grid resolves a
             // neighbour to the square facet that borders this one, with its
             // own corner, extent and viewer port (see the /neighbors reply —
@@ -9258,16 +9272,30 @@ int main(int argc, char* argv[]) {
                                     });
                                 pending_item_prefetches.push_back(std::move(prefetch));
                             }
+                            // Whether the viewer already has a live circuit to
+                            // that facet. A session that just left here for
+                            // Nova is demoted, not gone, and Nova re-announced
+                            // Lazy to it; the viewer reconnected from a new
+                            // port and refetched Lazy's capabilities, which is
+                            // how Lazy went to water (2026-11-17).
+                            const auto session_uuid =
+                                homeworldz::viewer::parse_uuid(child.session_id);
+                            const bool held = session_uuid &&
+                                circuits.session_endpoint_for_facet(*session_uuid, child.facet)
+                                    .has_value();
                             const auto& established = child_agents.establish(child, now);
                             std::cout << "{\"level\":\"info\",\"message\":\"child agent established\""
                                          ",\"agent\":" << homeworldz::api::json_string(established.agent_id)
                                       << ",\"homeRegionId\":"
                                       << homeworldz::api::json_string(established.home_region_id)
+                                      << ",\"facet\":" << child.facet
+                                      << ",\"held\":" << (held ? "true" : "false")
                                       << ",\"children\":" << child_agents.size(now)
                                       << "}" << std::endl;
                             response = homeworldz::http::response_for_content(
                                 request, 200, "application/json",
-                                homeworldz::region::encode_child_agent_acceptance(established.seed));
+                                homeworldz::region::encode_child_agent_acceptance(
+                                    established.seed, held));
                         }
                     }
                     // An object arriving from a neighbor. Staging and activation

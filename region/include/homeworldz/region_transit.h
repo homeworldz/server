@@ -313,8 +313,13 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
 // port — and having the destination name it too was a second authority for one
 // fact, which is how a viewer got pointed at the wrong half of a neighbour
 // (2026-08-21).
-std::string encode_child_agent_acceptance(std::string_view seed);
+//
+// held says the viewer already has a live circuit to that facet, so the source
+// must not announce it again: a re-announcement of a region the viewer holds
+// makes it reconnect and refetch that region's capabilities (2026-11-17).
+std::string encode_child_agent_acceptance(std::string_view seed, bool held = false);
 std::string parse_child_agent_acceptance(std::string_view document);
+bool parse_child_agent_held(std::string_view document);
 
 // What the home region tells a neighbour as the avatar moves: where it is,
 // where its camera is, and how far it draws, all in absolute grid metres like

@@ -715,12 +715,17 @@ std::optional<ChildAgent> parse_child_agent_request(std::string_view document,
     return agent;
 }
 
-std::string encode_child_agent_acceptance(std::string_view seed) {
-    return std::string{"{\"seed\":"} + quoted_string(std::string(seed)) + "}";
+std::string encode_child_agent_acceptance(std::string_view seed, bool held) {
+    return std::string{"{\"seed\":"} + quoted_string(std::string(seed)) +
+        (held ? ",\"held\":true}" : "}");
 }
 
 std::string parse_child_agent_acceptance(std::string_view document) {
     return std::string{json_string_field(document, "seed")};
+}
+
+bool parse_child_agent_held(std::string_view document) {
+    return document.find("\"held\":true") != std::string_view::npos;
 }
 
 std::string encode_child_agent_view(const ChildAgentView& view) {
