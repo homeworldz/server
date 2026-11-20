@@ -233,6 +233,10 @@ int main() {
         // A bad argument is reported at the call that refused it.
         error = error_of("default { state_entry() {\n  llSay(\"zero\", \"hi\");\n} }");
         require(error.line == 2 && error.column == 3, "a refused argument is reported at its call");
+        // `print` is a keyword in LSL's grammar and cannot name a variable.
+        error = error_of("default { state_entry() {\n  integer print = 1;\n} }");
+        require(error.line == 2 && error.column == 11 && error.message == "expected variable name",
+                "print is reserved");
         error = error_of("integer a;\ninteger a;\ndefault { state_entry() { } }");
         require(error.line == 2 && error.column == 1, "a duplicate global is reported where it is declared again");
         error = error_of("default {\n  state_entry() { }\n  no_such_event() { }\n}");

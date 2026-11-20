@@ -24,3 +24,17 @@ endif()
 add_executable(homeworldz-script-poc-tests tests/script_poc_test.cpp)
 target_link_libraries(homeworldz-script-poc-tests PRIVATE homeworldz-script)
 add_test(NAME script-poc COMMAND homeworldz-script-poc-tests)
+
+# How much of LSL Falcon runs: the semantics checks and Tailslide's corpus,
+# compared with the record of what passed before (tests/compat/*.txt).
+add_executable(homeworldz-script-compat-tests
+  tests/compat/compat_test.cpp
+  tests/compat/semantics.cpp)
+target_link_libraries(homeworldz-script-compat-tests PRIVATE homeworldz-script)
+if(MSVC)
+  # The RSA test keys are long string literals.
+  target_compile_options(homeworldz-script-compat-tests PRIVATE /W4 /permissive-)
+endif()
+add_test(NAME script-compat COMMAND homeworldz-script-compat-tests
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tailslide-tests/scripts
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat)

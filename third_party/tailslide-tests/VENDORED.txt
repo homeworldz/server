@@ -1,0 +1,24 @@
+Tailslide's test scripts (data only)
+
+What:   scripts/   the LSL scripts Tailslide tests itself with: real scripts and
+                   pathological ones, 122 files. Its `expected/` folder (the
+                   CIL, LSO and pretty-printed output its own back ends are
+                   compared with) is left out.
+
+From:   https://github.com/secondlife/tailslide, tests/scripts
+        Commit f950e066863f215c2d22c66fc9498b12d4387b7f
+        MIT (LICENSE). Tailslide's NOTICE.txt says of these files: "LSL scripts
+        are from various sources and the property of their respective owners."
+
+Why:    Tailslide is the LSL parser and checker Linden Lab publishes, and this
+        corpus is what it holds itself to. A script marks the errors Tailslide
+        must report with `$[E1xxxx]` in a comment on the line (E2xxxx are
+        warnings), so the corpus says for each script whether a compiler should
+        accept it. falcon/tests/compat runs Falcon over it and tracks how many
+        of the accepted scripts compile.
+
+        Tailslide itself is not built or linked here: Falcon's parser is
+        handwritten (ADR 0021). Only its test data is used.
+
+Vendored 2026-11-19 from Ashley's Rookery scripting package, which carried
+Tailslide unmodified.

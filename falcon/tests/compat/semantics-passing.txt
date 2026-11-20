@@ -1,0 +1,3 @@
+Halcyon: the constants only its compiler defines
+a type error is reported with its LSL line
+integer * wraps exactly (Python: 123456789*1000 -> -1097262584)

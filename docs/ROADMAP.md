@@ -33,7 +33,7 @@ client.
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
-| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="22" aria-label="Phase 6 progress: 22%">22%</progress> | 22% |
+| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="23" aria-label="Phase 6 progress: 23%">23%</progress> | 23% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="25" aria-label="Phase 7 progress: 25%">25%</progress> | 25% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="4" aria-label="Phase 8 progress: 4%">4%</progress> | 4% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="70" aria-label="Phase 9 progress: 70%">70%</progress> | 70% |
@@ -258,7 +258,7 @@ glTF (GLB) is the stored format, and each client is served a derived rendition.
 - [ ] Make `float`, `vector`, and `rotation` first-class types.
 - [x] Store LSL source in personal and task inventory, editable from Firestorm.
 - [ ] Cache compiled bytecode by source hash, compiler version, and runtime ABI.
-- [ ] Build LSL compatibility tests.
+- [x] Build LSL compatibility tests.
 
 ### Cooperative runtime and resource control
 
