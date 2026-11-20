@@ -82,10 +82,17 @@ int compare(const std::string& suite, const std::set<std::string>& passing, std:
 // Whether Tailslide accepts a script: it marks each error it must report with
 // $[E1xxxx] on the line, and three scripts are refused without a mark (its
 // conformance.cc checks them by hand).
+//
+// Two of its errors belong to Second Life's retired LSO compiler alone, as the
+// scripts that carry them say; Mono compiles those scripts, and so does Falcon.
 bool tailslide_accepts(const std::string& relative, const std::string& source) {
     static const std::set<std::string> refused_unmarked{
         "parserstackdepth3.lsl", "print_no_shadowing.lsl", "type_error_no_assert.lsl"};
-    return source.find("$[E1") == std::string::npos && !refused_unmarked.contains(relative);
+    static const std::set<std::string> lso_only{"E10021", "E10037"};
+    for (std::size_t at = source.find("$[E1"); at != std::string::npos; at = source.find("$[E1", at + 1)) {
+        if (!lso_only.contains(source.substr(at + 2, 6))) return false;
+    }
+    return !refused_unmarked.contains(relative);
 }
 
 }  // namespace
@@ -93,9 +100,10 @@ bool tailslide_accepts(const std::string& relative, const std::string& source) {
 int main(int argc, char** argv) {
     std::vector<std::string> arguments(argv + 1, argv + argc);
     const bool update = std::erase(arguments, "--update") != 0;
+    const bool details = std::erase(arguments, "--details") != 0; // why each failing check fails
     if (arguments.size() != 2) {
         std::cerr << "usage: homeworldz-script-compat-tests <tailslide scripts folder> "
-                     "<baseline folder> [--update]\n";
+                     "<baseline folder> [--update] [--details]\n";
         return 2;
     }
     const fs::path corpus_root = arguments[0];
@@ -119,6 +127,11 @@ int main(int argc, char** argv) {
     }
     int differences = compare("semantics", semantics_passing, compat::results().size(),
                               baseline_root / "semantics-passing.txt", update);
+    if (details) {
+        for (const auto& result : compat::results()) {
+            if (!result.passed) std::cout << "  fails: " << result.name << "\n      " << result.detail << "\n";
+        }
+    }
 
     // Corpus.
     std::vector<fs::path> files;

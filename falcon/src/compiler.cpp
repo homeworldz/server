@@ -1,8 +1,10 @@
 #include "homeworldz/script/compiler.h"
 
 #include "homeworldz/script/lexer.h"
+#include "homeworldz/script/library.h"
 #include "homeworldz/script/parser.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <optional>
@@ -24,13 +26,14 @@ const char* type_name(Type type) {
     case Type::Rotation: return "rotation";
     case Type::Key: return "key";
     case Type::Float: return "float";
+    case Type::List: return "list";
     }
     return "?";
 }
 
 // LSL converts between string and key implicitly wherever one is given for the
 // other, and widens an integer given where a float is wanted; every other pair
-// of types must match exactly. The widening needs code (Compiler::convert).
+// of types must match exactly. Both conversions need code (Compiler::convert).
 bool assignable(Type to, Type from) {
     if (to == from) return true;
     return (to == Type::Key && from == Type::String) ||
@@ -42,8 +45,9 @@ bool assignable(Type to, Type from) {
 // signature and every constant value comes from there, not from this file.
 #include "lsl_index.inc"
 
-// The functions the region answers today. A script calling a function missing
-// here does not compile, even though the index knows its signature: compiling
+// The functions the region answers today; Falcon's own library answers more
+// (library.cpp). A script calling a function in neither does not compile,
+// even though the index knows its signature: compiling
 // a call that then does nothing would hide the gap from the script's author.
 // That is why the sitting unit (ADR 0040) brought the handful every chair and
 // pose ball calls, not only the sit functions themselves.
@@ -78,8 +82,7 @@ const std::unordered_set<std::string_view> implemented_events = {
     "timer",
 };
 
-// An index type as a Falcon type, where Falcon has one. Lists are a roadmap
-// item; a signature that needs one cannot compile until they land.
+// An index type as a Falcon type.
 std::optional<Type> falcon_type(char code) {
     switch (code) {
     case 'v': return Type::Void;
@@ -89,6 +92,7 @@ std::optional<Type> falcon_type(char code) {
     case 'k': return Type::Key;
     case 'V': return Type::Vector;
     case 'r': return Type::Rotation;
+    case 'l': return Type::List;
     default: return std::nullopt;
     }
 }
@@ -112,7 +116,7 @@ const HostSignature* lookup_host(const std::string& name) {
     static const auto table = [] {
         std::unordered_map<std::string, HostSignature> built;
         for (const auto& function : index_functions) {
-            if (!implemented_functions.contains(function.name)) continue;
+            if (!implemented_functions.contains(function.name) && find_builtin(function.name) < 0) continue;
             const auto result = falcon_type(function.result);
             auto params = falcon_types(function.params);
             if (result && params) built.emplace(function.name, HostSignature{std::move(*params), *result});
@@ -147,6 +151,8 @@ const Value* lookup_constant(const std::string& name) {
             built.emplace(constant.name, Value::make_float(constant.value));
         for (const auto& constant : index_strings)
             built.emplace(constant.name, Value::make_string(std::string(constant.value)));
+        // The one constant that is a key.
+        built.at("NULL_KEY").type = Type::Key;
         for (const auto& constant : index_vectors) {
             const auto& c = constant.components;
             built.emplace(constant.name, constant.size == 4 ? Value::make_rotation(c[0], c[1], c[2], c[3])
@@ -163,15 +169,11 @@ const Value* lookup_constant(const std::string& name) {
 // script the first one written, since vectors carry neither.
 bool same_constant(const Value& a, const Value& b) {
     return a.type == b.type && a.integer == b.integer && a.str == b.str &&
-           a.components == b.components;
+           a.components == b.components &&
+           std::equal(a.items().begin(), a.items().end(), b.items().begin(), b.items().end(),
+                      same_constant);
 }
 
-// The type a constant value has in the source. Keys are strings at runtime;
-// NULL_KEY is the one constant that is a key.
-Type constant_type(const std::string& name, const Value& value) {
-    if (name == "NULL_KEY") return Type::Key;
-    return value.type;
-}
 enum class Scope { Local, Global };
 
 class Compiler {
@@ -250,6 +252,7 @@ private:
             if (global.type == Type::Float && folded_type == Type::Integer) {
                 initial = Value::make_float(static_cast<double>(initial.integer));
             }
+            if (is_textual(global.type)) initial.type = global.type;
         }
         program_.global_defaults.push_back(std::move(initial));
         globals_.emplace(global.name, Symbol{Scope::Global, slot, global.type});
@@ -279,9 +282,24 @@ private:
             type = Type::Vector;
             return Value::make_vector(p[0], p[1], p[2]);
         }
+        if (const auto* lit = dynamic_cast<const ast::ListLiteral*>(&expr)) {
+            std::vector<Value> items;
+            for (const auto& element : lit->elements) {
+                Type element_type = Type::Void;
+                items.push_back(fold_constant(*element, element_type));
+                if (element_type == Type::List) throw ScriptError("a list cannot hold a list");
+            }
+            type = Type::List;
+            return Value::make_list(std::move(items));
+        }
         if (const auto* ref = dynamic_cast<const ast::VarRef*>(&expr)) {
+            // An earlier global, by the value it starts with.
+            if (const auto global = globals_.find(ref->name); global != globals_.end()) {
+                type = global->second.type;
+                return program_.global_defaults[static_cast<std::size_t>(global->second.slot)];
+            }
             if (const Value* constant = lookup_constant(ref->name)) {
-                type = constant_type(ref->name, *constant);
+                type = constant->type;
                 return *constant;
             }
         }
@@ -301,7 +319,8 @@ private:
     static Value default_value(Type type) {
         switch (type) {
         case Type::String: return Value::make_string("");
-        case Type::Key: return Value::make_string("00000000-0000-0000-0000-000000000000");
+        case Type::Key: return Value::make_key("00000000-0000-0000-0000-000000000000");
+        case Type::List: return Value::make_list({});
         case Type::Vector: return Value::make_vector(0.0, 0.0, 0.0);
         case Type::Rotation: return Value::make_rotation(0.0, 0.0, 0.0, 1.0);
         case Type::Float: return Value::make_float(0.0);
@@ -350,11 +369,12 @@ private:
     }
 
     // Makes the value on top of the stack, of type `from`, one of type `to`.
-    // Only the widening of an integer needs code. False when LSL does not
-    // convert between the two without a cast.
+    // False when LSL does not convert between the two without a cast.
     bool convert(Type to, Type from) {
         if (!assignable(to, from)) return false;
         if (to == Type::Float && from == Type::Integer) emit(Op::IntToFloat);
+        if (to == Type::Key && from == Type::String) emit(Op::ToKey);
+        if (to == Type::String && from == Type::Key) emit(Op::ToStr);
         return true;
     }
 
@@ -483,6 +503,10 @@ private:
             emit(Op::PushConst, add_constant(Value::make_float(0.0)));
             emit(Op::EqualFloat);
             emit(Op::NotInt);
+        } else if (type == Type::List) {
+            // True when it has elements: its length less an empty list's.
+            emit(Op::PushConst, add_constant(Value::make_list({})));
+            emit(Op::NotEqualList);
         } else {
             require_integer(type, context);
         }
@@ -531,11 +555,22 @@ private:
                 Value::make_vector(parts[0], parts[1], parts[2])));
             return Type::Vector;
         }
+        if (const auto* lit = dynamic_cast<const ast::ListLiteral*>(&expr)) {
+            for (const auto& element : lit->elements) {
+                const Type element_type = compile_expression(*element);
+                if (element_type == Type::List || element_type == Type::Void) {
+                    throw ScriptError(std::string("a list cannot hold a ") +
+                                      (element_type == Type::List ? "list" : "call with no value"));
+                }
+            }
+            emit(Op::MakeList, static_cast<std::int32_t>(lit->elements.size()));
+            return Type::List;
+        }
         if (const auto* ref = dynamic_cast<const ast::VarRef*>(&expr)) {
             if (locals_.count(ref->name) == 0 && globals_.count(ref->name) == 0) {
                 if (const Value* constant = lookup_constant(ref->name)) {
                     emit(Op::PushConst, add_constant(*constant));
-                    return constant_type(ref->name, *constant);
+                    return constant->type;
                 }
             }
             const Symbol symbol = resolve(ref->name);
@@ -574,12 +609,21 @@ private:
         bool known = false;
         switch (cast.target) {
         case Type::String:
-            known = is_textual(operand) || operand == Type::Integer || operand == Type::Float;
+            known = is_textual(operand) || operand == Type::Integer || operand == Type::Float ||
+                    operand == Type::List;
             if (operand == Type::Integer) emit(Op::CastIntToStr);
             if (operand == Type::Float) emit(Op::CastFloatToStr);
+            if (operand == Type::List) emit(Op::CastListToStr);
+            if (operand == Type::Key) emit(Op::ToStr);
             break;
         case Type::Key:
             known = is_textual(operand);
+            if (operand == Type::String) emit(Op::ToKey);
+            break;
+        case Type::List:
+            // Any single value becomes a list of one.
+            known = operand != Type::Void;
+            if (known && operand != Type::List) emit(Op::MakeList, 1);
             break;
         case Type::Integer:
             known = operand == Type::Integer || operand == Type::Float || operand == Type::String;
@@ -642,6 +686,11 @@ private:
         const Type rhs = compile_expression(*binary.rhs);
         switch (binary.op) {
         case ast::BinaryOp::Add:
+            // A list takes anything added to either end of it.
+            if ((lhs == Type::List && rhs != Type::Void) || (rhs == Type::List && lhs != Type::Void)) {
+                emit(Op::ConcatList);
+                return Type::List;
+            }
             if (is_textual(lhs) && is_textual(rhs)) {
                 emit(Op::ConcatStr);
                 return Type::String;
@@ -667,6 +716,10 @@ private:
         case ast::BinaryOp::Equal:
         case ast::BinaryOp::NotEqual: {
             const bool equal = binary.op == ast::BinaryOp::Equal;
+            if (lhs == Type::List && rhs == Type::List) {
+                emit(equal ? Op::EqualList : Op::NotEqualList);
+                return Type::Integer;
+            }
             if (is_textual(lhs) && is_textual(rhs)) {
                 emit(equal ? Op::EqualStr : Op::NotEqualStr);
                 return Type::Integer;
@@ -716,8 +769,14 @@ private:
                                   "' must be " + type_name(signature->params[i]));
             }
         }
-        emit(Op::CallHost, add_host(call.callee),
-             static_cast<std::int32_t>(call.args.size()));
+        const auto argc = static_cast<std::int32_t>(call.args.size());
+        if (const int builtin = find_builtin(call.callee); builtin >= 0) {
+            emit(Op::CallBuiltin, builtin, argc);
+        } else {
+            emit(Op::CallHost, add_host(call.callee), argc);
+            // A region answers a key as text; here it becomes a key.
+            if (signature->result == Type::Key) emit(Op::ToKey);
+        }
         return signature->result;
     }
 

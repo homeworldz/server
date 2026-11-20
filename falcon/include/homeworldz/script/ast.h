@@ -45,6 +45,12 @@ struct VectorLiteral : Expr {
     std::vector<double> components;
 };
 
+// A list written out: [1, "two", <3, 3, 3>]. Each element is an expression of
+// any type but list.
+struct ListLiteral : Expr {
+    std::vector<std::unique_ptr<Expr>> elements;
+};
+
 struct VarRef : Expr {
     std::string name;
 };
@@ -68,7 +74,7 @@ struct Binary : Expr {
 };
 
 // A C-style cast such as (string)i. Supported: (string), (integer), (float),
-// and (key) between strings and keys.
+// (list), and (key) between strings and keys.
 struct Cast : Expr {
     Type target = Type::String;
     ExprPtr operand;

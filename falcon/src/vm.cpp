@@ -1,13 +1,11 @@
 #include "homeworldz/script/vm.h"
 
 #include "homeworldz/script/lexer.h" // ScriptError
+#include "homeworldz/script/library.h"
 
 #include <array>
 #include <cctype>
-#include <charconv>
-#include <cmath>
 #include <cstring>
-#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -23,98 +21,10 @@ struct VmFault : std::runtime_error {
 
 // v3 records vectors and rotations as themselves; v2 wrote them as integers.
 // v4 adds floats, the sleep left, and the host call in progress.
-constexpr std::uint16_t kSnapshotVersion = 4;
+// v5 adds keys and lists.
+constexpr std::uint16_t kSnapshotVersion = 5;
 constexpr unsigned char kMagic[4] = {'H', 'W', 'Z', 'S'};
 constexpr std::uint32_t kMaxSnapshotValues = 1'000'000; // corrupt-input guard
-
-// (string) of a float: six decimals, as Second Life writes it.
-std::string float_to_string(float value) {
-    if (std::isnan(value)) return "NaN";
-    if (std::isinf(value)) return value < 0 ? "-Infinity" : "Infinity";
-    char buffer[64]; // the largest float has 39 digits before the point
-    const auto end = std::to_chars(buffer, buffer + sizeof buffer, static_cast<double>(value),
-                                   std::chars_format::fixed, 6);
-    return std::string(buffer, end.ptr);
-}
-
-// (integer) of a float: toward zero, and INT_MIN for anything an integer
-// cannot hold, which is what the conversion gives on Second Life's hardware.
-std::int32_t float_to_integer(float value) {
-    if (!(value >= -2147483648.0f && value < 2147483648.0f)) return INT32_MIN; // NaN too
-    return static_cast<std::int32_t>(value);
-}
-
-bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'; }
-bool is_digit(char c) { return c >= '0' && c <= '9'; }
-char lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
-
-// (integer) of a string: the decimal or 0x hexadecimal number it starts with
-// after any spaces, 0 when there is none. A number past 32 bits is all ones.
-std::int32_t string_to_integer(const std::string& text) {
-    std::size_t i = 0;
-    while (i < text.size() && is_space(text[i])) ++i;
-    bool negative = false;
-    if (i < text.size() && (text[i] == '-' || text[i] == '+')) negative = text[i++] == '-';
-    std::uint64_t value = 0;
-    const auto add = [&value](std::uint64_t base, std::uint64_t digit) {
-        value = value * base + digit;
-        if (value > 0xffffffffULL) value = 0xffffffffULL;
-    };
-    if (i + 1 < text.size() && text[i] == '0' && lower(text[i + 1]) == 'x') {
-        for (i += 2; i < text.size(); ++i) {
-            const char c = lower(text[i]);
-            if (is_digit(c)) add(16, static_cast<std::uint64_t>(c - '0'));
-            else if (c >= 'a' && c <= 'f') add(16, static_cast<std::uint64_t>(c - 'a' + 10));
-            else break;
-        }
-    } else {
-        for (; i < text.size() && is_digit(text[i]); ++i) add(10, static_cast<std::uint64_t>(text[i] - '0'));
-    }
-    const auto bits = static_cast<std::uint32_t>(value);
-    return static_cast<std::int32_t>(negative ? 0u - bits : bits);
-}
-
-// (float) of a string: the number it starts with after any spaces, with an
-// optional exponent; "inf" and "nan" in any case; 0.0 when there is none.
-float string_to_float(const std::string& text) {
-    std::size_t i = 0;
-    while (i < text.size() && is_space(text[i])) ++i;
-    bool negative = false;
-    if (i < text.size() && (text[i] == '-' || text[i] == '+')) negative = text[i++] == '-';
-    const auto starts = [&text, i](const char* word) {
-        for (std::size_t k = 0; word[k] != '\0'; ++k) {
-            if (i + k >= text.size() || lower(text[i + k]) != word[k]) return false;
-        }
-        return true;
-    };
-    float value = 0.0f;
-    if (starts("inf")) {
-        value = std::numeric_limits<float>::infinity();
-    } else if (starts("nan")) {
-        value = std::numeric_limits<float>::quiet_NaN();
-    } else {
-        std::size_t end = i;
-        while (end < text.size() && is_digit(text[end])) ++end;
-        if (end < text.size() && text[end] == '.') {
-            ++end;
-            while (end < text.size() && is_digit(text[end])) ++end;
-        }
-        if (end < text.size() && lower(text[end]) == 'e') {
-            std::size_t exponent = end + 1;
-            if (exponent < text.size() && (text[exponent] == '-' || text[exponent] == '+')) ++exponent;
-            if (exponent < text.size() && is_digit(text[exponent])) {
-                end = exponent;
-                while (end < text.size() && is_digit(text[end])) ++end;
-            }
-        }
-        double parsed = 0.0;
-        // from_chars reads no further than a number goes, and reads nothing
-        // from a lone "." — which leaves the 0.0 that is wanted.
-        std::from_chars(text.data() + i, text.data() + end, parsed);
-        value = static_cast<float>(parsed);
-    }
-    return negative ? -value : value;
-}
 
 class ByteWriter {
 public:
@@ -148,8 +58,11 @@ public:
 
 private:
     void value(const Value& v) {
-        if (v.type == Type::String) {
-            u8(2);
+        if (v.type == Type::List) {
+            u8(7);
+            values(v.items());
+        } else if (v.is_text()) {
+            u8(v.type == Type::Key ? 6 : 2);
             u32(static_cast<std::uint32_t>(v.str.size()));
             for (char c : v.str) {
                 u8(static_cast<std::uint8_t>(c));
@@ -225,7 +138,14 @@ public:
 private:
     Value value() {
         const std::uint8_t tag = u8();
-        if (tag == 2) {
+        if (tag == 7) {
+            std::vector<Value> items = values();
+            for (const Value& item : items) {
+                if (item.type == Type::List) throw ScriptError("snapshot has a list inside a list");
+            }
+            return Value::make_list(std::move(items));
+        }
+        if (tag == 2 || tag == 6) {
             const std::uint32_t len = u32();
             if (len > kMaxSnapshotValues) {
                 throw ScriptError("snapshot string is implausibly large");
@@ -235,7 +155,7 @@ private:
             for (std::uint32_t i = 0; i < len; ++i) {
                 s.push_back(static_cast<char>(u8()));
             }
-            return Value::make_string(std::move(s));
+            return tag == 6 ? Value::make_key(std::move(s)) : Value::make_string(std::move(s));
         }
         if (tag == 1) {
             return Value::make_integer(static_cast<std::int32_t>(u32()));
@@ -356,12 +276,20 @@ void VM::step() {
         }
         return v.real();
     };
+    // Text: a string or a key.
     const auto pop_string = [&pop]() -> std::string {
         Value v = pop();
-        if (v.type != Type::String) {
+        if (!v.is_text()) {
             throw VmFault("expected a string on the stack");
         }
         return std::move(v.str);
+    };
+    const auto pop_list = [&pop]() -> Value {
+        Value v = pop();
+        if (v.type != Type::List) {
+            throw VmFault("expected a list on the stack");
+        }
+        return v;
     };
     const auto slot_ref = [](std::vector<Value>& bank, std::int32_t slot,
                              const char* which) -> Value& {
@@ -410,12 +338,8 @@ void VM::step() {
         break;
     }
     case Op::ConcatStr: {
-        Value b = pop();
-        Value a = pop();
-        if (a.type != Type::String || b.type != Type::String) {
-            throw VmFault("expected strings for concatenation");
-        }
-        stack_.push_back(Value::make_string(a.str + b.str));
+        const std::string b = pop_string();
+        stack_.push_back(Value::make_string(pop_string() + b));
         break;
     }
     case Op::LessInt: {
@@ -545,6 +469,69 @@ void VM::step() {
     case Op::CastStrToFloat:
         stack_.push_back(Value::make_float(string_to_float(pop_string())));
         break;
+    case Op::ToKey:
+        stack_.push_back(Value::make_key(pop_string()));
+        break;
+    case Op::ToStr:
+        stack_.push_back(Value::make_string(pop_string()));
+        break;
+    case Op::MakeList: {
+        const std::int32_t count = instr.a;
+        if (count < 0 || static_cast<std::size_t>(count) > stack_.size()) {
+            throw VmFault("list element underflow");
+        }
+        std::vector<Value> items(stack_.end() - count, stack_.end());
+        stack_.resize(stack_.size() - static_cast<std::size_t>(count));
+        for (const Value& item : items) {
+            if (item.type == Type::List) throw VmFault("a list cannot hold a list");
+        }
+        stack_.push_back(Value::make_list(std::move(items)));
+        break;
+    }
+    case Op::ConcatList: {
+        // Either side may be a single value, which joins as one element.
+        const Value b = pop();
+        const Value a = pop();
+        std::vector<Value> items;
+        for (const Value* side : {&a, &b}) {
+            if (side->type == Type::List) {
+                items.insert(items.end(), side->items().begin(), side->items().end());
+            } else {
+                items.push_back(*side);
+            }
+        }
+        stack_.push_back(Value::make_list(std::move(items)));
+        break;
+    }
+    case Op::EqualList:
+    case Op::NotEqualList: {
+        // LSL compares lists by length alone, and != gives the difference.
+        const auto b = static_cast<std::int32_t>(pop_list().items().size());
+        const auto a = static_cast<std::int32_t>(pop_list().items().size());
+        stack_.push_back(Value::make_integer(instr.op == Op::EqualList ? (a == b ? 1 : 0) : a - b));
+        break;
+    }
+    case Op::CastListToStr: {
+        std::string joined;
+        const Value list = pop_list(); // held: a list off the stack may have no other owner
+        for (const Value& item : list.items()) joined += element_string(item);
+        stack_.push_back(Value::make_string(std::move(joined)));
+        break;
+    }
+    case Op::CallBuiltin: {
+        const Builtin* function = builtin_at(instr.a);
+        if (function == nullptr) {
+            throw VmFault("built-in index out of range");
+        }
+        const std::int32_t argc = instr.b;
+        if (argc < 0 || static_cast<std::size_t>(argc) > stack_.size()) {
+            throw VmFault("built-in call argument underflow");
+        }
+        const std::vector<Value> args(stack_.end() - argc, stack_.end());
+        stack_.resize(stack_.size() - static_cast<std::size_t>(argc));
+        stack_.push_back(function->call(args));
+        break;
+    }
     case Op::Pop:
         (void)pop();
         break;
@@ -559,12 +546,8 @@ void VM::step() {
     }
     case Op::EqualStr:
     case Op::NotEqualStr: {
-        Value b = pop();
-        Value a = pop();
-        if (a.type != Type::String || b.type != Type::String) {
-            throw VmFault("string comparison requires strings");
-        }
-        const bool equal = a.str == b.str;
+        const std::string b = pop_string();
+        const bool equal = pop_string() == b;
         stack_.push_back(Value::make_integer((instr.op == Op::EqualStr) == equal ? 1 : 0));
         break;
     }
@@ -603,22 +586,15 @@ void VM::step() {
         stack_.push_back(Value::make_integer(pop_int() == 0 ? 1 : 0));
         break;
     case Op::StrTruth: {
-        Value a = pop();
-        if (a.type != Type::String) {
-            throw VmFault("expected a string on the stack");
-        }
-        stack_.push_back(Value::make_integer(a.str.empty() ? 0 : 1));
+        stack_.push_back(Value::make_integer(pop_string().empty() ? 0 : 1));
         break;
     }
     case Op::KeyTruth: {
         // A key is true when it is a well-formed uuid other than NULL_KEY.
-        Value a = pop();
-        if (a.type != Type::String) {
-            throw VmFault("expected a key on the stack");
-        }
-        bool valid = a.str.size() == 36 && a.str != "00000000-0000-0000-0000-000000000000";
-        for (std::size_t i = 0; valid && i < a.str.size(); ++i) {
-            const char c = a.str[i];
+        const std::string key = pop_string();
+        bool valid = key.size() == 36 && key != "00000000-0000-0000-0000-000000000000";
+        for (std::size_t i = 0; valid && i < key.size(); ++i) {
+            const char c = key[i];
             valid = (i == 8 || i == 13 || i == 18 || i == 23)
                         ? c == '-'
                         : std::isxdigit(static_cast<unsigned char>(c)) != 0;

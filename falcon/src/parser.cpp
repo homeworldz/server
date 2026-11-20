@@ -53,7 +53,7 @@ bool is_type_keyword(TokenKind kind) {
     return kind == TokenKind::KwInteger || kind == TokenKind::KwFloat ||
            kind == TokenKind::KwString ||
            kind == TokenKind::KwKey || kind == TokenKind::KwVector ||
-           kind == TokenKind::KwRotation;
+           kind == TokenKind::KwRotation || kind == TokenKind::KwList;
 }
 
 class Parser {
@@ -128,6 +128,7 @@ private:
         if (match(TokenKind::KwKey)) return Type::Key;
         if (match(TokenKind::KwVector)) return Type::Vector;
         if (match(TokenKind::KwRotation)) return Type::Rotation;
+        if (match(TokenKind::KwList)) return Type::List;
         fail("expected a type");
     }
 
@@ -263,7 +264,8 @@ private:
         // A cast: '(' type ')' operand, distinguished from a parenthesized group.
         if (check(TokenKind::LParen) &&
             (peek(1).kind == TokenKind::KwInteger || peek(1).kind == TokenKind::KwFloat ||
-             peek(1).kind == TokenKind::KwString || peek(1).kind == TokenKind::KwKey) &&
+             peek(1).kind == TokenKind::KwString || peek(1).kind == TokenKind::KwKey ||
+             peek(1).kind == TokenKind::KwList) &&
             peek(2).kind == TokenKind::RParen) {
             const Token& open = advance(); // (
             const Type target = type_keyword();
@@ -310,6 +312,17 @@ private:
             if (node->components.size() != 3 && node->components.size() != 4)
                 throw ScriptError("a vector takes 3 components and a rotation 4", node->line,
                                   node->column);
+            return node;
+        }
+        if (check(TokenKind::LBracket)) {
+            auto node = make<ast::ListLiteral>(advance());
+            if (!check(TokenKind::RBracket)) {
+                node->elements.push_back(parse_expression(0));
+                while (match(TokenKind::Comma)) {
+                    node->elements.push_back(parse_expression(0));
+                }
+            }
+            expect(TokenKind::RBracket, "expected ']' to close a list");
             return node;
         }
         if (check(TokenKind::FloatLiteral)) {

@@ -70,16 +70,16 @@ stream; an event dispatch table records where each begins.
 | `global_defaults` | initial value of each persistent global slot (`vector<Value>`) |
 | `events` | the dispatch table (`vector<EventEntry>`) |
 | `compiler_version` | the compiler that produced it |
-| `abi_version` | the bytecode/snapshot ABI (currently `4`) |
+| `abi_version` | the bytecode/snapshot ABI (currently `6`) |
 
 Each `EventEntry` carries the handler's `name` (e.g. `state_entry`,
 `touch_start`), its `entry_ip` (first instruction), the `param_types` the region
 must supply when dispatching it, and the `local_count` it needs (parameters
-occupy the first local slots). `compiler_version` is `6` and `abi_version` `5`
+occupy the first local slots). `compiler_version` is `7` and `abi_version` `6`
 (`kCompilerVersion`, `kBytecodeAbiVersion`); ABI 2 added persistent globals and
 the event-dispatch model, 3 vectors and rotations as values, 4 floats, the
-sleep left, and the host call in progress, and 5 float arithmetic and integer
-division. `lines` holds the source line of each instruction, which is how a
+sleep left, and the host call in progress, 5 float arithmetic and integer
+division, and 6 lists, keys as a runtime type, and the built-in library. `lines` holds the source line of each instruction, which is how a
 runtime error names the line it was raised on (`VM::error_line()`).
 
 ## Instruction format
@@ -128,10 +128,25 @@ operand and `a` is beneath it (so `a OP b` matches source order).
 | `CastFloatToStr` | — | `f` → `str(f)` | `(string)` of a float: six decimals, `Infinity`, `NaN` |
 | `CastFloatToInt` | — | `f` → `i` | `(integer)` of a float: toward zero, `INT_MIN` out of range |
 | `CastStrToInt`, `CastStrToFloat` | — | `s` → number | the number a string starts with, or zero |
+| `ToKey`, `ToStr` | — | `t` → `t` | the same text as a key, or as a string |
+| `MakeList` | `a`=count | `v1..vN` → `[v1..vN]` | build a list; a list cannot hold a list |
+| `ConcatList` | — | `a b` → `a++b` | join two lists, or add one value to either end of a list |
+| `EqualList`, `NotEqualList` | — | `a b` → `i` | whether the lengths are equal; the difference of the lengths |
+| `CastListToStr` | — | `l` → `s` | each element's string, joined |
+| `CallBuiltin` | `a`=built-in idx, `b`=argc | `arg1..argN` → result | call a function of Falcon's own library by its index |
 
 Integer `<=` and `>=` compile to the opposite test and `NotInt`; float `!=` to
 `EqualFloat` and `NotInt`. The table above leaves out the string, key, bitwise
 and logical operators, which are listed in `bytecode.h`.
+
+A list value shares its elements and never changes them: copying one is free,
+and every operation on a list makes a new list. A key holds the text a string
+does under its own type tag, because a list remembers which each element is.
+
+The built-in library (`library.cpp`) holds the functions that need nothing
+from a region. The compiler resolves a call to one into its index in the
+library's table, so the call costs no lookup by name; the table's order is
+therefore part of the bytecode ABI, and new functions are added at its end.
 
 Control flow is lowered by the compiler with forward-patched jump targets. For
 example a `while` loop becomes: `<cond>`, `JumpIfZero end`, `<body>`,
@@ -247,13 +262,13 @@ a fresh VM to continue identically. This is what lets a heavily scripted
 attachment or vehicle cross a region border without waiting for a poorly written
 handler to reach an event boundary.
 
-All multi-byte integers are little-endian. Current layout (`abi_version` 4,
-snapshot version 4):
+All multi-byte integers are little-endian. Current layout (`abi_version` 6,
+snapshot version 5):
 
 | Bytes | Field | Notes |
 | --- | --- | --- |
 | 4 | magic | `HWZS` |
-| 2 | snapshot version | `4` |
+| 2 | snapshot version | `5` |
 | 4 | bytecode ABI version | must match the `Program` on restore |
 | 8 | `ip` | instruction pointer |
 | 1 | finished | `0` or `1` |
@@ -274,11 +289,12 @@ snapshot taken mid-`touch_start` restores with its counter intact. Each
 
 | Bytes | Field |
 | --- | --- |
-| 1 | tag: `1` = integer, `2` = string, `3` = vector, `4` = rotation, `5` = float |
+| 1 | tag: `1` = integer, `2` = string, `3` = vector, `4` = rotation, `5` = float, `6` = key, `7` = list |
 | 4 | integer: the 32-bit value / string: the byte length `L` |
 | `L` | string bytes (strings only) |
 | 32 | vector or rotation: four IEEE doubles |
 | 8 | float: one IEEE double |
+| 4 + … | list: element count, then each element as a value |
 
 The wire format is a purpose-built binary format with bounded, length-prefixed,
 tagged fields — deliberately **not** JSON, XML, protobuf, or a reflection dump.
@@ -306,8 +322,8 @@ Falcon today confirms the pipeline end to end on a representative slice and is
 deliberately narrow:
 
 - **Language:** one `default` state; persistent globals; `integer`, `float`,
-  `string` and `key`, with vector and rotation literals; arithmetic, string
-  concatenation, comparisons, and casts between integer, float and string;
+  `string`, `key` and `list`, with vector and rotation literals; arithmetic,
+  string and list concatenation, comparisons, and casts between them;
   `while` and `if`.
 - **Events:** `state_entry` and `touch_start(integer)`, dispatched with typed
   parameters. Adding more events is a table entry plus a parameter signature.
@@ -318,8 +334,7 @@ deliberately narrow:
   `llSay` output goes to a test boundary rather than region chat.
 
 Not yet implemented: user-defined functions and call frames, `state`
-transitions and the broader event set, `list` values and `vector` / `rotation`
-arithmetic, the full LSL host-function
+transitions and the broader event set, `vector` / `rotation` arithmetic, the full LSL host-function
 library, memory and other resource limits, and region/crossing integration.
 Each is an additive step behind the same boundary and ABI.
 

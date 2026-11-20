@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -25,14 +26,14 @@ namespace homeworldz::script {
 // v3 added the logical, bitwise and string-comparison operators, keys, and
 // vector and rotation values in snapshots.
 // v5 added float arithmetic, comparison and casts, and integer division.
-inline constexpr std::uint32_t kBytecodeAbiVersion = 5;
-inline constexpr std::uint32_t kCompilerVersion = 6;
+// v6 added lists, keys as a runtime type, and the built-in library.
+inline constexpr std::uint32_t kBytecodeAbiVersion = 6;
+inline constexpr std::uint32_t kCompilerVersion = 7;
 
-// Compile-time value types. Void exists only for typing host calls used as
-// statements. Key is a static type only: a key is a string at runtime, and the
-// compiler is what keeps the two apart where LSL does (a key's truth is whether
-// it names something, a string's is whether it is empty).
-enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation, Key, Float };
+// The value types. Void exists only for typing calls used as statements. A key
+// holds the same text a string does and keeps its own type at runtime, because
+// a list remembers which of the two each element is (llGetListEntryType).
+enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation, Key, Float, List };
 
 // A tagged LSL value. LSL integers are 32-bit; strings are UTF-8 bytes.
 //
@@ -46,22 +47,38 @@ struct Value {
     std::int32_t integer = 0;
     std::string str;
     std::array<double, 4> components{};
+    // A list's elements. Shared and never changed once made, so copying a list
+    // value costs nothing and every operation on one makes a new list, which
+    // is LSL's own rule. Null is the empty list.
+    std::shared_ptr<const std::vector<Value>> list;
 
-    static Value make_integer(std::int32_t v) { return Value{Type::Integer, v, {}, {}}; }
+    static Value make_integer(std::int32_t v) { return Value{Type::Integer, v, {}, {}, {}}; }
     static Value make_string(std::string v) {
-        return Value{Type::String, 0, std::move(v), {}};
+        return Value{Type::String, 0, std::move(v), {}, {}};
     }
+    static Value make_key(std::string v) { return Value{Type::Key, 0, std::move(v), {}, {}}; }
+    static Value make_list(std::vector<Value> v) {
+        Value value{Type::List, 0, {}, {}, {}};
+        if (!v.empty()) value.list = std::make_shared<const std::vector<Value>>(std::move(v));
+        return value;
+    }
+    // The elements of a list; none for any other value.
+    const std::vector<Value>& items() const {
+        static const std::vector<Value> none;
+        return list ? *list : none;
+    }
+    bool is_text() const { return type == Type::String || type == Type::Key; }
     static Value make_vector(double x, double y, double z) {
-        return Value{Type::Vector, 0, {}, {x, y, z, 0.0}};
+        return Value{Type::Vector, 0, {}, {x, y, z, 0.0}, {}};
     }
     static Value make_rotation(double x, double y, double z, double w) {
-        return Value{Type::Rotation, 0, {}, {x, y, z, w}};
+        return Value{Type::Rotation, 0, {}, {x, y, z, w}, {}};
     }
     // A float is held in the first component, rounded to the 32 bits an LSL
     // float has. Every float a script holds is made here, so the rounding
     // happens at each result, as it does in Second Life.
     static Value make_float(double v) {
-        return Value{Type::Float, 0, {}, {static_cast<double>(static_cast<float>(v)), 0.0, 0.0, 0.0}};
+        return Value{Type::Float, 0, {}, {static_cast<double>(static_cast<float>(v)), 0.0, 0.0, 0.0}, {}};
     }
     double number() const { return components[0]; }
     float real() const { return static_cast<float>(components[0]); }
@@ -116,6 +133,14 @@ enum class Op : std::uint8_t {
     CastFloatToInt, // pops a float; pushes it truncated, or INT_MIN out of range
     CastStrToInt,   // pops a string; pushes the integer it starts with, or 0
     CastStrToFloat, // pops a string; pushes the float it starts with, or 0.0
+    ToKey,          // pops a string or key; pushes the same text as a key
+    ToStr,          // pops a string or key; pushes the same text as a string
+    MakeList,       // a = count; pops that many values; pushes them as a list
+    ConcatList,     // pops b, a, one of them a list; pushes a ++ b
+    EqualList,      // pops b, a (lists); pushes 1 when their lengths are equal
+    NotEqualList,   // pops b, a (lists); pushes length(a) - length(b)
+    CastListToStr,  // pops a list; pushes each element's string, joined
+    CallBuiltin,    // a = built-in function index, b = argument count
 };
 
 struct Instruction {

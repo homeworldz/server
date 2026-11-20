@@ -1,3 +1,9 @@
 bugs/0014.lsl
 bugs/0016.lsl
+bugs/mutable_global_rvalue.lsl
+global_list_refs.lsl
+lenient_salist.lsl
+simple_declarations.lsl
+stack_heap_collide.lsl
+strict_salist.lsl
 sub_replacement.lsl

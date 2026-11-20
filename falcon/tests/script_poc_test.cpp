@@ -700,6 +700,147 @@ int main() {
         require(every_point, "a script doing float arithmetic can be snapshotted after any instruction");
     }
 
+    // (lists) A list holds values of any other type and remembers the type of
+    // each; every operation on one makes a new list.
+    {
+        std::vector<std::string> out;
+        const auto run = [&out](const std::string& globals, const std::string& body) {
+            out.clear();
+            const Program program =
+                compile_source(globals + "\ndefault { state_entry() {\n" + body + "\n} }");
+            VM vm(program);
+            vm.set_host(make_host(out));
+            vm.dispatch("state_entry", {});
+            const RunStatus status = vm.run(100000);
+            if (status == RunStatus::Error) out.push_back("error: " + vm.error());
+            return status;
+        };
+        const auto refused = [](const std::string& body) {
+            try {
+                compile_source("default { state_entry() { " + body + " } }");
+            } catch (const ScriptError&) {
+                return true;
+            }
+            return false;
+        };
+
+        run("integer g = 5; list gl = [g, \"x\", 1.5]; list empty; key who = \"abc\";",
+            "list l = [1, 2.5, \"a\", <1,2,3>, (key)\"k\", <0,0,0,1>, who, NULL_KEY];\n"
+            "llOwnerSay((string)l);\n"
+            "llOwnerSay((string)gl + \" \" + (string)llGetListLength(gl) + (string)llGetListLength(empty));\n"
+            "string types = (string)llGetListEntryType(l, 0) + (string)llGetListEntryType(l, 1);\n"
+            "types = types + (string)llGetListEntryType(l, 2) + (string)llGetListEntryType(l, 3);\n"
+            "types = types + (string)llGetListEntryType(l, 4) + (string)llGetListEntryType(l, 5);\n"
+            "types = types + (string)llGetListEntryType(l, 6) + (string)llGetListEntryType(l, -1);\n"
+            "llOwnerSay(types + (string)llGetListEntryType(l, 8));");
+        require(out == std::vector<std::string>{
+                           "12.500000a<1.00000, 2.00000, 3.00000>k<0.00000, 0.00000, 0.00000, 1.00000>abc"
+                           "00000000-0000-0000-0000-000000000000",
+                           "5x1.500000 30", "123546440"},
+                "a list keeps each element and its type, a key apart from a string");
+
+        run("", "list a = [1, 2]; list b = a; b = b + 3; b = 0 + b; a = a + [\"x\", \"y\"] + [];\n"
+                "llOwnerSay((string)a + \" \" + (string)b + \" \" + (string)llGetListLength((list)\"one\"));\n"
+                "llOwnerSay((string)([1, 2] == [3, 4]) + (string)([1] == [1, 2]) + \" \" + (string)([1, 2, 3] != [1])"
+                " + \" \" + (string)([1] != [1, 2, 3]));\n"
+                "list none; if (none) { llOwnerSay(\"empty is true\"); } if (a) { llOwnerSay(\"a is true\"); }\n"
+                "while (b) { b = llDeleteSubList(b, 0, 0); } llOwnerSay(\"[\" + (string)b + \"]\");");
+        require(out == std::vector<std::string>{"12xy 0123 1", "10 2 -2", "a is true", "[]"},
+                "lists are values: + makes a new one, == compares lengths, and an empty one is false");
+
+        run("list l = [7, 2.75, \"12abc\", <1,2,3>, \"0x10\", \" 1.5e1x\"];",
+            "key k = \"key-text\"; list keys = [k, \"s\", 4];\n"
+            "llOwnerSay((string)llList2Integer(l, 0) + \" \" + (string)llList2Integer(l, 1) + \" \" + (string)llList2Integer(l, 2)"
+            " + \" \" + (string)llList2Integer(l, 3) + \" \" + (string)llList2Integer(l, 4) + \" \" + (string)llList2Integer(l, 99)"
+            " + \" \" + (string)llList2Integer(l, -6) + \" \" + (string)llList2Integer(l, -7));\n"
+            "llOwnerSay((string)llList2Float(l, 0) + \" \" + (string)llList2Float(l, 1) + \" \" + (string)llList2Float(l, 5)"
+            " + \" \" + (string)llList2Float(l, 3) + \" \" + llList2String(l, 1) + \" \" + llList2String(l, 3) + \"|\" + llList2String(l, 9) + \"|\");\n"
+            "llOwnerSay((string)llList2Key(keys, 0) + \"|\" + (string)llList2Key(keys, 1) + \"|\" + (string)llList2Key(keys, 2) + \"|\");\n"
+            "llOwnerSay(llDumpList2String([1, 2.5, \"x\"], \", \") + \"|\" + llDumpList2String([], \",\") + \"|\");");
+        require(out == std::vector<std::string>{"7 2 12 0 16 0 7 0",
+                                                "7.000000 2.750000 15.000000 0.000000 2.750000 <1.00000, 2.00000, 3.00000>||",
+                                                "key-text|s||", "1, 2.500000, x||"},
+                "llList2Integer, Float, String and Key convert what they find and give nothing outside the list");
+
+        run("list l = [0, 1, 2, 3, 4, 5]; list s = [0, 1, 2, 3];",
+            "llOwnerSay((string)llList2List(l, 1, 3) + \" \" + (string)llList2List(l, 4, 1) + \" \" + (string)llList2List(l, -2, -1)"
+            " + \" \" + (string)llList2List(l, 2, 99) + \" \" + (string)llList2List(l, -99, 1) + \"|\" + (string)llList2List(l, 7, 9) + \"|\");\n"
+            "llOwnerSay((string)llDeleteSubList(l, 1, 3) + \" \" + (string)llDeleteSubList(l, 3, 1) + \" \" + (string)llDeleteSubList(l, 0, -1)"
+            " + \"|\" + (string)llDeleteSubList(l, 9, 12) + \" \" + (string)llDeleteSubList(l, -1, -1));\n"
+            "llOwnerSay((string)llListInsertList(s, [\"x\"], 2) + \" \" + (string)llListInsertList(s, [\"x\"], -1) + \" \""
+            " + (string)llListInsertList(s, [\"x\"], 9) + \" \" + (string)llListInsertList(s, [\"x\"], -9));\n"
+            "llOwnerSay((string)llListReplaceList(s, [\"x\", \"y\"], 1, 2) + \" \" + (string)llListReplaceList(s, [\"x\"], 3, 1)"
+            " + \" \" + (string)llListReplaceList(s, [\"x\"], 9, 9) + \" \" + (string)llListReplaceList(s, [], 0, 0));\n"
+            "llOwnerSay((string)llList2ListStrided([0, 1, 2, 3, 4, 5, 6, 7], 0, -1, 2) + \" \""
+            " + (string)llList2ListStrided([0, 1, 2, 3, 4, 5, 6, 7], 1, 6, 3) + \" \" + (string)llList2ListStrided(s, 0, -1, 0));");
+        require(out == std::vector<std::string>{"123 0145 45 2345 01||", "045 2 |012345 01234",
+                                                "01x23 012x3 0123x x0123", "0xy3 2x 0123x 123",
+                                                "0246 36 0123"},
+                "list ranges count from the end when negative and wrap when inverted");
+
+        run("list l = [1, 2, 3, 2, \"2\", 2.0];",
+            "key two = \"2\";\n"
+            "llOwnerSay((string)llListFindList(l, [2]) + \" \" + (string)llListFindList(l, [3, 2]) + \" \" + (string)llListFindList(l, [\"2\"])"
+            " + \" \" + (string)llListFindList(l, [9]) + \" \" + (string)llListFindList(l, []) + \" \" + (string)llListFindList([\"1\"], [1])"
+            " + \" \" + (string)llListFindList(l, [2.0]) + \" \" + (string)llListFindList(l, [two]) + \" \" + (string)llListFindList(l, [2, 3, 2, \"2\", 2.0, 1]));");
+        require(out == std::vector<std::string>{"1 2 4 -1 0 -1 5 -1 -1"},
+                "llListFindList matches value and type together");
+
+        require(refused("list l = [[1]];") && refused("list l = [llOwnerSay(\"x\")];") &&
+                    refused("list l = 1;") && refused("integer n = [1];") && refused("string s = [1];") &&
+                    refused("list l = [1] - [1];") && refused("integer n = llGetListLength(1);") &&
+                    !refused("list l = (list)1 + 2 + \"x\"; string s = (string)l; integer n = llGetListLength([]);"),
+                "a list holds no list, and becomes one only by a cast or by adding to one");
+
+        // A list in a global, a local and on the stack crosses a snapshot at
+        // every instruction, keys and all.
+        const Program crossing = compile_source(
+            "list seen;\n"
+            "default { state_entry() { list mine = [(key)\"k\", 1.5]; integer i = 0;\n"
+            " while (i < 3) { seen = seen + [i, \"s\"] + mine; i = i + 1; }\n"
+            " llOwnerSay((string)seen + \" \" + (string)llGetListEntryType(seen, 2) + (string)llGetListEntryType(seen, 1)); } }");
+        VM whole(crossing);
+        std::vector<std::string> whole_out;
+        whole.set_host(make_host(whole_out));
+        whole.dispatch("state_entry", {});
+        whole.run(100000);
+        bool every_point = whole_out == std::vector<std::string>{"0sk1.5000001sk1.5000002sk1.500000 43"};
+        for (std::uint64_t cut = 1; cut < whole.total_instructions(); ++cut) {
+            VM first(crossing);
+            std::vector<std::string> cut_out;
+            first.set_host(make_host(cut_out));
+            first.dispatch("state_entry", {});
+            first.run(cut);
+            VM second(crossing);
+            second.set_host(make_host(cut_out));
+            second.restore(first.snapshot());
+            second.run(100000);
+            every_point = every_point && cut_out == whole_out;
+        }
+        require(every_point, "a script building lists can be snapshotted after any instruction");
+
+        // A key is a key at runtime wherever it came from: a host function's
+        // answer, an event's argument, a string assigned to one.
+        const Program keyed = compile_source(
+            "default { state_entry() { key me = llGetPermissionsKey(); string text = me; key again = text;\n"
+            " llOwnerSay((string)llGetListEntryType([me], 0) + (string)llGetListEntryType([text], 0)"
+            " + (string)llGetListEntryType([again], 0) + (string)llGetListEntryType([llGetPermissionsKey()], 0)"
+            " + (string)llGetListEntryType([(string)me], 0));\n"
+            " if (me) { llOwnerSay(\"named \" + (string)me + (string)(me == text)); } } }");
+        VM keyed_vm(keyed);
+        out.clear();
+        keyed_vm.set_host([&out](const std::string& name, const std::vector<Value>& args) -> homeworldz::script::HostResult {
+            if (name == "llOwnerSay") out.push_back(args[0].str);
+            // A region answers a key as plain text.
+            if (name == "llGetPermissionsKey") return Value::make_string("a822ff2b-ff02-461d-b45d-dcd10a2de0c2");
+            return std::nullopt;
+        });
+        keyed_vm.dispatch("state_entry", {});
+        require(keyed_vm.run(1000) == RunStatus::Finished &&
+                    out == std::vector<std::string>{"43443", "named a822ff2b-ff02-461d-b45d-dcd10a2de0c21"},
+                "a key stays a key through assignment and a host call, and a string a string");
+    }
+
     if (g_failures == 0) {
         std::cout << "ALL PoC CHECKS PASSED\n";
         return EXIT_SUCCESS;

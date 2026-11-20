@@ -11,6 +11,7 @@ add_library(homeworldz-script
   src/lexer.cpp
   src/parser.cpp
   src/compiler.cpp
+  src/library.cpp
   src/vm.cpp)
 target_include_directories(homeworldz-script PUBLIC include)
 target_compile_features(homeworldz-script PUBLIC cxx_std_20)

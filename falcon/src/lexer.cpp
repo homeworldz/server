@@ -41,6 +41,7 @@ TokenKind keyword_kind(const std::string& word) {
         {"vector", TokenKind::KwVector},
         {"rotation", TokenKind::KwRotation},
         {"quaternion", TokenKind::KwRotation}, // LSL's other spelling
+        {"list", TokenKind::KwList},
         {"while", TokenKind::KwWhile},
         {"if", TokenKind::KwIf},
         {"else", TokenKind::KwElse},
@@ -209,6 +210,8 @@ std::vector<Token> tokenize(const std::string& source) {
         case ')': token.kind = TokenKind::RParen; break;
         case '{': token.kind = TokenKind::LBrace; break;
         case '}': token.kind = TokenKind::RBrace; break;
+        case '[': token.kind = TokenKind::LBracket; break;
+        case ']': token.kind = TokenKind::RBracket; break;
         case ';': token.kind = TokenKind::Semicolon; break;
         case ',': token.kind = TokenKind::Comma; break;
         case '+': token.kind = TokenKind::Plus; break;
