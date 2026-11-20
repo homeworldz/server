@@ -50,3 +50,17 @@ enable_testing()
 add_subdirectory(third_party/ufbx)
 add_subdirectory(falcon)
 add_subdirectory(region)
+
+# A failing test must fail, not open a dialog and wait: every test executable
+# gets the source that turns MSVC's assert, abort and crash boxes into stderr.
+if(MSVC)
+  foreach(directory falcon region)
+    get_property(targets DIRECTORY ${directory} PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(target ${targets})
+      get_target_property(type ${target} TYPE)
+      if(type STREQUAL "EXECUTABLE" AND target MATCHES "-(tests|smoke)$")
+        target_sources(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_no_dialogs.cpp)
+      endif()
+    endforeach()
+  endforeach()
+endif()
