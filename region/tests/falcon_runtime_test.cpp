@@ -222,5 +222,143 @@ int main() {
         fair.run_tick();
         assert(fair.run_tick().scripts_visited == 0);
     }
+
+    // Sleeps and timers, on a clock the test moves.
+    {
+        using homeworldz::script::HostResult;
+        using homeworldz::script::Value;
+        double now = 100.0;
+        std::vector<FalconHostMessage> said;
+        FalconRuntime timed(
+            [&](FalconHostMessage message) { said.push_back(std::move(message)); }, {},
+            [&](const Identity&, const std::string& name, const std::vector<Value>&) -> HostResult {
+                if (name == "llGetInventoryName") return HostResult::suspend(7);
+                if (name == "llGetPermissions") return HostResult::fail("refused");
+                return std::nullopt;
+            });
+        timed.set_clock([&] { return now; });
+        const auto texts = [&] {
+            std::vector<std::string> out;
+            for (const auto& message : said) out.push_back(message.text);
+            return out;
+        };
+        using Texts = std::vector<std::string>;
+
+        // llSleep: the script stops for the time it asked and costs nothing
+        // while it sleeps.
+        assert(timed.rez({"a", "sleeper", "sleep-object", "owner"}, R"LSL(
+            default { state_entry() { llOwnerSay("before"); llSleep(1.0); llOwnerSay("after"); } }
+        )LSL", true).running);
+        timed.run_tick();
+        assert(texts() == Texts{"before"});
+        assert(timed.run_tick().scripts_visited == 0);
+        now = 100.9;
+        assert(timed.run_tick().scripts_visited == 0);
+        now = 101.0;
+        timed.run_tick();
+        assert((texts() == Texts{"before", "after"}));
+
+        // llSetTimerEvent: an event each interval, and none for intervals a
+        // stalled region missed.
+        said.clear();
+        now = 200.0;
+        assert(timed.rez({"a", "ticker", "timer-object", "owner"}, R"LSL(
+            default {
+                state_entry() { llSetTimerEvent(0.5); }
+                timer() { llOwnerSay("tick"); }
+                touch_start(integer n) { llSetTimerEvent(0); }
+            }
+        )LSL", true).running);
+        timed.run_tick();
+        now = 200.4;
+        timed.run_tick();
+        assert(said.empty());
+        now = 200.5;
+        timed.run_tick();
+        assert(said.size() == 1);
+        now = 203.0;
+        timed.run_tick();
+        timed.run_tick();
+        assert(said.size() == 2);
+        now = 203.4;
+        timed.run_tick();
+        assert(said.size() == 2);
+        now = 203.5;
+        timed.run_tick();
+        assert(said.size() == 3);
+        // Zero stops it.
+        assert(timed.dispatch_touch_start("timer-object", 1) == 1);
+        timed.run_tick();
+        now = 210.0;
+        timed.run_tick();
+        timed.run_tick();
+        assert(said.size() == 3);
+
+        // A handler slower than its timer: one timer event waits for it, not
+        // one for every interval that passed.
+        said.clear();
+        now = 300.0;
+        // The first run sleeps through nine more intervals; the second stops
+        // the timer, so anything after it was queued while the first slept.
+        assert(timed.rez({"a", "slow", "slow-object", "owner"}, R"LSL(
+            integer runs;
+            default {
+                state_entry() { llSetTimerEvent(1.0); }
+                timer() {
+                    runs = runs + 1;
+                    llOwnerSay("slow tick");
+                    if (runs == 1) { llSleep(10.0); }
+                    if (runs == 2) { llSetTimerEvent(0); }
+                }
+            }
+        )LSL", true).running);
+        timed.run_tick();
+        now = 301.0;
+        timed.run_tick(); // the first run, and the handler goes to sleep
+        assert(said.size() == 1);
+        for (now = 302.0; now < 311.0; now += 1.0) timed.run_tick();
+        assert(said.size() == 1);
+        now = 311.0;
+        timed.run_tick(); // the handler wakes and finishes
+        timed.run_tick(); // the one waiting timer event runs, and stops the timer
+        assert(said.size() == 2);
+        for (int tick = 0; tick < 12; ++tick) timed.run_tick();
+        assert(said.size() == 2);
+
+        // A script asleep with a timer running can be removed.
+        assert(timed.rez({"a", "doomed", "doomed-object", "owner"}, R"LSL(
+            default {
+                state_entry() { llSetTimerEvent(1.0); llSleep(50.0); llOwnerSay("woke"); }
+                timer() { llOwnerSay("doomed tick"); }
+            }
+        )LSL", true).running);
+        timed.run_tick();
+        assert(timed.erase("doomed-object", "doomed"));
+        now = 400.0;
+        timed.run_tick();
+        timed.run_tick();
+        assert(said.size() == 2);
+
+        // A region function that cannot answer at once: the script waits, and
+        // goes on when the region resumes it with the answer.
+        said.clear();
+        assert(timed.rez({"a", "asker", "ask-object", "owner"}, R"LSL(
+            default { state_entry() { llOwnerSay(llGetInventoryName(INVENTORY_ALL, 0)); } }
+        )LSL", true).running);
+        timed.run_tick();
+        assert(said.empty() && timed.run_tick().scripts_visited == 0);
+        assert(!timed.resume("ask-object", "asker", 8, Value::make_string("wrong")));
+        assert(!timed.resume("ask-object", "no-such-item", 7, Value::make_string("wrong")));
+        assert(timed.resume("ask-object", "asker", 7, Value::make_string("a notecard")));
+        timed.run_tick();
+        assert(texts() == Texts{"a notecard"});
+
+        // A region function that fails stops the script.
+        assert(timed.rez({"a", "failer", "fail-object", "owner"}, R"LSL(
+            default { state_entry() { integer p = llGetPermissions(); llOwnerSay("unreached"); } }
+        )LSL", true).running);
+        assert(timed.run_tick().trapped == 1);
+        assert(texts() == Texts{"a notecard"});
+    }
     return 0;
 }

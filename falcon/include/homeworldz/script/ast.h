@@ -30,6 +30,12 @@ struct StringLiteral : Expr {
     std::string value;
 };
 
+// A float written out: 1.0, .5, 2. — so far only as a value to hand to a
+// function. There are no float variables and no float arithmetic yet.
+struct FloatLiteral : Expr {
+    double value = 0.0;
+};
+
 // A vector or rotation written out in full: <0, 0, 0.5> or <0, 0, 0, 1>.
 //
 // Its components are literal numbers rather than expressions, which is the

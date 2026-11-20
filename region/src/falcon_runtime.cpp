@@ -5,8 +5,10 @@
 #include "homeworldz/script/vm.h"
 
 #include <algorithm>
+#include <chrono>
 #include <deque>
 #include <memory>
+#include <set>
 #include <unordered_map>
 #include <utility>
 
@@ -28,6 +30,12 @@ std::optional<Value> default_result(const std::string& name) {
     if (name == "llGetPermissions") return Value::make_integer(0);
     if (name == "llGetInventoryName") return Value::make_string("");
     return std::nullopt;
+}
+
+// A duration a script gave, in seconds. The compiler has already widened an
+// integer, so anything else here is not a number.
+double seconds_of(const Value& value) {
+    return value.type == Type::Float ? value.number() : 0.0;
 }
 
 } // namespace
@@ -54,9 +62,20 @@ struct FalconRuntime::Impl {
         bool trapped{};
         // Whether the script is in the runtime's ready queue.
         bool queued{};
+        // Asleep until wake_at, by llSleep or a function's forced delay.
+        bool asleep{};
+        double wake_at{};
+        // llSetTimerEvent: the interval, when it is next due, and whether a
+        // timer event is already waiting, since at most one ever is.
+        double timer_interval{};
+        double timer_due{};
+        bool timer_pending{};
         std::deque<PendingEvent> pending;
 
         bool has_work() const { return !vm.finished() || !pending.empty(); }
+        // Asleep, or in a host call that has not answered yet: there is work,
+        // and none of it can run.
+        bool blocked() const { return asleep || vm.waiting(); }
 
         bool queue_event(std::string event, std::vector<Value> args) {
             if (!enabled || trapped || !program->find_event(event)) return false;
@@ -65,20 +84,32 @@ struct FalconRuntime::Impl {
             return true;
         }
 
+        // The script and the runtime both outlive the host function: the VM
+        // that holds it is a member of the script, and the runtime owns the
+        // script.
         LiveScript(Identity script_identity, std::shared_ptr<const Program> compiled,
-                   bool start_enabled,
-                   const HostSink& sink, const SitTargetSink& sit_target_sink,
-                   const RegionCall& region_call)
+                   bool start_enabled, Impl& runtime)
             : identity(std::move(script_identity)), program(std::move(compiled)), vm(*program),
               enabled(start_enabled) {
             const auto host_identity = identity;
-            vm.set_host([sink, sit_target_sink, region_call, host_identity](
+            const auto& sink = runtime.sink;
+            const auto& sit_target_sink = runtime.sit_target_sink;
+            const auto& region_call = runtime.region_call;
+            vm.set_host([this, &runtime, &sink, &sit_target_sink, &region_call, host_identity](
                             const std::string& name, const std::vector<Value>& args)
-                            -> std::optional<Value> {
+                            -> HostResult {
+                if (name == "llSleep" && args.size() == 1)
+                    return HostResult::sleep(std::nullopt, seconds_of(args[0]));
+                if (name == "llSetTimerEvent" && args.size() == 1) {
+                    runtime.set_timer(*this, seconds_of(args[0]));
+                    return std::nullopt;
+                }
                 if (name != "llSitTarget" && name != "llOwnerSay" && name != "llSay") {
-                    auto answer = region_call ? region_call(host_identity, name, args)
-                                              : std::optional<Value>{};
-                    return answer ? answer : default_result(name);
+                    auto answer = region_call ? region_call(host_identity, name, args) : HostResult{};
+                    if (answer.kind != HostResult::Kind::Suspended &&
+                        answer.kind != HostResult::Kind::Failed && !answer.value)
+                        answer.value = default_result(name);
+                    return answer;
                 }
                 if (name == "llSitTarget" && args.size() == 2 &&
                     args[0].type == Type::Vector && args[1].type == Type::Rotation) {
@@ -108,6 +139,10 @@ struct FalconRuntime::Impl {
     HostSink sink;
     SitTargetSink sit_target_sink;
     RegionCall region_call;
+    Clock clock = [] {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
     std::unordered_map<std::string, std::unique_ptr<LiveScript>> scripts;
     // The scripts in each object, so an event for one object does not walk
     // every script in the region.
@@ -120,11 +155,54 @@ struct FalconRuntime::Impl {
     // One compiled program per distinct source: a region holds the same door
     // script in hundreds of prims. Weak, so a program nothing runs is freed.
     std::unordered_map<std::string, std::weak_ptr<const Program>> programs;
+    // Sleeping scripts by the time they wake, and scripts with a timer by the
+    // time it is next due. Ordered, so a tick looks only at the ones whose
+    // time has come and a region full of timers costs a tick nothing between
+    // them.
+    std::set<std::pair<double, LiveScript*>> sleepers;
+    std::set<std::pair<double, LiveScript*>> timers;
 
     void mark_ready(LiveScript& script) {
-        if (script.queued || !script.enabled || script.trapped || !script.has_work()) return;
+        if (script.queued || !script.enabled || script.trapped || script.blocked() ||
+            !script.has_work())
+            return;
         script.queued = true;
         ready.push_back(&script);
+    }
+
+    // llSetTimerEvent: a timer event every `seconds` from now, replacing any
+    // timer the script had; zero or less stops it.
+    void set_timer(LiveScript& script, double seconds) {
+        if (script.timer_interval > 0.0) timers.erase({script.timer_due, &script});
+        script.timer_interval = seconds > 0.0 ? seconds : 0.0;
+        if (script.timer_interval <= 0.0) return;
+        script.timer_due = clock() + script.timer_interval;
+        timers.emplace(script.timer_due, &script);
+    }
+
+    // Timers that have come due, and sleepers whose time is up.
+    void advance_clock(double now) {
+        std::vector<LiveScript*> due;
+        while (!timers.empty() && timers.begin()->first <= now) {
+            due.push_back(timers.begin()->second);
+            timers.erase(timers.begin());
+        }
+        for (auto* script : due) {
+            // The next one is an interval from now, not from when this one
+            // was due: a region that stalled does not fire the ones it missed.
+            script->timer_due = now + script->timer_interval;
+            timers.emplace(script->timer_due, script);
+            // At most one timer event waits, however long the script takes.
+            if (!script->timer_pending && queue_event(*script, "timer", {}))
+                script->timer_pending = true;
+        }
+        while (!sleepers.empty() && sleepers.begin()->first <= now) {
+            auto* script = sleepers.begin()->second;
+            sleepers.erase(sleepers.begin());
+            script->asleep = false;
+            script->vm.wake();
+            mark_ready(*script);
+        }
     }
 
     bool queue_event(LiveScript& script, const std::string& event, const std::vector<Value>& args) {
@@ -151,6 +229,8 @@ struct FalconRuntime::Impl {
         if (found == scripts.end()) return false;
         auto* script = found->second.get();
         if (script->queued) std::erase(ready, script);
+        if (script->asleep) sleepers.erase({script->wake_at, script});
+        if (script->timer_interval > 0.0) timers.erase({script->timer_due, script});
         const auto object = by_object.find(script->identity.object_id);
         if (object != by_object.end()) {
             std::erase(object->second, script);
@@ -171,6 +251,17 @@ FalconRuntime::FalconRuntime(HostSink host_sink, SitTargetSink sit_target_sink,
 
 FalconRuntime::~FalconRuntime() = default;
 
+void FalconRuntime::set_clock(Clock clock) { impl_->clock = std::move(clock); }
+
+bool FalconRuntime::resume(std::string_view object_id, std::string_view inventory_item_id,
+                           std::uint64_t token, std::optional<Value> value) {
+    const auto found = impl_->scripts.find(instance_key(object_id, inventory_item_id));
+    if (found == impl_->scripts.end() || !found->second->vm.resume(token, std::move(value)))
+        return false;
+    impl_->mark_ready(*found->second);
+    return true;
+}
+
 FalconRezResult FalconRuntime::rez(Identity identity, std::string_view source,
                                    bool enabled) {
     try {
@@ -178,9 +269,7 @@ FalconRezResult FalconRuntime::rez(Identity identity, std::string_view source,
         // It is not part of the LSL source and must not reach the lexer.
         while (!source.empty() && source.back() == '\0') source.remove_suffix(1);
         auto program = impl_->compile(source);
-        auto live = std::make_unique<Impl::LiveScript>(
-            identity, std::move(program), enabled, impl_->sink, impl_->sit_target_sink,
-            impl_->region_call);
+        auto live = std::make_unique<Impl::LiveScript>(identity, std::move(program), enabled, *impl_);
         // A failed compile has already thrown, so a script being replaced
         // keeps running until its replacement is ready.
         const auto key = instance_key(identity.object_id, identity.inventory_item_id);
@@ -256,6 +345,8 @@ FalconTickResult FalconRuntime::run_tick(std::uint64_t total_instruction_budget,
                                          std::uint64_t per_script_slice) {
     FalconTickResult result;
     if (total_instruction_budget == 0 || per_script_slice == 0) return result;
+    const double now = impl_->clock();
+    impl_->advance_clock(now);
     auto remaining = total_instruction_budget;
     // Only the scripts waiting when the tick began: one that rejoins the queue
     // gets its next slice on a later tick, so each runs at most one slice per
@@ -270,6 +361,7 @@ FalconTickResult FalconRuntime::run_tick(std::uint64_t total_instruction_budget,
             if (script->pending.empty()) continue;
             auto event = std::move(script->pending.front());
             script->pending.pop_front();
+            if (event.name == "timer") script->timer_pending = false;
             script->vm.dispatch(event.name, event.args);
         }
         ++result.scripts_visited;
@@ -282,6 +374,10 @@ FalconTickResult FalconRuntime::run_tick(std::uint64_t total_instruction_budget,
         if (status == RunStatus::Error) {
             script->trapped = true;
             ++result.trapped;
+        } else if (status == RunStatus::Sleeping) {
+            script->asleep = true;
+            script->wake_at = now + script->vm.sleep_remaining();
+            impl_->sleepers.emplace(script->wake_at, script);
         }
         impl_->mark_ready(*script);
     }

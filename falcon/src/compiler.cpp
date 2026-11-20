@@ -23,6 +23,7 @@ const char* type_name(Type type) {
     case Type::Vector: return "vector";
     case Type::Rotation: return "rotation";
     case Type::Key: return "key";
+    case Type::Float: return "float";
     }
     return "?";
 }
@@ -62,6 +63,8 @@ const std::unordered_set<std::string_view> implemented_functions = {
     "llStartAnimation",
     "llStopAnimation",
     "llGetInventoryName",
+    "llSleep",
+    "llSetTimerEvent",
 };
 
 // The events the region raises today.
@@ -70,14 +73,16 @@ const std::unordered_set<std::string_view> implemented_events = {
     "touch_start",
     "changed",
     "run_time_permissions",
+    "timer",
 };
 
-// An index type as a Falcon type, where Falcon has one. Floats and lists are
-// roadmap items; a signature that needs one cannot compile until they land.
+// An index type as a Falcon type, where Falcon has one. Lists are a roadmap
+// item; a signature that needs one cannot compile until they land.
 std::optional<Type> falcon_type(char code) {
     switch (code) {
     case 'v': return Type::Void;
     case 'i': return Type::Integer;
+    case 'f': return Type::Float;
     case 's': return Type::String;
     case 'k': return Type::Key;
     case 'V': return Type::Vector;
@@ -481,6 +486,10 @@ private:
             emit(Op::PushConst, add_constant(Value::make_string(lit->value)));
             return Type::String;
         }
+        if (const auto* lit = dynamic_cast<const ast::FloatLiteral*>(&expr)) {
+            emit(Op::PushConst, add_constant(Value::make_float(lit->value)));
+            return Type::Float;
+        }
         if (const auto* lit = dynamic_cast<const ast::VectorLiteral*>(&expr)) {
             // Component count already checked by the parser; three is a vector
             // and four a rotation, and there is no third possibility.
@@ -544,7 +553,8 @@ private:
             return Type::Key;
         }
         if (operand != Type::Integer) {
-            throw ScriptError("(integer) cast from string is not supported in this PoC");
+            throw ScriptError(std::string("(integer) cast from ") + type_name(operand) +
+                              " is not supported yet");
         }
         return Type::Integer;
     }
@@ -621,6 +631,11 @@ private:
         }
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             const Type arg_type = compile_expression(*call.args[i]);
+            // LSL widens an integer given where a float is wanted.
+            if (signature->params[i] == Type::Float && arg_type == Type::Integer) {
+                emit(Op::IntToFloat);
+                continue;
+            }
             if (!assignable(signature->params[i], arg_type)) {
                 throw ScriptError("argument " + std::to_string(i + 1) + " to '" + call.callee +
                                   "' must be " + type_name(signature->params[i]));

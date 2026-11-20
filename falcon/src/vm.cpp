@@ -19,7 +19,8 @@ struct VmFault : std::runtime_error {
 };
 
 // v3 records vectors and rotations as themselves; v2 wrote them as integers.
-constexpr std::uint16_t kSnapshotVersion = 3;
+// v4 adds floats, the sleep left, and the host call in progress.
+constexpr std::uint16_t kSnapshotVersion = 4;
 constexpr unsigned char kMagic[4] = {'H', 'W', 'Z', 'S'};
 constexpr std::uint32_t kMaxSnapshotValues = 1'000'000; // corrupt-input guard
 
@@ -40,6 +41,11 @@ public:
             u8(static_cast<std::uint8_t>((v >> (8 * i)) & 0xff));
         }
     }
+    void f64(double v) {
+        std::uint64_t bits = 0;
+        std::memcpy(&bits, &v, sizeof bits);
+        u64(bits);
+    }
     void values(const std::vector<Value>& vs) {
         u32(static_cast<std::uint32_t>(vs.size()));
         for (const Value& v : vs) {
@@ -56,6 +62,9 @@ private:
             for (char c : v.str) {
                 u8(static_cast<std::uint8_t>(c));
             }
+        } else if (v.type == Type::Float) {
+            u8(5);
+            f64(v.number());
         } else if (v.type == Type::Vector || v.type == Type::Rotation) {
             // A vector waiting on the operand stack for a host call is as much
             // script state as an integer is; written as one, it came back 0.
@@ -102,6 +111,12 @@ public:
         }
         return v;
     }
+    double f64() {
+        const std::uint64_t bits = u64();
+        double v = 0.0;
+        std::memcpy(&v, &bits, sizeof v);
+        return v;
+    }
     std::vector<Value> values() {
         const std::uint32_t count = u32();
         if (count > kMaxSnapshotValues) {
@@ -144,6 +159,9 @@ private:
                 : Value::make_rotation(components[0], components[1], components[2], components[3]);
             return result;
         }
+        if (tag == 5) {
+            return Value::make_float(f64());
+        }
         throw ScriptError("snapshot has an unknown value tag");
     }
 
@@ -183,7 +201,9 @@ void VM::dispatch(const std::string& event, const std::vector<Value>& args) {
 RunStatus VM::run(std::uint64_t instruction_budget) {
     try {
         std::uint64_t used = 0;
-        while (!finished_ && used < instruction_budget) {
+        // A script asleep or waiting on a host call runs nothing until it is
+        // woken or resumed, and stops the moment an instruction puts it there.
+        while (!finished_ && !waiting_ && sleep_seconds_ <= 0.0 && used < instruction_budget) {
             step();
             ++used;
             ++total_;
@@ -193,7 +213,17 @@ RunStatus VM::run(std::uint64_t instruction_budget) {
         finished_ = true;
         return RunStatus::Error;
     }
+    if (waiting_) return RunStatus::Waiting;
+    if (sleep_seconds_ > 0.0) return RunStatus::Sleeping;
     return finished_ ? RunStatus::Finished : RunStatus::Yielded;
+}
+
+bool VM::resume(std::uint64_t token, std::optional<Value> value) {
+    if (!waiting_ || token != waiting_token_) return false;
+    waiting_ = false;
+    waiting_token_ = 0;
+    if (value) stack_.push_back(std::move(*value));
+    return true;
 }
 
 void VM::step() {
@@ -320,13 +350,28 @@ void VM::step() {
         if (!host_) {
             throw VmFault("no host function boundary is installed");
         }
-        std::optional<Value> result =
-            host_(program_.host_names[static_cast<std::size_t>(instr.a)], args);
-        if (result) {
-            stack_.push_back(std::move(*result));
+        HostResult result = host_(program_.host_names[static_cast<std::size_t>(instr.a)], args);
+        if (result.kind == HostResult::Kind::Failed) {
+            throw VmFault(result.error);
+        }
+        if (result.kind == HostResult::Kind::Suspended) {
+            // The instruction is complete as far as the VM's own state goes:
+            // the arguments are consumed, and the value arrives with resume().
+            waiting_ = true;
+            waiting_token_ = result.token;
+            break;
+        }
+        if (result.value) {
+            stack_.push_back(std::move(*result.value));
+        }
+        if (result.kind == HostResult::Kind::Sleep && result.sleep_seconds > 0.0) {
+            sleep_seconds_ = result.sleep_seconds;
         }
         break;
     }
+    case Op::IntToFloat:
+        stack_.push_back(Value::make_float(static_cast<double>(pop_int())));
+        break;
     case Op::Pop:
         (void)pop();
         break;
@@ -424,6 +469,9 @@ std::vector<std::uint8_t> VM::snapshot() const {
     w.values(stack_);
     w.values(locals_);
     w.values(globals_);
+    w.f64(sleep_seconds_);
+    w.u8(waiting_ ? 1 : 0);
+    w.u64(waiting_token_);
     return w.take();
 }
 
@@ -450,6 +498,9 @@ void VM::restore(const std::vector<std::uint8_t>& bytes) {
         throw ScriptError("snapshot global count does not match this program");
     }
     globals_ = std::move(globals);
+    sleep_seconds_ = r.f64();
+    waiting_ = r.u8() != 0;
+    waiting_token_ = r.u64();
 }
 
 } // namespace homeworldz::script

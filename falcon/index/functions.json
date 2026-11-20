@@ -13923,7 +13923,7 @@
   "phlox_syscall": 107,
   "area": "script",
   "review": [],
-  "falcon": false,
+  "falcon": true,
   "lua": "ll.SetTimerEvent"
  },
  {
@@ -14396,7 +14396,7 @@
   "phlox_syscall": 108,
   "area": "script",
   "review": [],
-  "falcon": false,
+  "falcon": true,
   "lua": "ll.Sleep"
  },
  {

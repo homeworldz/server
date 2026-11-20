@@ -24,14 +24,14 @@ namespace homeworldz::script {
 // globals and the event-dispatch model.
 // v3 added the logical, bitwise and string-comparison operators, keys, and
 // vector and rotation values in snapshots.
-inline constexpr std::uint32_t kBytecodeAbiVersion = 3;
-inline constexpr std::uint32_t kCompilerVersion = 4;
+inline constexpr std::uint32_t kBytecodeAbiVersion = 4;
+inline constexpr std::uint32_t kCompilerVersion = 5;
 
 // Compile-time value types. Void exists only for typing host calls used as
 // statements. Key is a static type only: a key is a string at runtime, and the
 // compiler is what keeps the two apart where LSL does (a key's truth is whether
 // it names something, a string's is whether it is empty).
-enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation, Key };
+enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation, Key, Float };
 
 // A tagged LSL value. LSL integers are 32-bit; strings are UTF-8 bytes.
 //
@@ -57,6 +57,13 @@ struct Value {
     static Value make_rotation(double x, double y, double z, double w) {
         return Value{Type::Rotation, 0, {}, {x, y, z, w}};
     }
+    // A float, like a vector, is literal-only for now: it can be written and
+    // handed to a host call. It is held in the first component, rounded to the
+    // 32 bits an LSL float has.
+    static Value make_float(double v) {
+        return Value{Type::Float, 0, {}, {static_cast<double>(static_cast<float>(v)), 0.0, 0.0, 0.0}};
+    }
+    double number() const { return components[0]; }
 };
 
 enum class Op : std::uint8_t {
@@ -89,6 +96,7 @@ enum class Op : std::uint8_t {
     NotInt,        // pops a; pushes !a
     StrTruth,      // pops a string; pushes 1 when it is non-empty
     KeyTruth,      // pops a key; pushes 1 when it is a non-null uuid
+    IntToFloat,    // pops an integer; pushes it as a float
 };
 
 struct Instruction {

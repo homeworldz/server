@@ -460,6 +460,107 @@ int main() {
         require(has_value && has_eof, "constants take their values from the index");
     }
 
+    // 12. Host call results: a call can put the script to sleep, stay in
+    // progress until the host answers, or fail. Each is state the VM holds in
+    // data, so each crosses a snapshot.
+    {
+        using homeworldz::script::HostResult;
+        using homeworldz::script::Type;
+        std::vector<std::string> out;
+        std::vector<Value> slept;
+        const HostFunction host = [&](const std::string& name,
+                                      const std::vector<Value>& args) -> HostResult {
+            if (name == "llOwnerSay") {
+                out.push_back(args[0].str);
+                return std::nullopt;
+            }
+            if (name == "llSleep") {
+                slept.push_back(args[0]);
+                return HostResult::sleep(std::nullopt, args[0].number());
+            }
+            if (name == "llGetPermissionsKey") return HostResult::suspend(42);
+            if (name == "llGetPermissions") return HostResult::fail("the region refused");
+            return std::nullopt;
+        };
+
+        const Program sleeper = compile_source(
+            "default { state_entry() { llOwnerSay(\"a\"); llSleep(2.5); llOwnerSay(\"b\"); } }");
+        VM vm(sleeper);
+        vm.set_host(host);
+        vm.dispatch("state_entry", {});
+        require(vm.run(1000) == RunStatus::Sleeping && out == std::vector<std::string>{"a"} &&
+                    vm.sleep_remaining() == 2.5,
+                "llSleep stops the script where it is, for the time it asked");
+        const auto before = vm.total_instructions();
+        require(vm.run(1000) == RunStatus::Sleeping && vm.total_instructions() == before,
+                "a sleeping script runs nothing");
+        // Part of the sleep has passed when the snapshot is taken.
+        vm.set_sleep_remaining(1.0);
+        VM elsewhere(sleeper);
+        elsewhere.set_host(host);
+        elsewhere.restore(vm.snapshot());
+        require(elsewhere.run(1000) == RunStatus::Sleeping && elsewhere.sleep_remaining() == 1.0,
+                "the sleep left crosses a snapshot");
+        elsewhere.wake();
+        require(elsewhere.run(1000) == RunStatus::Finished &&
+                    out == (std::vector<std::string>{"a", "b"}),
+                "a woken script goes on from the instruction after the call");
+
+        // A float is a value a script can write; an integer is widened to one.
+        slept.clear();
+        const Program widened = compile_source("default { state_entry() { llSleep(2); llSleep(.5); } }");
+        VM widening(widened);
+        widening.set_host(host);
+        widening.dispatch("state_entry", {});
+        widening.run(1000);
+        widening.wake();
+        widening.run(1000);
+        require(slept.size() == 2 && slept[0].type == Type::Float && slept[0].number() == 2.0 &&
+                    slept[1].type == Type::Float && slept[1].number() == 0.5,
+                "an integer given for a float arrives as a float");
+        bool refused = false;
+        try {
+            compile_source("default { state_entry() { llOwnerSay(1.5); } }");
+        } catch (const ScriptError&) {
+            refused = true;
+        }
+        require(refused, "a float is not accepted where a string is wanted");
+
+        // A call still in progress: the script waits, and the answer arrives
+        // by token, on this VM or on the one a snapshot was restored into.
+        out.clear();
+        const Program asker = compile_source(
+            "default { state_entry() { llOwnerSay((string)llGetPermissionsKey()); } }");
+        VM asking(asker);
+        asking.set_host(host);
+        asking.dispatch("state_entry", {});
+        require(asking.run(1000) == RunStatus::Waiting && asking.waiting() &&
+                    asking.waiting_token() == 42 && out.empty(),
+                "a suspended host call leaves the script waiting on its token");
+        require(!asking.resume(41, Value::make_string("wrong")) && asking.waiting(),
+                "an answer for another token is refused");
+        VM arrived(asker);
+        arrived.set_host(host);
+        arrived.restore(asking.snapshot());
+        require(arrived.run(1000) == RunStatus::Waiting && arrived.waiting_token() == 42,
+                "a host call in progress crosses a snapshot");
+        require(arrived.resume(42, Value::make_string("the-answer")) &&
+                    arrived.run(1000) == RunStatus::Finished &&
+                    out == std::vector<std::string>{"the-answer"},
+                "the answer completes the call and the script goes on");
+
+        // A call that fails stops the script with the host's message.
+        const Program failing = compile_source(
+            "default { state_entry() { integer p = llGetPermissions(); llOwnerSay(\"unreached\"); } }");
+        VM failed(failing);
+        failed.set_host(host);
+        failed.dispatch("state_entry", {});
+        out.clear();
+        require(failed.run(1000) == RunStatus::Error && failed.error() == "the region refused" &&
+                    out.empty(),
+                "a failed host call is a runtime error");
+    }
+
     if (g_failures == 0) {
         std::cout << "ALL PoC CHECKS PASSED\n";
         return EXIT_SUCCESS;

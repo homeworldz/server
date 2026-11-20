@@ -305,8 +305,11 @@ private:
                                   node->column);
             return node;
         }
-        if (check(TokenKind::FloatLiteral))
-            fail("floats are only available inside vector and rotation literals so far");
+        if (check(TokenKind::FloatLiteral)) {
+            auto node = make<ast::FloatLiteral>(peek());
+            node->value = advance().number;
+            return node;
+        }
         if (check(TokenKind::IntLiteral)) {
             auto node = make<ast::IntLiteral>(peek());
             node->value = advance().integer;

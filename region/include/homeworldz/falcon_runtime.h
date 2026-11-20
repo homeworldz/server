@@ -2,6 +2,7 @@
 
 #include "homeworldz/script_runtime.h"
 #include "homeworldz/script/bytecode.h"
+#include "homeworldz/script/vm.h"
 
 #include <array>
 #include <optional>
@@ -55,15 +56,27 @@ public:
     // name, and its evaluated arguments. The region answers with a value for a
     // function that returns one, and nothing for one that does not. A function
     // the region does not answer that the compiler accepted returns its type's
-    // default to the script rather than leaving its stack short.
-    using RegionCall = std::function<std::optional<Value>(
+    // default to the script rather than leaving its stack short. A function
+    // that cannot answer at once returns HostResult::suspend(token) and calls
+    // resume() when it can; one with a forced delay returns HostResult::sleep.
+    using RegionCall = std::function<HostResult(
         const Identity&, const std::string& name, const std::vector<Value>& args)>;
+    // Seconds on a clock that only moves forward. Sleeps and timers are
+    // counted on it; the default is the machine's steady clock.
+    using Clock = std::function<double()>;
 
     explicit FalconRuntime(HostSink host_sink = {}, SitTargetSink sit_target_sink = {},
                            RegionCall region_call = {});
     ~FalconRuntime();
     FalconRuntime(const FalconRuntime&) = delete;
     FalconRuntime& operator=(const FalconRuntime&) = delete;
+
+    void set_clock(Clock clock);
+    // Completes a host call a script is suspended in, with the value the
+    // function returns or nothing for one that returns none. False when that
+    // script is not waiting on that token.
+    bool resume(std::string_view object_id, std::string_view inventory_item_id,
+                std::uint64_t token, std::optional<Value> value);
 
     FalconRezResult rez(Identity identity, std::string_view source, bool enabled);
     bool set_enabled(std::string_view object_id, std::string_view inventory_item_id,

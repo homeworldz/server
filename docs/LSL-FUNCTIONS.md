@@ -17,7 +17,7 @@ implemented it); **Falcon** marks what Falcon compiles and the region answers to
 | of which bot* | 54 |
 | Constants | 1253 |
 | Events | 44 |
-| Functions Falcon runs today | 17 |
+| Functions Falcon runs today | 19 |
 | SL functions with no Halcyon body (newer than InWorldz) | 130 |
 | Halcyon stubs | 18 |
 | Signatures needing review (C# string may be key) | 1 |
@@ -511,7 +511,7 @@ implemented it); **Falcon** marks what Falcon compiles and the region answers to
 | `void llSetText(string text, vector color, float alpha)` | prim | 5516 |  |
 | `void llSetTexture(string texture, integer face)` | prim | 2118 |  |
 | `void llSetTextureAnim(integer mode, integer face, integer sizex, integer sizey, float start, float length, float rate)` | prim | 7326 |  |
-| `void llSetTimerEvent(float sec)` | script | 3559 |  |
+| `void llSetTimerEvent(float sec)` | script | 3559 | yes |
 | `void llSetTorque(vector torque, integer is_local)` | motion | 2614 |  |
 | `void llSetTouchText(string text)` | prim | 8740 |  |
 | `void llSetVehicleFlags(integer flags)` | motion | 8626 |  |
@@ -527,7 +527,7 @@ implemented it); **Falcon** marks what Falcon compiles and the region answers to
 | `float llSin(float theta)` | lang | 733 |  |
 | `integer llSitOnLink(key agent_id, integer link)` | avatar | none |  |
 | `void llSitTarget(vector offset, rotation rot)` | avatar | 8665 | yes |
-| `void llSleep(float sec)` | script | 3571 |  |
+| `void llSleep(float sec)` | script | 3571 | yes |
 | `void llSound(string sound, float volume, integer queue, integer loop)` | sound | 2748 |  |
 | `void llSoundPreload(string sound)` | sound | 4054 |  |
 | `float llSqrt(float val)` | lang | 757 |  |
@@ -759,7 +759,7 @@ implemented it); **Falcon** marks what Falcon compiles and the region answers to
 | `sensor(integer num_detected)` |  |
 | `state_entry()` | yes |
 | `state_exit()` |  |
-| `timer()` |  |
+| `timer()` | yes |
 | `touch(integer num_detected)` |  |
 | `touch_end(integer num_detected)` |  |
 | `touch_start(integer num_detected)` | yes |

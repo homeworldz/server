@@ -799,7 +799,7 @@
    "script",
    "time"
   ],
-  "falcon": false
+  "falcon": true
  },
  {
   "name": "touch",

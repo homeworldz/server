@@ -70,14 +70,15 @@ stream; an event dispatch table records where each begins.
 | `global_defaults` | initial value of each persistent global slot (`vector<Value>`) |
 | `events` | the dispatch table (`vector<EventEntry>`) |
 | `compiler_version` | the compiler that produced it |
-| `abi_version` | the bytecode/snapshot ABI (currently `2`) |
+| `abi_version` | the bytecode/snapshot ABI (currently `4`) |
 
 Each `EventEntry` carries the handler's `name` (e.g. `state_entry`,
 `touch_start`), its `entry_ip` (first instruction), the `param_types` the region
 must supply when dispatching it, and the `local_count` it needs (parameters
-occupy the first local slots). Both `compiler_version` and `abi_version` are `2`
-in this PoC (`kCompilerVersion`, `kBytecodeAbiVersion`); v2 added persistent
-globals and the event-dispatch model.
+occupy the first local slots). `compiler_version` is `5` and `abi_version` `4`
+(`kCompilerVersion`, `kBytecodeAbiVersion`); ABI 2 added persistent globals and
+the event-dispatch model, 3 vectors and rotations as values, and 4 floats, the
+sleep left, and the host call in progress.
 
 ## Instruction format
 
@@ -151,6 +152,10 @@ RunStatus run(uint64 budget):
 - **`Yielded`** — spent its instruction budget with work remaining; call `run`
   again next tick to continue.
 - **`Error`** — a runtime fault stopped the script.
+- **`Sleeping`** — a host call put the script to sleep. The VM has no clock; it
+  holds the seconds left, and whoever drives it counts them and calls `wake`.
+- **`Waiting`** — a host call is still in progress. `resume(token, value)`
+  delivers its answer and the script goes on.
 
 ### Events and dispatch
 
@@ -197,8 +202,21 @@ and a wall-clock guard) attach at this same yield boundary as Falcon grows.
 Host functions are provided to the VM as a single callback:
 
 ```
-optional<Value> host(const string& name, const vector<Value>& args)
+HostResult host(const string& name, const vector<Value>& args)
 ```
+
+A `HostResult` is one of four outcomes:
+
+| Outcome | Meaning |
+| --- | --- |
+| returned | the call is done, with its value or with none |
+| sleep | the call is done and the script sleeps before it goes on: `llSleep`, and Second Life's forced delays |
+| suspended | the call is in progress; the host gave a numeric token and answers later with `resume` |
+| failed | the call raises a runtime error that stops the script |
+
+An optional value converts to "returned", so a function that answers at once
+never names the type. The token is a number so that a script suspended in a host
+call can be snapshotted, carried to another region, and resumed there.
 
 `CallHost` pops `argc` arguments (restoring source order), invokes the boundary
 with the resolved name, and pushes a result only if one is returned (void host
@@ -215,13 +233,13 @@ a fresh VM to continue identically. This is what lets a heavily scripted
 attachment or vehicle cross a region border without waiting for a poorly written
 handler to reach an event boundary.
 
-All multi-byte integers are little-endian. Current layout (`abi_version` 2,
-snapshot version 2):
+All multi-byte integers are little-endian. Current layout (`abi_version` 4,
+snapshot version 4):
 
 | Bytes | Field | Notes |
 | --- | --- | --- |
 | 4 | magic | `HWZS` |
-| 2 | snapshot version | `2` |
+| 2 | snapshot version | `4` |
 | 4 | bytecode ABI version | must match the `Program` on restore |
 | 8 | `ip` | instruction pointer |
 | 1 | finished | `0` or `1` |
@@ -232,6 +250,9 @@ snapshot version 2):
 | … | `M` values | slot order |
 | 4 | globals length `G` | must equal the program's global count on restore |
 | … | `G` values | slot order |
+| 8 | sleep left | seconds as an IEEE double; `0` when awake |
+| 1 | waiting | `1` while a host call is in progress |
+| 8 | waiting token | the host's name for that call |
 
 Because the operand stack, locals, and **globals** are all captured, a crossing
 snapshot taken mid-`touch_start` restores with its counter intact. Each
@@ -239,9 +260,11 @@ snapshot taken mid-`touch_start` restores with its counter intact. Each
 
 | Bytes | Field |
 | --- | --- |
-| 1 | tag: `1` = integer, `2` = string |
+| 1 | tag: `1` = integer, `2` = string, `3` = vector, `4` = rotation, `5` = float |
 | 4 | integer: the 32-bit value / string: the byte length `L` |
 | `L` | string bytes (strings only) |
+| 32 | vector or rotation: four IEEE doubles |
+| 8 | float: one IEEE double |
 
 The wire format is a purpose-built binary format with bounded, length-prefixed,
 tagged fields — deliberately **not** JSON, XML, protobuf, or a reflection dump.
