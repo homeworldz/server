@@ -5728,7 +5728,7 @@ int main(int argc, char* argv[]) {
                 args[0].integer, prim_id, linkset_of(root_id));
             return targets.size() == 1 ? key_on(targets.front()) : null_key;
         }
-        if (name == "llSetLinkSitTarget" && args.size() == 3) {
+        if (name == "llLinkSitTarget" && args.size() == 3) {
             for (const auto target_id : homeworldz::region::resolve_link(
                      args[0].integer, prim_id, linkset_of(root_id)))
                 if (auto* target = scene.find(target_id)) {

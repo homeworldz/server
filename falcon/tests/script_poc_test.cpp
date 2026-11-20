@@ -266,7 +266,7 @@ int main() {
             default {
                 state_entry() {
                     llSitTarget(SEAT, FACING);
-                    llSetLinkSitTarget(2, <0.25, 0.0, 0.6>, <0.0, 0.0, 0.707107, 0.707107>);
+                    llLinkSitTarget(2, <0.25, 0.0, 0.6>, <0.0, 0.0, 0.707107, 0.707107>);
                     llSetSitText("Relax");
                     llSetClickAction(CLICK_ACTION_SIT);
                 }
@@ -296,7 +296,7 @@ int main() {
         const HostFunction host = [&](const std::string& name,
                                       const std::vector<Value>& args) -> std::optional<Value> {
             calls.push_back(name);
-            if (name == "llSitTarget" || name == "llSetLinkSitTarget") {
+            if (name == "llSitTarget" || name == "llLinkSitTarget") {
                 seat_args.insert(seat_args.end(), args.begin(), args.end());
             }
             if (name == "llAvatarOnSitTarget") return Value::make_string(seated);
@@ -385,6 +385,46 @@ int main() {
             refused = true;
         }
         require(refused, "a global initializer must be a constant");
+    }
+
+    // 11. The generated index supplies signatures and constants, and decides
+    // nothing about what compiles.
+    {
+        const auto diagnostic_of = [](const std::string& source) {
+            try {
+                compile_source(source);
+            } catch (const ScriptError& error) {
+                return std::string(error.what());
+            }
+            return std::string();
+        };
+        // llGetPos is in the index with a signature Falcon could express, and
+        // the region does not answer it.
+        require(diagnostic_of("default { state_entry() { vector v = llGetPos(); } }")
+                        .find("unknown function 'llGetPos'") != std::string::npos,
+                "a function the index knows but the region does not answer is refused");
+        require(diagnostic_of("default { state_entry() { llSetLinkSitTarget(2, ZERO_VECTOR, ZERO_ROTATION); } }")
+                        .find("unknown function 'llSetLinkSitTarget'") != std::string::npos,
+                "llSetLinkSitTarget, which no grid has, is refused");
+        require(diagnostic_of("default { state_entry() { llLinkSitTarget(2, ZERO_VECTOR, ZERO_ROTATION); } }")
+                        .empty(),
+                "llLinkSitTarget compiles with the index's signature");
+        require(diagnostic_of("default { state_entry() { llLinkSitTarget(ZERO_VECTOR, ZERO_ROTATION); } }")
+                        .find("expects 3 argument(s)") != std::string::npos,
+                "an implemented function's argument count comes from the index");
+        require(diagnostic_of("default { money(key id, integer amount) { } }")
+                        .find("unsupported event 'money'") != std::string::npos,
+                "an event the index knows but the region does not raise is refused");
+
+        // A constant the hand-kept table never had, with Second Life's value.
+        const Program program = compile_source(
+            "default { state_entry() { llSay(CHANGED_INVENTORY, EOF); } }");
+        bool has_value = false, has_eof = false;
+        for (const auto& constant : program.constants) {
+            if (constant.type == homeworldz::script::Type::Integer && constant.integer == 0x1) has_value = true;
+            if (constant.type == homeworldz::script::Type::String && constant.str == "\n\n\n") has_eof = true;
+        }
+        require(has_value && has_eof, "constants take their values from the index");
     }
 
     if (g_failures == 0) {

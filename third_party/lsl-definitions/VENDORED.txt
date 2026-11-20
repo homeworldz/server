@@ -1,0 +1,3 @@
+Upstream: https://github.com/secondlife/lsl-definitions
+Commit: a4be83c390aa60cef5f7066cd2fcb7ee9823eaf6
+Vendored: 2026-11-14, unmodified. Data only: the master LSL and SLua definitions (signatures, descriptions, sleep delays, flags) the Rookery function index and the website scripting reference are generated from.

@@ -1,0 +1,29 @@
+{
+  "about": "Which region subsystem each script function routes to, for the function index (falcon/tools/gen_function_index.py). Rules are tried in order; the first whose regular expression matches the function name wins; no match is area 'other'. Areas: lang (pure: math, strings, lists, JSON, hashing; no grid call), script (the script's own runtime: timers, sleep, memory, resets, time), chat (talking and dialogs), link (the linkset), prim (object appearance and properties), motion (position, physics, vehicles, targets), sensor (detected data and scans), avatar (permissions, animations, controls, camera, sitting, attachments, teleports, agent data), inventory (task inventory, rezzing, notecards, giving), land (parcels, estates, region info), money, net (HTTP, URLs, email, remote data), sound, pathfinding, experience (experiences and key-value storage), linkset_data, environment, npc (bot* NPCs), combat (damage and health).",
+  "rules": [
+    {"area": "npc", "match": "^bot"},
+    {"area": "combat", "match": "(Damage|Health)"},
+    {"area": "lang", "match": "(HMAC|SignRSA|VerifyRSA|Linear2sRGB|sRGB2Linear|ClampFloat|ClampInt|VerifyType)"},
+    {"area": "avatar", "match": "(GetCameraAspect|GetCameraFOV|GameControlMode|GetVisualParams|IsFriend|Name2Key|RequestUserKey|SetAgentRot|SitOnLink|WorldPosToHUD|OpenFloater|MapBeacon|AppearanceParam|IsPlusUser|ActiveGroup|GroupEject|GroupInvite)"},
+    {"area": "inventory", "match": "(DerezObject|TransferOwnership)"},
+    {"area": "script", "match": "(GetLocalTime|GetLocalTimeOffset)"},
+    {"area": "prim", "match": "GetLastOwner"},
+    {"area": "linkset_data", "match": "^llLinksetData"},
+    {"area": "experience", "match": "(Experience|KeyValue|KeysKeyValue|DataSizeKeyValue|AgentInExperience)"},
+    {"area": "pathfinding", "match": "^ll(CreateCharacter|DeleteCharacter|UpdateCharacter|ExecCharacterCmd|NavigateTo|Pursue|Evade|FleeFrom|WanderWithin|PatrolPoints|GetClosestNavPoint|GetStaticPath)$"},
+    {"area": "money", "match": "(GiveMoney|SetPayPrice|TransferLindenDollars|Money)"},
+    {"area": "net", "match": "(HTTP|URL$|URLs$|RequestURL|RequestSecureURL|ReleaseURL|SetContentType|Email|RemoteData|RemoteDataChannel|SendRemoteData|EscapeURL|UnescapeURL)"},
+    {"area": "sound", "match": "(Sound|SoundQueueing|SoundRadius|SoundVolume)"},
+    {"area": "chat", "match": "^(ll|iw)(Say|Shout|Whisper|OwnerSay|RegionSay|RegionSayTo|InstantMessage|Listen|ListenControl|ListenRemove|Dialog|TextBox|LoadURL|MapDestination)"},
+    {"area": "link", "match": "(MessageLinked|CreateLink|BreakLink|BreakAllLinks|GetLinkKey|GetLinkName|GetLinkNumber$|GetNumberOfPrims|GetObjectPrimCount)"},
+    {"area": "sensor", "match": "^(ll|iw)(Detected|Sensor|GetAgentList|GetObjectDetails|CastRay|VolumeDetect)"},
+    {"area": "avatar", "match": "(Permission|Animation|Controls|TakeCamera|ReleaseCamera|CameraParams|ClearCameraParams|SetCamera|SitTarget|AvatarOn|UnSit|ForceMouselook|AttachToAvatar|DetachFromAvatar|GetAttached|Teleport|GetAgent|RequestAgentData|Key2Name|DisplayName|Username|GetCameraPos|GetCameraRot|PointAt|ScriptDanger)"},
+    {"area": "inventory", "match": "(Inventory|RezObject|RezAtRoot|GodLikeRezObject|Notecard|RemoteLoadScript|RemoteScriptAccessPin|ResetOtherScript|SetScriptState|GetScriptState|GetScriptName|Rez)"},
+    {"area": "land", "match": "(Parcel|Land|Estate|ReturnObjects|ModifyLand|GetRegion|RegionPos|SimStats|SimulatorData|SimulatorHostname|EdgeOfWorld|OverMyLand|GetSimStats|GetEnv$|ScriptProfiler)"},
+    {"area": "environment", "match": "(Sun|Moon|Wind|Cloud|Water|TimeOfDay|Environment|DayLength|DayOffset|GetEnv)"},
+    {"area": "motion", "match": "(SetPos|GetPos|SetRot|GetRot|LocalPos|LocalRot|RootPosition|RootRotation|Impulse|Force|Torque|MoveToTarget|LookAt|RotLookAt|Target|Velocity|Omega|Accel|Vel$|Status|Vehicle|KeyframedMotion|PushObject|Buoyancy|Hover|Ground|Mass|PhysicsMaterial|CenterOfMass|Collision|PassCollisions|SetDamage|AdjustDamage|SetPhysics|GeometricCenter|BoundingBox)"},
+    {"area": "prim", "match": "(PrimitiveParams|PrimMedia|LinkMedia|ClearPrimMedia|ClearLinkMedia|Texture|Color|Alpha|SetText|SetScale|GetScale|ScaleByFactor|ScaleFactor|ObjectName|ObjectDesc|ParticleSystem|ClickAction|SitText|TouchText|NumberOfSides|PermMask|GetCreator|GetOwner|GetKey$|SameGroup|SetLink|GetLink|PassTouches|Die$|AllowInventoryDrop|SetPrimURL|RefreshPrimURL|Glow|Material|MakeExplosion|MakeFire|MakeFountain|MakeSmoke|SetObject|GetObject)"},
+    {"area": "script", "match": "(ResetScript|Sleep|TimerEvent|GetTime|ResetTime|GetAndResetTime|Memory|MinEventDelay|GetStartParameter|GetDate|Timestamp|UnixTime|GMTclock|Wallclock|GetEnergy|GetFreeMemory|GetUsedMemory|SPMaxMemory|GenerateKey|Frand|GetRegionTimeDilation|GetRegionFPS)"},
+    {"area": "lang", "match": "(Abs|Acos|Asin|Atan2|Cos|Sin|Tan|Sqrt|Pow|ModPow|Log|Floor|Ceil|Round|Fabs|List|String|SubString|Json|Base64|SHA|MD5|Hash|CSV|Parse|DumpList|InsertString|DeleteSub|ToLower|ToUpper|Vec|Rot2|Euler2Rot|Axes2Rot|AxisAngle2Rot|AngleBetween|RotBetween|Char|Ord|Replace|Format|Codec|IntRand|FrandRange|Search)"}
+  ]
+}

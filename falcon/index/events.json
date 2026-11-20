@@ -1,0 +1,884 @@
+[
+ {
+  "name": "at_rot_target",
+  "params": [
+   {
+    "type": "integer",
+    "name": "handle",
+    "description": "Integer handle returned by the llRotTarget call."
+   },
+   {
+    "type": "rotation",
+    "name": "targetrot",
+    "description": "Target rotation specified in the llRotTarget call."
+   },
+   {
+    "type": "rotation",
+    "name": "ourrot",
+    "description": "Current rotation of the object (similar to llGetRot)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when the script's rotation (ourrot) comes within a defined angle (error) of the target rotation (targetrot) set by a call to llRotTarget (which returns the associated handle).",
+  "categories": [
+   "movement"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "at_target",
+  "params": [
+   {
+    "type": "integer",
+    "name": "tnum",
+    "description": "Integer target handle returned by the llTarget call."
+   },
+   {
+    "type": "vector",
+    "name": "targetpos",
+    "description": "Target position vector specified in the llTarget call."
+   },
+   {
+    "type": "vector",
+    "name": "ourpos",
+    "description": "Current position vector of the object (similar to llGetPos)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when the scripted object's position (ourpos) comes within the defined range of the target position (targetpos) set by llTarget (which returns the associated handle tnum).",
+  "categories": [
+   "movement"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "attach",
+  "params": [
+   {
+    "type": "key",
+    "name": "avatar",
+    "description": "UUID of the avatar the object is attached to, or NULL_KEY if detached."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered whenever the object is attached to or detached from an avatar. Passes the UUID key of the avatar if attached, or NULL_KEY if detached.",
+  "categories": [
+   "attachments"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "bot_update",
+  "params": [
+   {
+    "type": "key",
+    "name": "botID",
+    "description": ""
+   },
+   {
+    "type": "integer",
+    "name": "flag",
+    "description": ""
+   },
+   {
+    "type": "list",
+    "name": "parameters",
+    "description": ""
+   }
+  ],
+  "source": "halcyon",
+  "description": "This event is fired under a few circumstances which are the following: Move is completed - this means that the bot has fully completed it's move, and is fired when the bot has finished moving to all positions in the navigation list or when the bot has finished moving to an avatar. Flag: BOT_MOVE_COMPLETE Parameters: vector currentBotPosition - position of the bot in the sim Moved to new position - this is fired when the bot has finished moving to the next node in the position list. This is only fired with botSetNavigationPositions. Flag: BOT_MOVE_UPDATE Parameters: integer nextNode - the next node in the position list that the bot will attempt to move towards. vector currentBotPosition - position of the bot in the sim Move failed - this means that the bot failed to move to the given position. This will be fired if the avatar has had to teleport to the next location because it could not move toward the goal position for longer than the amount of time specified. Flag: BOT_MOVE_FAILED Parameters: integer nextNode - the next node in the position list that the bot will attempt to move towards. vector currentBotPosition - position of the bot in the sim Avatar lost - this means that the bot has failed to follow the avatar and has given up. This will be fired once the bot is further away from the user it is following than the specified distance passed into botFollowAvatar. Flag: BOT_MOVE_AVATAR_LOST Parameters: vector avatarPosition - position of the user that the bot failed to follow float distanceAway - distance between the bot and the user vector currentBotPosition - position of the bot in the sim",
+  "categories": [],
+  "doc": "doc/bot LSL Functions/Function Documentation/bot_update.txt",
+  "falcon": false
+ },
+ {
+  "name": "changed",
+  "params": [
+   {
+    "type": "integer",
+    "name": "changes",
+    "description": "A bitfield of CHANGED_* flags representing what changed."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when various properties of the object change. The parameter changes is a bitfield of CHANGED_* flags.",
+  "categories": [
+   "asset_permissions",
+   "linkset",
+   "media",
+   "prim_appearance",
+   "prim_inventory",
+   "prim_media",
+   "region",
+   "teleport",
+   "script",
+   "sit"
+  ],
+  "falcon": true
+ },
+ {
+  "name": "collision",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Total number of detected colliders (usable with llDetected* functions)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered continuously while an avatar or another object is colliding with the object containing the script. Passes num_detected, representing the number of detected collisions.",
+  "categories": [
+   "detected",
+   "physics",
+   "sensor"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "collision_end",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Total number of detected colliders (usable with llDetected* functions)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when an avatar or another object stops colliding with the object containing the script. Passes num_detected, representing the number of detected collisions.",
+  "categories": [
+   "detected",
+   "physics",
+   "sensor"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "collision_start",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Total number of detected colliders (usable with llDetected* functions)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when an avatar or another object first begins colliding with the object containing the script. Passes num_detected, representing the number of detected collisions.",
+  "categories": [
+   "detected",
+   "physics",
+   "sensor"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "control",
+  "params": [
+   {
+    "type": "key",
+    "name": "id",
+    "description": "UUID of the avatar whose inputs are captured."
+   },
+   {
+    "type": "integer",
+    "name": "level",
+    "description": "A bitfield of CONTROL_* constants representing currently held controls."
+   },
+   {
+    "type": "integer",
+    "name": "edge",
+    "description": "A bitfield of CONTROL_* constants representing controls that just changed state."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered to pass captured avatar control inputs into the script. The parameter level indicates held controls, and edge indicates change in controls (both are bitfields of CONTROL_* constants).",
+  "categories": [
+   "avatar",
+   "input"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "dataserver",
+  "params": [
+   {
+    "type": "key",
+    "name": "queryid",
+    "description": "Key identifying the asynchronous request (matches the handle returned by the requesting function)."
+   },
+   {
+    "type": "string",
+    "name": "data",
+    "description": "String containing the requested data."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when requested data is returned to the script (e.g., from llRequestAgentData, llRequestInventoryData, or llGetNotecardLine).",
+  "categories": [
+   "dataserver"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "email",
+  "params": [
+   {
+    "type": "string",
+    "name": "time",
+    "description": "Timestamp of when the email was received, in (string)llGetUnixTime() format."
+   },
+   {
+    "type": "string",
+    "name": "address",
+    "description": "Email address of the sender."
+   },
+   {
+    "type": "string",
+    "name": "subject",
+    "description": "Subject of the email."
+   },
+   {
+    "type": "string",
+    "name": "msg",
+    "description": "Body text of the email."
+   },
+   {
+    "type": "integer",
+    "name": "num_left",
+    "description": "Number of emails still waiting in the queue."
+   }
+  ],
+  "source": "sl",
+  "description": "Receive an email requested by llGetNextEmail(). NumberRemaining indicates the number of emails remaining in the queue for llGetNextEmail() to retrieve.",
+  "categories": [
+   "script_communication"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "experience_permissions",
+  "params": [
+   {
+    "type": "key",
+    "name": "agent_id",
+    "description": "UUID of the avatar approving experience permissions."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when the agent specified by agent_id approves an experience permissions request (interactively or automatically if previously approved).",
+  "categories": [
+   "avatar",
+   "experience",
+   "permissions"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "experience_permissions_denied",
+  "params": [
+   {
+    "type": "key",
+    "name": "agent_id",
+    "description": "UUID of the avatar who denied or was blocked from granting permissions."
+   },
+   {
+    "type": "integer",
+    "name": "reason",
+    "description": "XP_ERROR_* error constant describing why permissions were denied."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when the agent specified by agent_id denies experience permissions, or when permission is blocked for other reasons (specified by the error code reason).",
+  "categories": [
+   "avatar",
+   "experience",
+   "permissions"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "final_damage",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Number of damage events applied to the avatar or task."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered after all on_damage events across all scripts have completed and damage is actively applied to the avatar or distributed among seated avatars. Collision detected functions (llDetected*) and llDetectedDamage are available.",
+  "categories": [
+   "combat",
+   "detected"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "game_control",
+  "params": [
+   {
+    "type": "key",
+    "name": "id",
+    "description": "UUID of the avatar supplying controller input."
+   },
+   {
+    "type": "integer",
+    "name": "button_levels",
+    "description": "A 32-bit mask representing the canonical buttons currently held down on the controller."
+   },
+   {
+    "type": "list",
+    "name": "axes",
+    "description": "A list of six float values in the range [-1.0, 1.0] representing canonical controller axes."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when a compatible viewer sends game controller input changes for the avatar specified by id. Only triggers for scripts in attachments or seats.",
+  "categories": [
+   "avatar",
+   "game_control",
+   "input"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "http_request",
+  "params": [
+   {
+    "type": "key",
+    "name": "request_id",
+    "description": "Unique key identifying the incoming HTTP request (used with llHTTPResponse)."
+   },
+   {
+    "type": "string",
+    "name": "method",
+    "description": "HTTP method string ('GET', 'POST', 'PUT', 'DELETE') or URL request status constants."
+   },
+   {
+    "type": "string",
+    "name": "body",
+    "description": "String payload of the incoming request body."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when the script's registered URL receives an incoming HTTP request identified by request_id.",
+  "categories": [
+   "script_communication",
+   "web"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "http_response",
+  "params": [
+   {
+    "type": "key",
+    "name": "request_id",
+    "description": "Key matching the handle returned by the initiating llHTTPRequest call."
+   },
+   {
+    "type": "integer",
+    "name": "status",
+    "description": "Integer HTTP status code returned (such as 200 or 404)."
+   },
+   {
+    "type": "list",
+    "name": "metadata",
+    "description": "A list of HTTP_* constants and response headers metadata."
+   },
+   {
+    "type": "string",
+    "name": "body",
+    "description": "String payload of the received response body."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when an HTTP response body is received for a pending request_id, or if the request fails or times out.",
+  "categories": [
+   "script_communication",
+   "web"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "land_collision",
+  "params": [
+   {
+    "type": "vector",
+    "name": "pos",
+    "description": "Vector position of collision with the ground."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered in the root prim when a physical object or attached avatar is colliding with the ground at position pos.",
+  "categories": [
+   "physics"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "land_collision_end",
+  "params": [
+   {
+    "type": "vector",
+    "name": "pos",
+    "description": "Vector position of the last ground collision."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered in the root prim when a physical object or attached avatar stops colliding with the ground at position pos.",
+  "categories": [
+   "physics"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "land_collision_start",
+  "params": [
+   {
+    "type": "vector",
+    "name": "pos",
+    "description": "Vector position of collision with the ground."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered in the root prim when a physical object or attached avatar first begins colliding with the ground at position pos.",
+  "categories": [
+   "physics"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "link_message",
+  "params": [
+   {
+    "type": "integer",
+    "name": "sender_num",
+    "description": "Link index of the prim containing the script that sent the message."
+   },
+   {
+    "type": "integer",
+    "name": "num",
+    "description": "An integer value passed from the sending script."
+   },
+   {
+    "type": "string",
+    "name": "str",
+    "description": "A text string value passed from the sending script."
+   },
+   {
+    "type": "key",
+    "name": "id",
+    "description": "A key value passed from the sending script."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when the script receives a link message from sender_num, containing the parameters num, str, and id sent via llMessageLinked.",
+  "categories": [
+   "script_communication"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "linkset_data",
+  "params": [
+   {
+    "type": "integer",
+    "name": "action",
+    "description": "Action taken (LINKSETDATA_UPDATE, LINKSETDATA_DELETE, LINKSETDATA_MULTIDELETE, or LINKSETDATA_RESET)."
+   },
+   {
+    "type": "string",
+    "name": "name",
+    "description": "Name of the modified key (a comma-separated list of keys for LINKSETDATA_MULTIDELETE, or empty for LINKSETDATA_RESET)."
+   },
+   {
+    "type": "string",
+    "name": "value",
+    "description": "New value of the key (empty if the key was deleted or is protected)."
+   }
+  ],
+  "source": "sl",
+  "description": "Fires in all scripts in the linkset whenever the linkset datastore is modified via an llLinksetData function. Passes the action taken, the affected key name, and the new value.",
+  "categories": [
+   "data_storage",
+   "linkset",
+   "linkset_data"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "listen",
+  "params": [
+   {
+    "type": "integer",
+    "name": "channel",
+    "description": "Chat channel where the message appeared."
+   },
+   {
+    "type": "string",
+    "name": "name",
+    "description": "Name of the sending prim or the legacy name of the sending agent."
+   },
+   {
+    "type": "key",
+    "name": "id",
+    "description": "UUID of the sending agent or prim."
+   },
+   {
+    "type": "string",
+    "name": "msg",
+    "description": "Spoken text string."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when a chat message matching active llListen filters is received on channel. Passes the sender's name and UUID key id, along with the spoken string msg.",
+  "categories": [
+   "avatar_communication",
+   "chat",
+   "script_communication"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "money",
+  "params": [
+   {
+    "type": "key",
+    "name": "id",
+    "description": "UUID of the paying resident."
+   },
+   {
+    "type": "integer",
+    "name": "amount",
+    "description": "Quantity of L$ paid to the prim."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when a resident specified by id pays an amount of Linden dollars (L$) to the prim.",
+  "categories": [
+   "money"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "moving_end",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered whenever the physical or moving object containing the script stops moving.",
+  "categories": [
+   "movement",
+   "pathfinding"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "moving_start",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered whenever the physical or moving object containing the script starts moving.",
+  "categories": [
+   "movement",
+   "pathfinding"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "no_sensor",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered when active sensors (from llSensor or llSensorRepeat) complete a scan without finding any matching targets.",
+  "categories": [
+   "detected",
+   "sensor"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "not_at_rot_target",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered continuously while the object's rotation is outside the leeway angle of targets set via llRotTarget.",
+  "categories": [
+   "movement"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "not_at_target",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered continuously while the object's position has not yet reached the range of targets set via llTarget.",
+  "categories": [
+   "movement"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "object_rez",
+  "params": [
+   {
+    "type": "key",
+    "name": "id",
+    "description": "UUID of the newly rezzed object."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when this object successfully rezzes another object from its inventory. Passes the key (UUID) id of the newly rezzed object.",
+  "categories": [
+   "rez"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "on_damage",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Number of pending damage events."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when damage has been inflicted on an avatar or task, but before it is applied or distributed. Collision detected functions (llDetected*), llDetectedDamage, and llAdjustDamage are available. Passes num_detected, representing the number of pending damage events.",
+  "categories": [
+   "combat",
+   "detected"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "on_death",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered on all worn attachments when the wearing avatar's health reaches 0.",
+  "categories": [
+   "combat"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "on_rez",
+  "params": [
+   {
+    "type": "integer",
+    "name": "start_param",
+    "description": "Integer start parameter passed from the rezzing call."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when the object is rezzed into the world (by a script or user). Passes start_param from the rezzing call (or 0 if rezzed from inventory). Also triggers on attachments during login or when attached from inventory.",
+  "categories": [
+   "rez",
+   "script"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "path_update",
+  "params": [
+   {
+    "type": "integer",
+    "name": "type",
+    "description": "Path update status or failure code constant (PU_* flag)."
+   },
+   {
+    "type": "list",
+    "name": "reserved",
+    "description": "Reserved parameter (currently unused)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered to inform the script of changes or failures in the pathfinding character's status.",
+  "categories": [
+   "pathfinding"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "remote_data",
+  "params": [
+   {
+    "type": "integer",
+    "name": "event_type",
+    "description": "Integer constant representing the type of XML-RPC event."
+   },
+   {
+    "type": "key",
+    "name": "channel",
+    "description": "XML-RPC channel ID key."
+   },
+   {
+    "type": "key",
+    "name": "message_id",
+    "description": "XML-RPC message ID key."
+   },
+   {
+    "type": "string",
+    "name": "sender",
+    "description": "XML-RPC sender string."
+   },
+   {
+    "type": "integer",
+    "name": "idata",
+    "description": "Payload integer data."
+   },
+   {
+    "type": "string",
+    "name": "sdata",
+    "description": "Payload string data."
+   }
+  ],
+  "source": "sl",
+  "description": "Deprecated. Triggered by incoming XML-RPC calls, passing event_type, channel, message_id, sender, idata, and sdata.",
+  "categories": [
+   "script_communication"
+  ],
+  "deprecated": true,
+  "falcon": false
+ },
+ {
+  "name": "run_time_permissions",
+  "params": [
+   {
+    "type": "integer",
+    "name": "perm",
+    "description": "Bitfield of currently granted permissions (PERMISSION_* flags)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when an agent grants or denies runtime permissions requested by llRequestPermissions. Passes the active integer permissions bitfield perm (returns 0 if no permissions are currently granted).",
+  "categories": [
+   "permissions"
+  ],
+  "falcon": true
+ },
+ {
+  "name": "sensor",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Total number of detected targets found (usable with llDetected* functions)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when objects matching constraints of llSensor or llSensorRepeat are successfully detected. Passes num_detected, representing the number of detected targets.",
+  "categories": [
+   "detected",
+   "sensor"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "state_entry",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered immediately whenever a new state is entered (including at script start). It is always the first event handled.",
+  "categories": [
+   "script"
+  ],
+  "falcon": true
+ },
+ {
+  "name": "state_exit",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered when the state command is used to transition out of the current state. Handled before entering the new state's state_entry.",
+  "categories": [
+   "script"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "timer",
+  "params": [],
+  "source": "sl",
+  "description": "Triggered at regular periodic intervals configured by llSetTimerEvent.",
+  "categories": [
+   "script",
+   "time"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "touch",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Total number of touching agents detected (usable with llDetected* functions)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered continuously while an avatar touches the object. Passes num_detected, representing the number of touching agents.",
+  "categories": [
+   "detected",
+   "touch",
+   "user_interface"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "touch_end",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Total number of touching agents detected (usable with llDetected* functions)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when an avatar stops touching the object. Passes num_detected, representing the number of touching agents.",
+  "categories": [
+   "detected",
+   "touch",
+   "user_interface"
+  ],
+  "falcon": false
+ },
+ {
+  "name": "touch_start",
+  "params": [
+   {
+    "type": "integer",
+    "name": "num_detected",
+    "description": "Total number of touching agents detected (usable with llDetected* functions)."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when an avatar first touches the object. Passes num_detected, representing the number of touching agents.",
+  "categories": [
+   "detected",
+   "touch",
+   "user_interface"
+  ],
+  "falcon": true
+ },
+ {
+  "name": "transaction_result",
+  "params": [
+   {
+    "type": "key",
+    "name": "id",
+    "description": "Key matching the handle returned by the initiating llTransfer* function."
+   },
+   {
+    "type": "integer",
+    "name": "success",
+    "description": "Boolean. TRUE if the L$ transfer succeeded, FALSE otherwise."
+   },
+   {
+    "type": "string",
+    "name": "data",
+    "description": "Contains a CSV string of transaction info on success, or an error string on failure."
+   }
+  ],
+  "source": "sl",
+  "description": "Triggered when an asynchronous L$ transfer (such as llTransferLindenDollars) is completed. Passes transaction info id, success status, and CSV or error data.",
+  "categories": [
+   "money"
+  ],
+  "falcon": false
+ }
+]

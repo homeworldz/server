@@ -1,0 +1,28 @@
+InWorldz Halcyon's compiler tables (data only)
+
+What:   functions.json  every built-in function Halcyon's compiler knows:
+                        name, return type, parameter types and names, and its
+                        syscall number (531 functions)
+        constants.json  every constant Halcyon's compiler knows: name, type,
+                        value as Phlox stores it, and for integers the 32-bit
+                        value a script sees ("int32") (775 constants)
+
+From:   InWorldz.Phlox.dll, Halcyon's LSL compiler, as shipped in the lib
+        folder of InWorldz Halcyon (github.com/InWorldz/halcyon, BSD 3-clause,
+        Copyright (c) InWorldz Inc.). Phlox has no published source; the
+        tables are its fields InWorldz.Phlox.Types.Defaults.SystemMethods and
+        InWorldz.Phlox.Compiler.DefaultConstants.Constants, read by
+        tools/halcyon_oracle/PhloxDump.cs. Nothing from the DLL is compiled
+        into this module; these two files are facts about Halcyon's language
+        (names, types, numbers) used to build the function index.
+
+Why:    A script written for InWorldz compiled against these tables. Where
+        they differ from what the C# function bodies (LSLSystemAPI.cs) say,
+        these are what the scripts saw: for example iwDeliverInventory returns
+        an integer and iwGetLastOwner returns a key here.
+
+Remake: powershell -ExecutionPolicy Bypass -File tools\halcyon_oracle\build.ps1
+        (rewrites both files; see tools/halcyon_oracle/README.md)
+
+Written 2026-11-14 from the Halcyon copy at
+I:\Open Sim Back ups\HalcyonGrid\lib\InWorldz.Phlox.dll (700,928 bytes).

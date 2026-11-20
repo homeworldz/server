@@ -3,8 +3,12 @@
 #include "homeworldz/script/lexer.h"
 #include "homeworldz/script/parser.h"
 
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace homeworldz::script {
@@ -30,51 +34,96 @@ bool assignable(Type to, Type from) {
            (to == Type::String && from == Type::Key);
 }
 
-// A bounded host-function signature. Real Homeworldz will have a generated
-// table; this hand-lists the functions implemented so far. A script calling a
-// function missing here does not compile, which is why the sitting unit
-// (ADR 0040) brings the handful every chair and pose ball calls, not only the
-// sit functions themselves.
+// The whole compatibility surface, generated from falcon/index: every
+// signature and every constant value comes from there, not from this file.
+#include "lsl_index.inc"
+
+// The functions the region answers today. A script calling a function missing
+// here does not compile, even though the index knows its signature: compiling
+// a call that then does nothing would hide the gap from the script's author.
+// That is why the sitting unit (ADR 0040) brought the handful every chair and
+// pose ball calls, not only the sit functions themselves.
+const std::unordered_set<std::string_view> implemented_functions = {
+    "llOwnerSay",
+    "llSay",
+    "llSitTarget",
+    "llLinkSitTarget",
+    "llAvatarOnSitTarget",
+    "llAvatarOnLinkSitTarget",
+    "llUnSit",
+    "llSetSitText",
+    "llSetClickAction",
+    "llSetCameraEyeOffset",
+    "llSetCameraAtOffset",
+    "llRequestPermissions",
+    "llGetPermissions",
+    "llGetPermissionsKey",
+    "llStartAnimation",
+    "llStopAnimation",
+    "llGetInventoryName",
+};
+
+// The events the region raises today.
+const std::unordered_set<std::string_view> implemented_events = {
+    "state_entry",
+    "touch_start",
+    "changed",
+    "run_time_permissions",
+};
+
+// An index type as a Falcon type, where Falcon has one. Floats and lists are
+// roadmap items; a signature that needs one cannot compile until they land.
+std::optional<Type> falcon_type(char code) {
+    switch (code) {
+    case 'v': return Type::Void;
+    case 'i': return Type::Integer;
+    case 's': return Type::String;
+    case 'k': return Type::Key;
+    case 'V': return Type::Vector;
+    case 'r': return Type::Rotation;
+    default: return std::nullopt;
+    }
+}
+
+std::optional<std::vector<Type>> falcon_types(std::string_view codes) {
+    std::vector<Type> types;
+    for (const char code : codes) {
+        const auto type = falcon_type(code);
+        if (!type) return std::nullopt;
+        types.push_back(*type);
+    }
+    return types;
+}
+
 struct HostSignature {
     std::vector<Type> params;
     Type result;
 };
 
 const HostSignature* lookup_host(const std::string& name) {
-    static const std::unordered_map<std::string, HostSignature> table = {
-        {"llOwnerSay", HostSignature{{Type::String}, Type::Void}},
-        {"llSay", HostSignature{{Type::Integer, Type::String}, Type::Void}},
-        // The seat: an offset from the prim's centre and a rotation, both in
-        // the prim's own space. A zero offset takes the seat away.
-        {"llSitTarget", HostSignature{{Type::Vector, Type::Rotation}, Type::Void}},
-        {"llSetLinkSitTarget",
-         HostSignature{{Type::Integer, Type::Vector, Type::Rotation}, Type::Void}},
-        {"llAvatarOnSitTarget", HostSignature{{}, Type::Key}},
-        {"llAvatarOnLinkSitTarget", HostSignature{{Type::Integer}, Type::Key}},
-        {"llUnSit", HostSignature{{Type::Key}, Type::Void}},
-        {"llSetSitText", HostSignature{{Type::String}, Type::Void}},
-        {"llSetClickAction", HostSignature{{Type::Integer}, Type::Void}},
-        {"llSetCameraEyeOffset", HostSignature{{Type::Vector}, Type::Void}},
-        {"llSetCameraAtOffset", HostSignature{{Type::Vector}, Type::Void}},
-        {"llRequestPermissions", HostSignature{{Type::Key, Type::Integer}, Type::Void}},
-        {"llGetPermissions", HostSignature{{}, Type::Integer}},
-        {"llGetPermissionsKey", HostSignature{{}, Type::Key}},
-        {"llStartAnimation", HostSignature{{Type::String}, Type::Void}},
-        {"llStopAnimation", HostSignature{{Type::String}, Type::Void}},
-        {"llGetInventoryName", HostSignature{{Type::Integer, Type::Integer}, Type::String}},
-    };
+    static const auto table = [] {
+        std::unordered_map<std::string, HostSignature> built;
+        for (const auto& function : index_functions) {
+            if (!implemented_functions.contains(function.name)) continue;
+            const auto result = falcon_type(function.result);
+            auto params = falcon_types(function.params);
+            if (result && params) built.emplace(function.name, HostSignature{std::move(*params), *result});
+        }
+        return built;
+    }();
     const auto it = table.find(name);
     return it == table.end() ? nullptr : &it->second;
 }
 
-// The event handlers implemented so far, with their LSL parameter signatures.
 const std::vector<Type>* lookup_event(const std::string& name) {
-    static const std::unordered_map<std::string, std::vector<Type>> table = {
-        {"state_entry", {}},
-        {"touch_start", {Type::Integer}},          // total_number
-        {"changed", {Type::Integer}},              // change
-        {"run_time_permissions", {Type::Integer}}, // permissions
-    };
+    static const auto table = [] {
+        std::unordered_map<std::string, std::vector<Type>> built;
+        for (const auto& event : index_events) {
+            if (!implemented_events.contains(event.name)) continue;
+            if (auto params = falcon_types(event.params)) built.emplace(event.name, std::move(*params));
+        }
+        return built;
+    }();
     const auto it = table.find(name);
     return it == table.end() ? nullptr : &it->second;
 }
@@ -82,25 +131,19 @@ const std::vector<Type>* lookup_event(const std::string& name) {
 // LSL's named constants, with Second Life's values. A name here that a script
 // also declares as a variable is the variable's; LSL forbids that anyway.
 const Value* lookup_constant(const std::string& name) {
-    static const std::unordered_map<std::string, Value> table = {
-        {"TRUE", Value::make_integer(1)},
-        {"FALSE", Value::make_integer(0)},
-        {"NULL_KEY", Value::make_string("00000000-0000-0000-0000-000000000000")},
-        {"ZERO_VECTOR", Value::make_vector(0.0, 0.0, 0.0)},
-        {"ZERO_ROTATION", Value::make_rotation(0.0, 0.0, 0.0, 1.0)},
-        {"CHANGED_LINK", Value::make_integer(0x20)},
-        {"LINK_ROOT", Value::make_integer(1)},
-        {"LINK_SET", Value::make_integer(-1)},
-        {"LINK_ALL_OTHERS", Value::make_integer(-2)},
-        {"LINK_ALL_CHILDREN", Value::make_integer(-3)},
-        {"LINK_THIS", Value::make_integer(-4)},
-        {"PERMISSION_TRIGGER_ANIMATION", Value::make_integer(0x10)},
-        {"INVENTORY_ALL", Value::make_integer(-1)},
-        {"INVENTORY_ANIMATION", Value::make_integer(20)},
-        {"CLICK_ACTION_NONE", Value::make_integer(0)},
-        {"CLICK_ACTION_TOUCH", Value::make_integer(0)},
-        {"CLICK_ACTION_SIT", Value::make_integer(1)},
-    };
+    static const auto table = [] {
+        std::unordered_map<std::string, Value> built;
+        for (const auto& constant : index_integers)
+            built.emplace(constant.name, Value::make_integer(constant.value));
+        for (const auto& constant : index_strings)
+            built.emplace(constant.name, Value::make_string(std::string(constant.value)));
+        for (const auto& constant : index_vectors) {
+            const auto& c = constant.components;
+            built.emplace(constant.name, constant.size == 4 ? Value::make_rotation(c[0], c[1], c[2], c[3])
+                                                            : Value::make_vector(c[0], c[1], c[2]));
+        }
+        return built;
+    }();
     const auto it = table.find(name);
     return it == table.end() ? nullptr : &it->second;
 }

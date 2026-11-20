@@ -125,7 +125,7 @@ stands from an object, in every script in that object. The functions:
 | Function | Notes |
 | --- | --- |
 | `llSitTarget(vector, rotation)` | exists |
-| `llSetLinkSitTarget(integer link, vector, rotation)` | `LINK_THIS`, `LINK_ROOT`, or a link number |
+| `llLinkSitTarget(integer link, vector, rotation)` | `LINK_THIS`, `LINK_ROOT`, or a link number |
 | `llAvatarOnSitTarget()` | the avatar on this prim's sit target, or `NULL_KEY` |
 | `llAvatarOnLinkSitTarget(integer link)` | the same for another prim |
 | `llUnSit(key avatar)` | stands an avatar seated on this object |

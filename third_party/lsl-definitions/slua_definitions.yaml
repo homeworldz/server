@@ -1,0 +1,4090 @@
+%YAML 1.2
+---
+# yaml-language-server: $schema=http://raw.githubusercontent.com/secondlife/lsl-definitions/refs/heads/main/slua_definitions.schema.json
+#
+# increment only when the file format changes, not just the content
+version: 1.0.0
+# baseClasses must not depend on anything else in this file (not typeAliases, not classes)
+base-classes:
+- name: quaternion
+  comment: A set of four float values. Used to represent rotations and orientations.
+  methods:
+  - name: __add
+    parameters:
+    - name: self
+    - name: other
+      type: quaternion
+    return-type: quaternion
+  - name: __sub
+    parameters:
+    - name: self
+    - name: other
+      type: quaternion
+    return-type: quaternion
+  - name: __mul
+    parameters:
+    - name: self
+    - name: other
+      type: quaternion
+    return-type: quaternion
+  - name: __div
+    parameters:
+    - name: self
+    - name: other
+      type: quaternion
+    return-type: quaternion
+  - name: __unm
+    parameters:
+    - name: self
+    return-type: quaternion
+  - name: __eq
+    parameters:
+    - name: self
+    - name: other
+      type: quaternion
+    return-type: boolean
+  - name: __tostring
+    parameters:
+    - name: self
+    return-type: string
+  properties:
+  - name: x
+    type: number
+    comment: X component of the rotation/quaternion.
+  - name: "y"
+    type: number
+    comment: Y component of the rotation/quaternion.
+  - name: z
+    type: number
+    comment: Z component of the rotation/quaternion.
+  - name: s
+    type: number
+    comment: S component of the rotation/quaternion. Equivalent to the W component in other notations.
+- name: uuid
+  comment: 'A 128‑bit unique identifier formatted as 36 hexadecimal characters (8‑4‑4‑4‑12), e.g. "A822FF2B-FF02-461D-B45D-DCD10A2DE0C2".'
+  methods:
+  - name: __tostring
+    parameters:
+    - name: self
+    return-type: string
+  properties:
+  - name: istruthy
+    comment: Returns true if the UUID is not the null UUID (all zeros).
+    type: boolean
+  - name: bytes
+    comment: Returns the raw 16-byte binary string of the UUID.
+    type: string
+- name: vector
+  comment: A set of three float values. Used to represent colors (RGB), positions, directions, and velocities.
+  methods:
+  - name: __add
+    comment: Native component-wise addition
+    parameters:
+    - name: self
+    - name: other
+      type: vector
+    return-type: vector
+  - name: __sub
+    comment: Native component-wise subtraction
+    parameters:
+    - name: self
+    - name: other
+      type: vector
+    return-type: vector
+  - name: __unm
+    comment: Unary negation
+    parameters:
+    - name: self
+    return-type: vector
+  - name: __mul
+    comment: 'Multiplication: vector * vector / number -> vector (Scale), vector
+      * quaternion -> vector (Rotation)'
+    parameters:
+    - name: self
+    - name: other
+      type: number | vector | quaternion
+    return-type: vector
+  - name: __div
+    comment: 'Division: vector / number -> vector (Scale), vector / quaternion ->
+      vector (Rotation by inverse)'
+    parameters:
+    - name: self
+    - name: other
+      type: number | vector | quaternion
+    return-type: vector
+  - name: __idiv
+    comment: 'Floor division: vector // number -> vector (Quantized scale)'
+    parameters:
+    - name: self
+    - name: other
+      type: number | vector
+    return-type: vector
+  - name: __mod
+    comment: 'LSL-style modulo: vector % vector -> vector (Cross Product)'
+    parameters:
+    - name: self
+    - name: other
+      type: vector
+    return-type: vector
+  - name: __tostring
+    parameters:
+    - name: self
+    return-type: string
+  properties:
+  - name: x
+    type: number
+    comment: "X coordinate component of the vector. Typically represents red color, forward position, or pitch."
+  - name: "y"
+    type: number
+    comment: "Y coordinate component of the vector. Typically represents green color, left/right position, or roll."
+  - name: z
+    type: number
+    comment: "Z coordinate component of the vector. Typically represents blue color, altitude/upward position, or yaw."
+- name: DetectedEvent
+  comment: Event detection class providing access to detected object/avatar information
+  # auto-generated from lsl_definitions.yaml
+  methods: []
+  properties:
+  - name: index
+    type: number
+    comment: "Index of the detected entity."
+  - name: valid
+    type: boolean
+    comment: "Returns true if the detected index is valid and contains active data."
+  - name: canAdjustDamage
+    type: boolean
+    comment: "Returns true if the detected object or avatar can have its damage adjusted."
+type-aliases:
+- name: rotation
+  comment: '''rotation'' is an alias for ''quaternion'''
+  export: true
+  definition: quaternion
+  selene-type: {display: "quaternion"}
+- name: LSLTypes
+  comment: LSL list functions return these types.
+  export: true
+  definition: "string | number | vector | uuid | quaternion"
+  selene-type: "any"
+- name: LSLReadableTypes
+  comment: LSL list functions can read these types as input.
+  export: true
+  definition: "LSLTypes | boolean"
+  selene-type: "any"
+- name: list
+  export: true
+  definition: "{LSLReadableTypes}"
+  selene-type: "table"
+  typechecker: {"new-type": "{read LSLReadableTypes}"}
+- name: LLMultiEventName
+  # auto-generated from lsl_definitions.yaml
+  definition: "{}"
+  selene-type: []
+- name: LLSingleEventName
+  # auto-generated from lsl_definitions.yaml
+  definition: "{}"
+  selene-type: []
+- name: LLEventName
+  export: true
+  definition: LLMultiEventName | LLSingleEventName
+  selene-type: []
+- name: LLEventHandler
+  definition: (...any) -> ()
+  selene-type: "function"
+- name: LLMultiEventHandler
+  definition: "(events: {DetectedEvent}) -> ()"
+  selene-type: "function"
+- name: LLTimerEveryCallback
+  comment: Callback type for LLTimers.every() - receives scheduled time and interval
+  definition: "(scheduled: number, interval: number) -> ()"
+  selene-type: "function"
+- name: LLTimerOnceCallback
+  comment: Callback type for LLTimers.once() - receives scheduled time
+  definition: "(scheduled: number) -> ()"
+  selene-type: "function"
+- name: LLTimerCallback
+  comment: Union of timer callback types
+  definition: LLTimerEveryCallback | LLTimerOnceCallback
+  selene-type: "function"
+- name: DateTypeArg
+  comment: Date/time table structure used by os.date and os.time
+  export: true
+  definition: |-
+    {
+      year: number,
+      month: number,
+      day: number,
+      hour: number?,
+      min: number?,
+      sec: number?,
+      isdst: boolean?,
+    }
+  selene-type: {display: "DateTypeArg"}
+- name: DateTypeResult
+  comment: Date/time table structure used by os.date and os.time
+  export: true
+  definition: |-
+    {
+      year: number,
+      month: number,
+      day: number,
+      hour: number?,
+      min: number?,
+      sec: number?,
+      wday: number?,
+      yday: number?,
+      isdst: boolean?,
+    }
+  selene-type: {display: "DateTypeResult"}
+- name: LLJsonEncodeOptions
+  comment: Configuration options for lljson encoding
+  export: true
+  definition: |-
+    {
+      tight: boolean?,
+      skip_tojson: boolean?,
+      allow_sparse: boolean?,
+      replacer: ((key: any, value: any, parent: {}?) -> any)?,
+    }
+  selene-type: table
+- name: LLJsonDecodeReviverWithoutPath
+  definition: "(key: string | number, value: any, parent: {}?, ctx: {}) -> any"
+  selene-type: function
+- name: LLJsonDecodeOptionsWithoutPath
+  definition: |-
+    {
+      track_path: false?,
+      reviver: LLJsonDecodeReviverWithoutPath?,
+    } | LLJsonDecodeReviverWithoutPath
+  selene-type: any
+- name: LLJsonDecodeOptionsWithPath
+  definition: |-
+    {
+      track_path: true,
+      reviver: (key: string | number, value: any, parent: {}?, ctx: {path: {string | number}}) -> any
+    }
+  selene-type: table
+- name: LLJsonDecodeOptions
+  comment: Configuration options for lljson decoding
+  export: true
+  definition: "LLJsonDecodeOptionsWithoutPath | LLJsonDecodeOptionsWithPath"
+  selene-type: any
+- name: AttachedListFilterParams
+  comment: Attached list filer table. Pass to ll.GetAttachedListFiltered to get attachments.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: CameraParams
+  comment: Camera parameter table. Pass to ll.SetCameraParams() to configure the camera.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: CharacterParams
+  comment: Pathfinding character parameter table. Pass to ll.CreateCharacter() to configure a character.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: CharacterNavigateParams
+  comment: Pathfinding character navigate parameter table. Pass to ll.NavigateTo() to navigate.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: CharacterPatrolPointsParams
+  comment: Pathfinding character patrol points parameter table. Pass to ll.PatrolPoints() to configure the route.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: CharacterPursueParams
+  comment: Pathfinding character pursue parameter table. Pass to ll.Pursue() to configure the pursuit.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: CharacterWanderWithinParams
+  comment: Pathfinding character wander within parameter table. Pass to ll.WanderWithin() to configure the route.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: GetClosestNavPointParams
+  comment: Get closest nav point parameter table. Pass to ll.GetClosestNavPoint to find the navmesh.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: GetStaticPathParams
+  comment: Get static path parameter table. Pass to ll.GetStaticPath() to find a path.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: GiveAgentInventoryParams
+  comment: Give inventory parameter table. Pass to ll.GiveAgentInventory().
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: GltfOverrides
+  comment: GLTF overrides parameter table. Pass to ll.SetLinkGLTFOverrides() to configure material.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: HttpRequestParams
+  comment: HTTP request parameter table. Pass to ll.HTTPRequest() to configure an HTTP request.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: KeyframedMotionParams
+  comment: Keyframed motion parameter table. Pass to ll.SetKeyframedMotion() to animate.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: ParcelSaleParams
+  comment: Parcel sale parameter table. Pass to ll.SetParcelForSale() to configure the sale of a parcel.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: ParticleParams
+  comment: Particle system parameter table. Pass to ll.LinkParticleSystem() to emit particles.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+- name: PrimMediaParams
+  comment: Prim face media parameter table. Pass to ll.SetLinkMediaParams() to configure media on a face.
+  export: true
+  definition: '{[string]: any}'  # auto-generated from lsl_definitions.yaml
+  selene-type: table
+classes:
+- name: LLEvents
+  comment: Event registration and management class for Second Life events. Supports adding multiple handlers per event and dynamic registration.
+  # auto-generated from lsl_definitions.yaml
+  properties: []
+  methods:
+  - name: 'on'
+    comment: "Registers a handler function to run whenever the specified event occurs. Multiple handlers can be attached to the same event and will run in the order they were added. Returns the same function passed in so it can be used later with LLEvents:off()."
+    # auto-generated from lsl_definitions.yaml
+    overloads: []
+    parameters:
+    - name: self
+    - name: event
+      comment: "Name of the event to handle."
+      type: LLEventName
+    - name: callback
+      comment: "Function to execute when the event happens."
+      type: LLEventHandler
+    return-type: LLEventHandler
+  - name: 'off'
+    comment: "Removes an event handler. If the function was added multiple times via LLEvents:on(), only the last one added is removed. Returns true if the function was found and removed, false otherwise."
+    # auto-generated from lsl_definitions.yaml
+    overloads: []
+    parameters:
+    - name: self
+    - name: event
+      comment: "Name of the event to remove."
+      type: LLEventName
+    - name: callback
+      comment: "Function to remove. Note: To remove a handler added via LLEvents:once(), you must pass the specific wrapper function it returned."
+      type: LLEventHandler
+    return-type: boolean
+  - name: once
+    comment: "Registers a one-time event handler. The function runs only once and is automatically removed afterward. Returns a newly generated wrapper function, which MUST be used if you want to manually remove the handler early using LLEvents:off()."
+    # auto-generated from lsl_definitions.yaml
+    overloads: []
+    parameters:
+    - name: self
+    - name: event
+      comment: "Name of the event to handle."
+      type: LLEventName
+    - name: callback
+      comment: "Function to execute once when the event happens."
+      type: LLEventHandler
+    return-type: LLEventHandler
+  - name: handlers
+    comment: "Returns an array table containing all the functions currently handling the specified event. Useful for debugging or for iterating to remove all functions handling an event."
+    parameters:
+    - name: self
+    - name: event
+      comment: "Name of the event to query."
+      type: LLEventName
+    return-type: '{LLEventHandler}'
+  - name: eventNames
+    comment: "Returns an array table of all event names that currently have active handler functions attached."
+    parameters:
+    - name: self
+    return-type: '{string}'
+- name: LLTimers
+  comment: "Timer management class for scheduling periodic and one-time callbacks. Note: Do not mix LLTimers with old LSL timer functions (e.g., llcompat.SetTimerEvent), as they share the same underlying event and will interfere with each other."
+  methods:
+  - name: every
+    comment: "Registers a repeating timer. The callback receives (expected_time, interval). Returns the same function passed in so it can be removed later."
+    parameters:
+    - name: self
+    - name: seconds
+      comment: "Interval in seconds. Minimum practical interval is ~0.022s (one server frame). An interval of 0 schedules the timer for the next frame."
+      type: number
+    - name: callback
+      comment: "Function to execute when the time arrives."
+      type: LLTimerEveryCallback
+    return-type: LLTimerCallback
+  - name: once
+    comment: "Registers a one-time timer. The timer runs only once and is automatically removed afterward. The callback receives (expected_time, nil). Returns the same function passed in, which can be used to cancel it early via LLTimers:off()."
+    parameters:
+    - name: self
+    - name: seconds
+      comment: "Time in seconds to wait before triggering. A value of 0 schedules it for the next frame."
+      type: number
+    - name: callback
+      comment: "Function to execute once when the time arrives."
+      type: LLTimerOnceCallback
+    return-type: LLTimerCallback
+  - name: 'off'
+    comment: "Stops and removes a timer. If the same function was added multiple times, only the last one added is removed, regardless of its interval. Returns true if the timer was found and removed, false otherwise."
+    parameters:
+    - name: self
+    - name: callback
+      comment: "Function reference to remove."
+      type: LLTimerCallback
+    return-type: boolean
+- name: PrimParamSetterType
+  comment: Metatable for building lists to pass to ll.SetLinkPrimitiveParamsFast
+  instance-type: '{any}'
+  export: true
+  functions:
+  - name: new
+    comment: Create an empty list with PrimParamSetterTypeMeta as metatable
+    parameters: []
+    return-type: PrimParamSetterType
+  methods: # This class is currently populated dynamically
+  - name: apply
+    comment: Call ll.SetLinkPrimitiveParamsFast with my instance list
+    parameters:
+    - name: self
+      type: PrimParamSetterType
+    - name: link
+      type: number?
+      comment: Link number to target, or LINK_THIS if not specified
+    return-type: ()
+    typechecker: {checked: true}
+global-variables:
+- name: rotation
+  comment: rotation is an alias for quaternion.
+  type: typeof(quaternion)
+- name: LLEvents
+  comment: Event registration and management singleton for Second Life events.
+  type: LLEvents
+- name: LLTimers
+  comment: Timer management singleton for scheduling periodic and one-time callbacks.
+  type: LLTimers
+functions:
+- name: assert
+  comment: Checks if the value is truthy; if not, raises an error with the optional message. Returns the value upon success.
+  type-parameters: [T]
+  parameters:
+  - name: value
+    comment: Value to check for truthiness.
+    type: T?
+  - name: errorMessage
+    comment: Error message to display if the value is not truthy.
+    type: string?
+    default-value: '"assertion failed!"'
+  return-type: T
+  fastcall: true
+  typechecker: {magic: true}
+- name: collectgarbage
+  comment: Run the garbage collector
+  parameters:
+  - name: option
+    type: '"collect"?'
+    selene-type: string
+  overloads:
+  - comment: Alias for gcinfo
+    parameters:
+    - name: option
+      type: '"count"'
+      selene-type: string
+    return-type: number
+  local-only: true
+- name: dangerouslyexecuterequiredmodule
+  comment: Dangerously executes a required module function
+  parameters:
+  - name: f
+    type: (...any) -> ...any
+  return-type: '...any'
+- name: error
+  comment: Raises an error with the specified object. The optional level determines which call stack level is blamed for the error.
+  type-parameters: [T]
+  parameters:
+  - name: message
+    comment: Error message, or object, to raise. Does not have to be a string.
+    type: T
+  - name: level
+    comment: Level to attribute the error to in the call stack. Level 1 is the current function, level 2 is its caller, and so on.
+    type: number?
+    default-value: 1
+  return-type: never
+- name: gcinfo
+  comment: Returns the total heap size in kilobytes.
+  return-type: number
+- name: getfenv
+  comment: Get the scoped environment for the given function.
+  parameters:
+  - name: target
+    type: '((...any) -> ...any) | number'
+    selene-type: function
+  return-type: '{[string]: any}'
+  typechecker: {checked: true}
+  slua-removed: true
+- name: getmetatable
+  comment: "Returns the metatable for the specified object. If the metatable has a '__metatable' field, returns its value instead."
+  type-parameters: [T]
+  parameters:
+  - name: obj
+    comment: Object to get the metatable for.
+    type: T
+    selene-type: table
+  return-type: getmetatable<T>
+  typechecker: {builtin: true, "new-type": "getmetatable<T>"}  # builtin due to FFlag::LuauSolverV2
+  fastcall: true
+- name: graphheap
+  comment: Writes the contents of heap to the given file in JSON format.
+    Intended to be used with tools/graphanalyze.py
+  parameters:
+  - name: path
+    type: string
+  local-only: true
+- name: graphuserheap
+  comment: Writes the contents of user heap to the given file in JSON format.
+    Intended to be used with tools/graphanalyze.py
+  parameters:
+  - name: path
+    type: string
+  local-only: true
+- name: ipairs
+  comment: Returns an iterator for sequential integer key-value pairs in the table. Iteration starts at 1 and halts at the first nil value.
+  type-parameters: [V]
+  parameters:
+  - name: tab
+    comment: Table to iterate over.
+    type: "{V}"
+    typechecker: {"new-type": "{read V}"}
+  return-type: "(({V}, number) -> (number?, V), {V}, number)"
+- name: loadstring
+  comment: Compile Luau code into a function.
+  type-parameters: [A...]
+  parameters:
+  - name: src
+    type: string
+  - name: chunkname
+    type: string?
+  return-type: (((A...) -> any)?, string?)
+  slua-removed: true
+- name: newproxy
+  comment: Creates a new untyped userdata object with an optional metatable.
+  parameters:
+  - name: mt
+    comment: Boolean to create a modifiable metatable.
+    type: boolean?
+    default-value: false
+  return-type: any
+  typechecker: {checked: true}
+- name: next
+  comment: Returns the next key-value pair in the table traversal order. If the index is nil or omitted, returns the first pair.
+  type-parameters: [K, V]
+  parameters:
+  - name: t
+    comment: Table to traverse.
+    type: "{[K]: V}"
+    typechecker: {"new-type": "{read [K]: V}"}
+  - name: i
+    comment: Key to start traversal after. Omit or pass nil to fetch the first key-value pair.
+    type: K?
+    default-value: nil
+  return-type: (K?, V)
+- name: pairs
+  comment: Returns an iterator for all key-value pairs in the table.
+  type-parameters: [K, V]
+  parameters:
+  - name: t
+    comment: Table to iterate over.
+    type: "{[K]: V}"
+    typechecker: {"new-type": "{read [K]: V}"}
+  return-type: "(({[K]: V}, K?) -> (K?, V), {[K]: V}, K)"
+- name: pcall
+  comment: Executes function f in protected mode, calling it with the provided arguments. Returns a boolean indicating success. If true, it also returns the function's results. If false, it returns the error message.
+  type-parameters: [A..., R...]
+  parameters:
+  - name: f
+    comment: A function to be called.
+    type: (A...) -> R...
+  - name: ...
+    comment: Arguments to pass to the function.
+    type: A...
+  return-type: (boolean, R...)
+  typechecker: {magic: true}
+- name: print
+  comment: Sends all arguments as text privately to the object owner,
+    separated by 4 spaces. The owner
+    must be currently in the same region for the message to be received.
+  type-parameters: [T...]
+  parameters:
+  - name: ...
+    comment: Arguments to send as text to the object owner.
+    type: T...
+  return-type: ()
+- name: rawequal
+  comment: Returns true if a and b have the same type and value or reference, bypassing the __eq metamethod..
+  type-parameters: [T1, T2]
+  parameters:
+  - name: a
+    comment: First object to compare.
+    type: T1
+  - name: b
+    comment: Second object to compare.
+    type: T2
+  return-type: boolean
+  fastcall: true
+- name: rawget
+  comment: Performs a table lookup, bypassing the __index metamethod..
+  type-parameters: [K, V]
+  parameters:
+  - name: t
+    comment: Table to perform the lookup on.
+    type: "{[K]: V}"
+    typechecker: {"new-type": "T"}
+  - name: k
+    comment: Key to look up in the table.
+    type: K
+  return-type: V?
+  typechecker: {"new-type": "rawget<T, K>", "new-type-parameters": [T, K]}
+  fastcall: true
+- name: rawlen
+  comment: Returns the length of a table or string, bypassing the __len metamethod..
+  type-parameters: [K, V]
+  parameters:
+  - name: t
+    comment: Table or string to compute the length of.
+    type: "{[K]: V} | string"
+    typechecker: {"new-type": "{read [K]: V} | string"}
+  return-type: number
+  fastcall: true
+- name: rawset
+  comment: Assigns a value to a table field, bypassing the __newindex metamethod..
+  type-parameters: [K, V]
+  parameters:
+  - name: t
+    comment: Table to assign the value to.
+    type: "{[K]: V}"
+  - name: k
+    comment: Key to assign the value to.
+    type: K
+  - name: v
+    comment: Value to assign.
+    type: V
+  return-type: "{[K]: V}"
+  fastcall: true
+- name: require
+  comment: Execute the named external module.
+  parameters:
+  - name: target
+    comment: Name of the external module.
+    type: any
+  return-type: any
+  typechecker: {magic: true, checked: true}
+- name: select
+  comment: Returns a subset of arguments starting from the specified index. Supports negative indexing. If index is '#', returns the number of arguments.
+  type-parameters: [A...]
+  parameters:
+  - name: i
+    comment: Index integer, or '#' to return the total arguments count. Supports negative indexing.
+    type: string | number
+  - name: ...
+    comment: Arguments to select from.
+    type: A...
+  return-type: ...any
+  fastcall: true
+  typechecker: {magic: true}
+- name: setfenv
+  comment: Set the scoped environment for the given function.
+  type-parameters: [T..., R...]
+  parameters:
+  - name: target
+    type: 'number | (T...) -> R...'
+    selene-type: function
+  - name: env
+    type: '{[string]: any}'
+  return-type: ((T...) -> R...)?
+  slua-removed: true
+- name: setmetatable
+  comment: "Changes the metatable for the given table. Raises an error if the table already has a protected metatable (it has a '__metatable' field)."
+  type-parameters: [T, MT]
+  parameters:
+  - name: t
+    comment: Table to set the metatable for.
+    type: T
+    selene-type: table
+  - name: mt
+    comment: Metatable to set.
+    type: MT
+    selene-type: table
+  return-type: setmetatable<T, MT>
+  fastcall: true
+  typechecker: {builtin: true, magic: true, "new-type": "setmetatable<T, MT>"}  # builtin due to FFlag::LuauSolverV2
+- name: tonumber
+  comment: Converts the input string to a number in the specified base. Returns nil if invalid.
+  parameters:
+  - name: value
+    comment: String to convert to a number.
+    type: string? | number
+    selene-type: string
+  - name: base
+    comment: "Base for the conversion. Valid range is [2, 36]."
+    type: number?
+    default-value: 10
+  return-type: number?
+  fastcall: true
+  must-use: true
+- name: toquaternion
+  comment: Converts a string to a quaternion. Returns nil if invalid.
+  parameters:
+  - name: value
+    comment: String to convert to a quaternion.
+    type: string? | quaternion
+    selene-type: string
+  return-type: quaternion?
+  must-use: true
+- name: torotation
+  comment: Converts a string to a rotation (quaternion). Returns nil if invalid.
+  parameters:
+  - name: value
+    comment: String to convert to a rotation.
+    type: string? | quaternion
+    selene-type: string
+  return-type: quaternion?
+  must-use: true
+- name: tostring
+  comment: "Converts the input object to a string. Calls the metatable's '__tostring' metamethod if present."
+  type-parameters: [T]
+  parameters:
+  - name: value
+    comment: Object to convert to a string.
+    type: T
+  return-type: string
+  fastcall: true
+- name: touuid
+  comment: Creates a new uuid from a string, buffer, or existing uuid. Returns
+    nil if the string is not a valid UUID, or the buffer is
+    shorter than 16 bytes.
+  parameters:
+  - name: val
+    comment: String or buffer to convert to a uuid.
+    type: string? | buffer | uuid
+    selene-type: string
+  return-type: uuid?
+  must-use: true
+- name: tovector
+  comment: Converts a string to a vector. Returns nil if invalid.
+  parameters:
+  - name: val
+    comment: String to convert to a vector.
+    type: string? | vector
+    selene-type: string
+  return-type: vector?
+  must-use: true
+- name: type
+  comment: Returns the type of the object as a string.
+  type-parameters: [T]
+  parameters:
+  - name: obj
+    comment: Object to get the type of.
+    type: T
+  return-type: string
+  must-use: true
+  fastcall: true
+- name: typeof
+  comment: Returns the type of the object, including custom userdata types.
+  type-parameters: [T]
+  parameters:
+  - name: obj
+    comment: Object to get the type of.
+    type: T
+  return-type: string
+  must-use: true
+  fastcall: true
+- name: unpack
+  comment: Returns values from an array in the specified index range.
+  type-parameters: [V]
+  parameters:
+  - name: tab
+    comment: Array from which to extract values.
+    type: "{V}"
+    typechecker: {"new-type": "{read V}"}
+  - name: i
+    comment: Starting index.
+    type: number?
+    default-value: 1
+  - name: j
+    comment: "Ending index."
+    type: number?
+    default-value: '#tab'
+  return-type: ...V
+  fastcall: true
+- name: xpcall
+  comment: Calls function f with the provided arguments, handling errors with err if they occur.
+  type-parameters: [E, A..., R1..., R2...]
+  parameters:
+  - name: f
+    comment: A function to be called.
+    type: (A...) -> R1...
+  - name: err
+    comment: Error handler function.
+    type: (E) -> R2...
+  - name: ...
+    comment: Arguments to pass to the function.
+    type: A...
+  return-type: (boolean, R1...)
+modules:
+- name: bit32
+  comment: Bitwise operations library.
+  functions:
+  - name: arshift
+    comment: |-
+      Returns val shifted by i bits to the right. If i is negative, a left shift is performed.
+      Does an arithmetic shift: The most significant bit of n is propagated during the shift.
+      Returns 0 if i < -31, or all sign bits if i > 31.
+    parameters:
+    - name: val
+      comment: Integer to shift.
+      type: number
+    - name: i
+      comment: Number of bits to shift.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: band
+    comment: Returns the bitwise AND of the given numbers.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise AND on.
+      type: ...number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: bnot
+    comment: Returns the bitwise negation of val.
+    parameters:
+    - name: val
+      comment: Integer to negate.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: bor
+    comment: Returns the bitwise OR of the given numbers.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise OR on.
+      type: ...number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: bxor
+    comment: Returns the bitwise XOR of the given numbers.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise XOR on.
+      type: ...number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: btest
+    comment: Returns true if the bitwise AND of the given numbers is non-zero.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise AND on.
+      type: ...number
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: extract
+    comment: Returns width bits from src, starting from bit index field.
+      Raises an error if the selected bit range is goes outside the range [0, 31].
+    parameters:
+    - name: src
+      comment: Integer to extract from.
+      type: number
+    - name: field
+      comment: Starting bit index, zero-based
+      type: number
+    - name: width
+      comment: Number of bits to extract, or 1 if omitted.
+      type: number?
+      default-value: 1
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: lrotate
+    comment: Returns val rotated by i bits to the left. If i is negative, a right rotate is performed.
+    parameters:
+    - name: val
+      comment: Integer to rotate.
+      type: number
+    - name: i
+      comment: Number of bits to rotate.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: lshift
+    comment: Returns val shifted by i bits to the left. If i is negative, a right shift is performed. Returns 0 if i is outside the [-31, 31] range.
+    parameters:
+    - name: val
+      comment: Integer to shift.
+      type: number
+    - name: i
+      comment: Number of bits to shift.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: replace
+    comment: Returns dst with width bits replaced from src, starting from bit index field.
+      Raises an error if the selected bit range goes outside the range [0, 31].
+    parameters:
+    - name: dst
+      comment: Integer to replace bits in.
+      type: number
+    - name: src
+      comment: Integer containing the replacement bits.
+      type: number
+    - name: field
+      comment: Starting bit index, zero-based
+      type: number
+    - name: width
+      comment: Number of bits to replace, or 1 if omitted.
+      type: number?
+      default-value: 1
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: rrotate
+    comment: Returns val rotated by i bits to the right. If i is negative, a left rotate is performed.
+    parameters:
+    - name: val
+      comment: Integer to rotate.
+      type: number
+    - name: i
+      comment: Number of bits to rotate.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: rshift
+    comment: Returns val shifted by i bits to the right. If i is negative, a left shift is performed. Returns 0 if i is outside the [-31, 31] range.
+    parameters:
+    - name: val
+      comment: Integer to shift.
+      type: number
+    - name: i
+      comment: Number of bits to shift.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: s32
+    comment: Returns val, wrapped from float64 range to signed int32 range and truncated to integer.
+      Makes integer arithmetic compatable with LSL.
+    parameters:
+    - name: val
+      comment: Integer to truncate.
+      type: number
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: smul
+    comment: Returns the product of two signed 32-bit integers as a signed 32-bit integer, wrapping as necessary.
+      Avoids precision loss associated with float64 multiplication. Compatible with LSL integer multiplication.
+    parameters:
+    - name: val1
+      comment: Left factor.
+      type: number
+    - name: val2
+      comment: Right factor.
+      type: number
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: countlz
+    comment: Returns the count of val's leading zeros.
+    parameters:
+    - name: val
+      comment: Integer to count leading zeros in.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: countrz
+    comment: Returns the count of val's trailing zeros.
+    parameters:
+    - name: val
+      comment: Integer to count trailing zeros in.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: byteswap
+    comment: Returns val with its bytes swapped to the reverse order.
+    parameters:
+    - name: val
+      comment: Integer whose byte order will be swapped.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+- name: buffer
+  comment: Buffer manipulation library for binary data.
+  functions:
+  - name: create
+    comment: Creates a buffer of the requested size with all bytes initialized to 0.
+    parameters:
+    - name: size
+      comment: Size of the buffer to create.
+      type: number
+    return-type: buffer
+    must-use: true
+    typechecker: {checked: true}
+  - name: fromstring
+    comment: Creates a buffer initialized to the contents of the string.
+    parameters:
+    - name: str
+      comment: String to initialize the buffer with.
+      type: string
+    return-type: buffer
+    must-use: true
+    typechecker: {checked: true}
+  - name: tostring
+    comment: Returns the buffer data as a string.
+    parameters:
+    - name: b
+      comment: Buffer to convert to a string.
+      type: buffer
+    return-type: string
+    must-use: true
+    typechecker: {checked: true}
+  - name: readi8
+    comment: Reads a signed 8-bit integer from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readu8
+    comment: Reads an unsigned 8-bit integer from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readi16
+    comment: Reads a signed 16-bit integer from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readu16
+    comment: Reads an unsigned 16-bit integer from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readi32
+    comment: Reads a signed 32-bit integer from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readinteger
+    comment: Reads a signed or unsigned 64-bit integer from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: Byte offset to read from.
+      type: number
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readu32
+    comment: Reads an unsigned 32-bit integer from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readf32
+    comment: Reads a 32-bit floating-point number from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readf64
+    comment: Reads a 64-bit floating-point number from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to read from.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writei8
+    comment: Writes a signed 8-bit integer to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writeu8
+    comment: Writes an unsigned 8-bit integer to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writei16
+    comment: Writes a signed 16-bit integer to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writeu16
+    comment: Writes an unsigned 16-bit integer to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writei32
+    comment: Writes a signed 32-bit integer to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writeinteger
+    comment: Writes a signed or unsigned 64-bit integer to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: Byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: integer
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writeu32
+    comment: Writes an unsigned 32-bit integer to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writef32
+    comment: Writes a 32-bit floating-point number to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: writef64
+    comment: Writes a 64-bit floating-point number to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: Value to write.
+      type: number
+    return-type: ()
+    fastcall: true
+    typechecker: {checked: true}
+  - name: readstring
+    comment: Reads a string of the given length from the buffer at the specified offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: offset
+      comment: 0-based byte offset to start reading.
+      type: number
+    - name: count
+      comment: Number of bytes to read.
+      type: number
+    return-type: string
+    must-use: true
+    typechecker: {checked: true}
+  - name: writestring
+    comment: Writes data from a string into the buffer at the specified offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to write at.
+      type: number
+    - name: value
+      comment: String to write.
+      type: string
+    - name: count
+      comment: Number of bytes to write.
+      type: number?
+      default-value: '#value'
+    return-type: ()
+    typechecker: {checked: true}
+  - name: len
+    comment: Returns the size of the buffer in bytes.
+    parameters:
+    - name: b
+      comment: Buffer to get the size of.
+      type: buffer
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: copy
+    comment: Copies bytes from the source buffer into the target buffer.
+    parameters:
+    - name: target
+      comment: Target buffer to copy into.
+      type: buffer
+      observes: write
+    - name: targetOffset
+      comment: 0-based byte offset in target buffer.
+      type: number
+    - name: source
+      comment: Source buffer to copy from.
+      type: buffer
+    - name: sourceOffset
+      comment: 0-based byte offset in source buffer.
+      type: number?
+      default-value: 0
+    - name: count
+      comment: Number of bytes to copy.
+      type: number?
+      default-value: 'buffer.len(source) - sourceOffset'
+    return-type: ()
+    typechecker: {checked: true}
+  - name: fill
+    comment: Fills the buffer with the specified value starting at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to fill.
+      type: buffer
+      observes: write
+    - name: offset
+      comment: 0-based byte offset to start filling.
+      type: number
+    - name: value
+      comment: Value to fill with.
+      type: number
+    - name: count
+      comment: Number of bytes to fill.
+      type: number?
+      default-value: 'buffer.len(b) - offset'
+    return-type: ()
+    typechecker: {checked: true}
+  - name: readbits
+    comment: Reads up to 32 bits from the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to read from.
+      type: buffer
+    - name: bitOffset
+      comment: Bit offset to read at.
+      type: number
+    - name: bitCount
+      comment: "Number of bits to read. Must be in [0, 32] range."
+      type: number
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: writebits
+    comment: Writes up to 32 bits to the buffer at the given offset.
+    parameters:
+    - name: b
+      comment: Buffer to write to.
+      type: buffer
+      observes: write
+    - name: bitOffset
+      comment: Bit offset to write at.
+      type: number
+    - name: bitCount
+      comment: "Number of bits to write. Must be in [0, 32] range."
+      type: number
+    - name: value
+      comment: Source of bits to write.
+      type: number
+    return-type: ()
+    typechecker: {checked: true}
+- name: coroutine
+  comment: Coroutine manipulation library.
+  functions:
+  - name: create
+    comment: Returns a new coroutine that, when resumed, will run function f.
+    parameters:
+    - name: f
+      comment: A function to be executed by the new coroutine.
+      type: (...any) -> ...any
+    return-type: thread
+    must-use: true
+  - name: resume
+    comment: Resumes a coroutine. Returns true followed by any values passed to coroutine.yield() or returned by the function. If an error occurs, returns false and the error message.
+    parameters:
+    - name: co
+      comment: Coroutine to resume.
+      type: thread
+    - name: ...
+      comment: Arguments to pass to the coroutine.
+      type: ...any
+    return-type: (boolean, ...any)
+  - name: running
+    comment: Returns the currently running coroutine, or nil if called from the main coroutine.
+    parameters: []
+    return-type: thread?
+    must-use: true
+  - name: status
+    comment: 'Returns the status of the coroutine: "running", "suspended", "normal", or "dead".'
+    parameters:
+    - name: co
+      comment: Coroutine to check status of.
+      type: thread
+    return-type: '"running" | "suspended" | "normal" | "dead"'
+    must-use: true
+    typechecker: {checked: true}
+  - name: wrap
+    comment: Creates a coroutine and returns a function that resumes it.
+    parameters:
+    - name: f
+      comment: A function to execute in a coroutine.
+      type: (...any) -> ...any
+    return-type: (...any) -> ...any
+    must-use: true
+  - name: yield
+    comment: Yields the current coroutine, passing arguments to the resuming code.
+    parameters:
+    - name: ...
+      comment: Values to pass to the resuming code.
+      type: ...any
+    return-type: '...any'
+  - name: isyieldable
+    comment: Returns true if the currently running coroutine can yield.
+    parameters: []
+    return-type: boolean
+    must-use: true
+  - name: close
+    comment: Closes a coroutine, returning true if successful or false and an error.
+    parameters:
+    - name: co
+      comment: Coroutine to close.
+      type: thread
+    return-type: (boolean, string?)
+    typechecker: {checked: true}
+- name: debug
+  comment: Debug library for introspection.
+  functions:
+  - name: info
+    comment: Returns information about a stack frame or function based on specified format.
+    overloads:
+    - comment: Returns information about a stack level.
+      parameters:
+      - name: level
+        comment: Stack level or function reference for inspection.
+        type: number
+      - name: s
+        comment: String specifying requested information.
+        type: string
+      return-type: '...any'
+    - comment: Returns information about a function.
+      parameters:
+      - name: func
+        comment: Function reference.
+        type: (...any) -> ...any
+      - name: s
+        comment: String specifying requested information.
+        type: string
+      return-type: '...any'
+    parameters:
+    - name: co
+      comment: Optional thread or function reference.
+      type: thread | ((...any) -> ...any) | number
+    - name: level
+      comment: Stack level or function reference for inspection.
+      type: number
+      optional: true
+    - name: s
+      comment: String specifying requested information.
+      type: string
+    return-type: '...any'
+    must-use: true
+  - name: traceback
+    comment: Returns a human-readable call stack starting from the specified level.
+    overloads:
+    - comment: Returns a string with a traceback of the current call stack.
+      parameters:
+      - name: msg
+        comment: Message prepended to the traceback.
+        type: string?
+        default-value: nil
+      - name: level
+        comment: Stack level to start traceback.
+        type: number?
+        default-value: 1
+      return-type: string
+    parameters:
+    - name: co
+      comment: Optional thread reference for traceback.
+      type: thread
+      optional: true
+    - name: msg
+      comment: Message prepended to the traceback.
+      type: string?
+      default-value: nil
+    - name: level
+      comment: Stack level to start traceback.
+      type: number?
+      default-value: 1
+    return-type: string
+    must-use: true
+- name: integer
+  comment: 64-bit integer operations library.
+  functions:
+  - name: add
+    comment: Returns the sum of two 64-bit integers (signed or unsigned), wrapping on overflow.
+    parameters:
+    - name: int1
+      comment: Left integer addend.
+      type: integer
+    - name: int2
+      comment: Right integer addend.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: arshift
+    comment: |-
+      Returns val shifted by i bits to the right. If i is negative, a left shift is performed.
+      Does an arithmetic shift: The most significant bit of n is propagated during the shift.
+    parameters:
+    - name: val
+      comment: Integer to shift.
+      type: integer
+    - name: i
+      comment: Number of bits to shift.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: band
+    comment: Returns the bitwise AND of the given integers.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise AND on.
+      type: ...integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: bnot
+    comment: Returns the bitwise negation of val.
+    parameters:
+    - name: val
+      comment: Integer to negate.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: bor
+    comment: Returns the bitwise OR of the given integers.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise OR on.
+      type: ...integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: bxor
+    comment: Returns the bitwise XOR of the given integers.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise XOR on.
+      type: ...integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: bswap
+    comment: Returns val with its bytes swapped to the reverse order.
+    parameters:
+    - name: val
+      comment: Integer whose byte order will be swapped.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: btest
+    comment: Returns true if the bitwise AND of the given integers is non-zero.
+    parameters:
+    - name: ...
+      comment: Integers to perform bitwise AND on.
+      type: ...integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: clamp
+    comment: Returns val clamped between min and max. Raises an error if min is greater than max.
+    parameters:
+    - name: val
+      comment: Integer to clamp.
+      type: integer
+    - name: min
+      comment: Minimum allowable integer.
+      type: integer
+    - name: max
+      comment: Maximum allowable integer.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: countlz
+    comment: Returns the count of val's leading zeros.
+    parameters:
+    - name: val
+      comment: Integer to count leading zeros in.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: countrz
+    comment: Returns the count of val's trailing zeros.
+    parameters:
+    - name: val
+      comment: Integer to count trailing zeros in.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: create
+    comment: Returns number val converted to an integer. Returns nil if
+      it has a fractional part, is out of range, or is NaN.
+    parameters:
+    - name: val
+      comment: Number to convert to an integer.
+      type: number
+    return-type: integer?
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: div
+    comment: Returns dividend / divisor (signed), rounding toward zero. Raises an error if divisor is zero.
+    parameters:
+    - name: dividend
+      comment: Integer dividend.
+      type: integer
+    - name: divisor
+      comment: Integer divisor.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: extract
+    comment: Returns width bits from src, starting from bit index field.
+      Raises an error if the selected bit range is goes outside the range [0, 63].
+    parameters:
+    - name: src
+      comment: Integer to extract from.
+      type: integer
+    - name: field
+      comment: Starting bit index, zero-based
+      type: integer
+    - name: width
+      comment: Number of bits to extract, or 1 if omitted.
+      type: integer?
+      default-value: 1
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: fromstring
+    comment: Converts the input string to an integer in the specified base. Returns nil if not an integer.
+    parameters:
+    - name: value
+      comment: String to convert to an integer.
+      type: string
+    - name: base
+      comment: Base for the conversion.
+      type: number?
+      default-value: 10
+    return-type: integer?
+    must-use: true
+  - name: ge
+    comment: Returns true if int1 >= int2 (signed).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: gt
+    comment: Returns true if int1 > int2 (signed).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: idiv
+    comment: Returns dividend / divisor (signed), rounding toward negative infinity. Raises an error if divisor is zero.
+    parameters:
+    - name: dividend
+      comment: Integer dividend.
+      type: integer
+    - name: divisor
+      comment: Integer divisor.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: le
+    comment: Returns true if int1 <= int2 (signed).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: lt
+    comment: Returns true if int1 < int2 (signed).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: lrotate
+    comment: Returns val rotated by i bits to the left. If i is negative, a right rotate is performed.
+    parameters:
+    - name: val
+      comment: Integer to rotate.
+      type: integer
+    - name: i
+      comment: Number of bits to rotate.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: lshift
+    comment: Returns val shifted by i bits to the left. If i is negative, a right shift is performed. Returns 0 if i is outside the [-63, 63] range.
+    parameters:
+    - name: val
+      comment: Integer to shift.
+      type: integer
+    - name: i
+      comment: Number of bits to shift.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: max
+    comment: Returns the maximum value from the given integers (signed).
+    parameters:
+    - name: val
+      comment: Integer to find the maximum from.
+      type: integer
+    - name: ...
+      comment: Integers to find the maximum from.
+      type: ...integer
+      optional: false
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: min
+    comment: Returns the minimum value from the given integers (signed).
+    parameters:
+    - name: val
+      comment: Integer to find the minimum from.
+      type: integer
+    - name: ...
+      comment: Integers to find the minimum from.
+      type: ...integer
+      optional: false
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: mod
+    comment: Returns the remainder of dividend / divisor (signed).
+      The result always has the same sign as the divisor.
+      Raises an error if divisor is zero.
+    parameters:
+    - name: dividend
+      comment: Integer dividend.
+      type: integer
+    - name: divisor
+      comment: Integer divisor.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: mul
+    comment: Returns the product of two 64-bit integers (signed or unsigned), wrapping on overflow.
+    parameters:
+    - name: int1
+      comment: Left integer factor.
+      type: integer
+    - name: int2
+      comment: Right integer factor.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: neg
+    comment: Returns the negation of val.
+      integer.neg(integer.minsigned) == integer.minsigned due to overflow.
+    parameters:
+    - name: val
+      comment: Integer to negate.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: rem
+    comment: Returns the remainder of dividend / divisor (signed).
+      The result always has the same sign as the dividend.
+      Raises an error if divisor is zero.
+    parameters:
+    - name: dividend
+      comment: Integer dividend.
+      type: integer
+    - name: divisor
+      comment: Integer divisor.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: replace
+    comment: Returns dst with width bits replaced from src, starting from bit index field.
+      Raises an error if the selected bit range goes outside the range [0, 63].
+    parameters:
+    - name: dst
+      comment: Integer to replace bits in.
+      type: integer
+    - name: src
+      comment: Integer containing the replacement bits.
+      type: integer
+    - name: field
+      comment: Starting bit index, zero-based
+      type: integer
+    - name: width
+      comment: Number of bits to replace, or 1 if omitted.
+      type: integer?
+      default-value: 1
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: rrotate
+    comment: Returns val rotated by i bits to the right. If i is negative, a left rotate is performed.
+    parameters:
+    - name: val
+      comment: Integer to rotate.
+      type: integer
+    - name: i
+      comment: Number of bits to rotate.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: rshift
+    comment: Returns val shifted by i bits to the right. If i is negative, a left shift is performed. Returns 0 if i is outside the [-63, 63] range.
+    parameters:
+    - name: val
+      comment: Integer to shift.
+      type: integer
+    - name: i
+      comment: Number of bits to shift.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: sub
+    comment: Returns the difference between two 64-bit integers (signed or unsigned), wrapping on overflow.
+    parameters:
+    - name: int1
+      comment: Integer to subtract from.
+      type: integer
+    - name: int2
+      comment: Integer to subtract.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: tonumber
+    comment: Returns the nearest float64 to the given int64. Is inexact above 2^53.
+    parameters:
+    - name: val
+      comment: Integer to convert to a number.
+      type: integer
+    return-type: number
+    fastcall: true
+    must-use: true
+  - name: udiv
+    comment: Returns dividend / divisor (unsigned), rounding toward negative infinity. Raises an error if divisor is zero.
+    parameters:
+    - name: dividend
+      comment: Integer dividend.
+      type: integer
+    - name: divisor
+      comment: Integer divisor.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: uge
+    comment: Returns true if int1 >= int2 (unsigned).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: ugt
+    comment: Returns true if int1 > int2 (unsigned).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: ule
+    comment: Returns true if int1 <= int2 (unsigned).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: ult
+    comment: Returns true if int1 < int2 (unsigned).
+    parameters:
+    - name: int1
+      comment: Left integer to compare.
+      type: integer
+    - name: int2
+      comment: Right integer to compare.
+      type: integer
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: urem
+    comment: Returns the remainder of dividend / divisor (unsigned).
+      Raises an error if divisor is zero.
+    parameters:
+    - name: dividend
+      comment: Integer dividend.
+      type: integer
+    - name: divisor
+      comment: Integer divisor.
+      type: integer
+    return-type: integer
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  constants:
+  - name: maxsigned
+    comment: The most positive signed int64 (2^63-1).
+    type: integer
+    value: 9_223_372_036_854_775_807i
+  - name: minsigned
+    comment: The most negative signed int64 (-2^63).
+    type: integer
+    value: -9_223_372_036_854_775_808i
+- name: llbase64
+  comment: Base64 encoding/decoding library.
+  functions:
+  - name: encode
+    comment: Encodes a string or buffer to base64.
+    parameters:
+    - name: data
+      comment: "String or buffer to encode to base64 format."
+      type: string | buffer
+      selene-type: string
+    return-type: string
+    must-use: true
+    typechecker: {checked: true}
+  - name: decode
+    comment: Decodes a base64 string to a string, or buffer if asBuffer is true.
+      The output is truncated at the first decoding error.
+    overloads:
+    - comment: Decodes a base64 string to a buffer if asBuffer is true.
+      parameters:
+      - name: data
+        comment: "Base64 encoded string to decode."
+        type: string
+      - name: asBuffer
+        comment: "If true, decodes the payload into a buffer instead of a string."
+        type: "true"
+      return-type: buffer
+    parameters:
+    - name: data
+      comment: "Base64 encoded string to decode."
+      type: string
+    - name: asBuffer
+      comment: "Decodes the payload as a string."
+      type: false?
+      selene-type: bool
+      default-value: false
+    return-type: string
+    must-use: true
+    typechecker: {checked: true}
+- name: lljson
+  comment: JSON encoding/decoding library for Second Life.
+  functions:
+  - name: encode
+    comment: Encodes a Lua value as JSON.
+      Raises an error if value contains unsupported types.
+    parameters:
+    - name: value
+      comment: "Value (table, string, number, etc.) to serialize into JSON."
+      type: any
+    - name: options
+      comment: "Optional configuration settings and replacer function to customize serialization formatting."
+      type: LLJsonEncodeOptions?
+      default-value: '{allow_sparse=false, skip_tojson=false, replacer=nil}'
+    return-type: string
+    must-use: true
+  - name: decode
+    comment: Decodes a JSON string to a Lua value.
+      Raises an error if JSON is invalid.
+    parameters:
+    - name: json
+      comment: "JSON string to deserialize into a table or value."
+      type: string
+    - name: options
+      comment: "Optional configuration settings and reviver function to apply during parsing."
+      type: LLJsonDecodeOptions?
+      default-value: '{track_path=false, reviver=nil}'
+    return-type: any
+    must-use: true
+  - name: slencode
+    comment: Encodes a Lua value as JSON, preserving SL types. Use tight to encode
+      more compactly. Raises an error if value contains unsupported types.
+    parameters:
+    - name: value
+      comment: "Value to serialize into SL-typed JSON."
+      type: any
+    - name: options
+      comment: "Optional configuration settings to customize serialization formatting."
+      type: LLJsonEncodeOptions?
+      default-value: '{allow_sparse=false, skip_tojson=false, tight=false, replacer=nil}'
+    return-type: string
+    must-use: true
+  - name: sldecode
+    comment: Decodes a JSON string to a Lua value, preserving SL types.
+      Raises an error if JSON is invalid.
+    parameters:
+    - name: json
+      comment: "SL-typed JSON string to deserialize."
+      type: string
+    - name: options
+      comment: "Optional configuration settings to apply during parsing."
+      type: LLJsonDecodeOptions?
+      default-value: '{track_path=false, reviver=nil}'
+    return-type: any
+    must-use: true
+  constants:
+  - name: 'null'
+    comment: A constant to pass for null to json encode.
+    type: any
+  - name: remove
+    comment: A constant to return from a reviver/replacer function to omit this item.
+    type: any
+  - name: array_mt
+    comment: Metatable for declaring a table as an array for json encode.
+    type: '{__jsonhint: string}'
+    value: '{__jsonhint = "array"}'
+  - name: object_mt
+    comment: Metatable for declaring a table as an object for json encode.
+    type: '{__jsonhint: string}'
+    value: '{__jsonhint = "object"}'
+  - name: empty_array
+    comment: A constant to pass for an empty array to json encode.
+    type: '{}'
+    value: 'setmetatable({}, lljson.array_mt)'
+  - name: empty_object
+    comment: A constant to pass for an empty object to json encode.
+    type: '{}'
+    value: 'setmetatable({}, lljson.object_mt)'
+- name: llprim
+  comment: Utilities for working with prims / objects
+  constants:
+  - name: ParamSetter
+    comment: Metatable for building lists to pass to ll.SetLinkPrimitiveParamsFast
+    type: PrimParamSetterTypeMeta
+    value: PrimParamSetterTypeMeta
+  functions: []
+- name: math
+  comment: Mathematical functions library.
+  functions:
+  - name: abs
+    comment: Returns the absolute (positive) value of val.
+    parameters:
+    - name: val
+      comment: Number to convert.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: acos
+    comment: Returns the arccosine of val in radians.
+      Returns NaN if val is not in range [-1.0, 1.0].
+    parameters:
+    - name: val
+      comment: Cosine value in the range [-1.0, 1.0] to invert.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: asin
+    comment: Returns the arcsine of val in radians.
+      Returns NaN if val is not in range [-1.0, 1.0].
+    parameters:
+    - name: val
+      comment: Sine value in the range [-1.0, 1.0] to invert.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: atan
+    comment: Returns the arctangent of val in radians.
+    parameters:
+    - name: val
+      comment: Tangent value to invert.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: atan2
+    comment: "Returns the arctangent of y/x in radians, using the signs to determine the quadrant.
+      Note the argument order: Y is the first parameter, X is the second parameter."
+    parameters:
+    - name: "y"
+      comment: Y coordinate.
+      type: number
+    - name: x
+      comment: X coordinate.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: ceil
+    comment: Returns val rounded toward positive infinity.
+      In other words, returns the smallest integer greater than or equal to val.
+    parameters:
+    - name: val
+      comment: Number to round up.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: clamp
+    comment: Returns val clamped between min and max. Raises an error if min is greater than max.
+    parameters:
+    - name: val
+      comment: Number to clamp.
+      type: number
+    - name: min
+      comment: Minimum allowable value.
+      type: number
+    - name: max
+      comment: Maximum allowable value.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: cos
+    comment: Returns the cosine of theta. Theta is in radians.
+    parameters:
+    - name: theta
+      comment: Angle in radians.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: cosh
+    comment: Returns the hyperbolic cosine of n.
+    parameters:
+    - name: val
+      comment: Number to compute the hyperbolic cosine of.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: deg
+    comment: Returns theta converted from radians to degrees.
+    parameters:
+    - name: theta
+      comment: Number in radians.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: exp
+    comment: Returns the e to the power of val.
+    parameters:
+    - name: val
+      comment: Number to compute e^n.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: floor
+    comment: Returns val rounded toward negative infinity.
+      In other words, returns the largest integer less than or equal to val.
+    parameters:
+    - name: val
+      comment: Number to round down.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: fmod
+    comment: Returns the remainder (modulo) of dividend/modulus, (i.e. d mod m), rounded towards zero.
+      Returns NaN if modulus is 0. Identical to d % m if both arguments have the same sign.
+    parameters:
+    - name: dividend
+      comment: Dividend.
+      type: number
+    - name: modulus
+      comment: Modulus.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: frexp
+    comment: Breaks a floating-point number into it's component parts significand and exponent.
+      In other words, Returns significand s and integer exponent e such that val = s * 2^e.
+      Inverse of math.ldexp.
+    parameters:
+    - name: val
+      comment: Number to split into significand and exponent.
+      type: number
+    return-type: (number, number)
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: ldexp
+    comment: Returns s * 2^e. Inverse of math.frexp
+    parameters:
+    - name: significand
+      comment: Significand.
+      type: number
+    - name: exponent
+      comment: Exponent.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: lerp
+    comment: Linearly interpolates between start_val and end_val using factor t.
+    parameters:
+    - name: start_val
+      comment: Starting value.
+      type: number
+    - name: end_val
+      comment: Ending value.
+      type: number
+    - name: t
+      comment: Interpolation factor.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: log
+    comment: Returns the logarithm of val in the given base. The default base is e.
+    parameters:
+    - name: val
+      comment: Number to compute the logarithm of.
+      type: number
+    - name: base
+      comment: Base of the logarithm.
+      type: number?
+      default-value: 'math.e'
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: log10
+    comment: Returns the base-10 logarithm of val.
+    parameters:
+    - name: val
+      comment: Number to compute base-10 logarithm.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: map
+    comment: Maps val from input range to output range.
+    parameters:
+    - name: val
+      comment: Number to map.
+      type: number
+    - name: inMin
+      comment: Lower bound of the input range.
+      type: number
+    - name: inMax
+      comment: Upper bound of the input range.
+      type: number
+    - name: outMin
+      comment: Lower bound of the output range.
+      type: number
+    - name: outMax
+      comment: Upper bound of the output range.
+      type: number
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: max
+    comment: Returns the maximum value from the given numbers.
+    parameters:
+    - name: val
+      comment: Number to find the maximum from.
+      type: number
+    - name: ...
+      comment: Numbers to find the maximum from.
+      type: ...number
+      optional: false
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: min
+    comment: Returns the minimum value from the given numbers.
+    parameters:
+    - name: val
+      comment: Number to find the minimum from.
+      type: number
+    - name: ...
+      comment: Numbers to find the minimum from.
+      type: ...number
+      optional: false
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: modf
+    comment: Returns the integer and fractional parts of val.
+    parameters:
+    - name: val
+      comment: Number to split into integer and fractional parts.
+      type: number
+    return-type: (number, number)
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: noise
+    comment: "Returns a Perlin noise value for the point (x, y, z). The return value is in the range [-1.0, 1.0]."
+    parameters:
+    - name: x
+      comment: X coordinate for the noise function.
+      type: number
+    - name: "y"
+      comment: Y coordinate for the noise function.
+      type: number?
+      default-value: 0
+    - name: z
+      comment: Z coordinate for the noise function.
+      type: number?
+      default-value: 0
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: pow
+    comment: Returns base to the power of exponent.
+    parameters:
+    - name: base
+      comment: Base value.
+      type: number
+    - name: exponent
+      comment: Exponent value.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: rad
+    comment: Returns theta converted from degrees to radians.
+    parameters:
+    - name: theta
+      comment: Angle in degrees.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: random
+    comment: Returns a random number within the given range.
+    parameters:
+    - name: min
+      comment: Minimum value of the range.
+      type: number?
+      default-value: nil
+    - name: max
+      comment: Maximum value of the range.
+      type: number?
+      default-value: nil
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+    variants:
+      - comment: "Returns a random float number in the [0, 1) range (exclusive of 1)."
+        parameters: []
+        return-type: number
+      - comment: "Returns a random integer number in the [1, n] range. Input is truncated to integer."
+        parameters:
+        - name: n
+          comment: Maximum value of the range.
+          type: number
+        return-type: number
+      - comment: "Returns a random integer number in the [min, max] range. Inputs are truncated to integers."
+        parameters:
+        - name: min
+          comment: Minimum value of the range.
+          type: number
+        - name: max
+          comment: Maximum value of the range.
+          type: number
+        return-type: number
+  - name: randomseed
+    comment: Sets the seed for the random number generator.
+    parameters:
+    - name: seed
+      comment: Seed for the random number generator.
+      type: number
+    return-type: ()
+    deprecated:
+      reason: Disabled in SLua.
+    typechecker: {checked: true}
+  - name: round
+    comment: Returns val rounded to the nearest integer. Halfway values are rounded away from zero.
+    parameters:
+    - name: val
+      comment: Number to round to the nearest integer. Halfway values are rounded away from zero.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: sign
+    comment: Returns -1 if val is negative, 1 if positive, and 0 if zero.
+    parameters:
+    - name: val
+      comment: Number to get the sign of.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: sin
+    comment: Returns the sine of theta. Theta is in radians.
+    parameters:
+    - name: theta
+      comment: Angle in radians.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: sinh
+    comment: Returns the hyperbolic sine of val.
+    parameters:
+    - name: val
+      comment: Number to compute the hyperbolic sine of.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: sqrt
+    comment: Returns the square root of val. If negative, return Nan.
+    parameters:
+    - name: val
+      comment: Number to compute the square root of.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: tan
+    comment: Returns the tangent of theta. Theta is in radians.
+    parameters:
+    - name: theta
+      comment: Angle in radians.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: tanh
+    comment: Returns the hyperbolic tangent of val.
+    parameters:
+    - name: val
+      comment: Number to compute the hyperbolic tangent of.
+      type: number
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: isnan
+    comment: Returns true if val is NaN.
+    parameters:
+    - name: val
+      comment: Number to check as NaN.
+      type: number
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: isinf
+    comment: Returns true if val is infinite.
+    parameters:
+    - name: val
+      comment: Number to check as infinite.
+      type: number
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: isfinite
+    comment: Returns true if val is finite.
+    parameters:
+    - name: val
+      comment: Number to check as finite.
+      type: number
+    return-type: boolean
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  constants:
+  - name: e
+    comment: Base of the natural logarithm.
+    type: number
+    value: 2.718281828459045
+  - name: huge
+    comment: Value larger than any other numeric value (infinity). 1/0.
+    type: number
+    value: inf
+  - name: nan
+    comment: Value representing an error (not a number). 0/0.
+    type: number
+    value: nan
+  - name: phi
+    comment: Golden ratio. (1 + math.sqrt(5))/2.
+    type: number
+    value: 1.618033988749895
+  - name: pi
+    comment: Ratio of a circle's circumference to its diameter.
+      The number of radians in a half circle (semi-circle). math.tau/2.
+    type: number
+    value: 3.141592653589793
+  - name: sqrt2
+    comment: Square root of 2. math.sqrt(2).
+    type: number
+    value: 1.4142135623730951
+  - name: tau
+    comment: Ratio of a circle's circumference to its radius.
+      The number of radians in a full circle. math.pi*2.
+    type: number
+    value: 6.283185307179586
+- name: os
+  comment: Operating system facilities library.
+  functions:
+  - name: clock
+    comment: Returns a high-precision timestamp in seconds for measuring durations.
+      Has a resolution of 0.0001s (222 ticks per server frame, 3 ticks per script time slice).
+      6-11x slower to look up than ll.GetTime.
+    parameters: []
+    return-type: number
+    must-use: true
+  - name: date
+    comment: Returns a table or string representation of the time based on the provided format.
+    parameters:
+    - name: formatString
+      comment: Format string for the date representation.
+      type: string?
+      default-value: '"%c"'
+    - name: t
+      comment: Timestamp to format; defaults to the current time.
+      type: number?
+      default-value: 'os.time()'
+    return-type: string
+    overloads:
+    - parameters:
+      - name: formatString
+        comment: Optional format string for the date representation.
+        type: '"*t" | "!*t"'
+      - name: t
+        comment: Timestamp to format; defaults to the current time.
+        type: number?
+        default-value: 'os.time()'
+      return-type: DateTypeResult
+    must-use: true
+  - name: difftime
+    deprecated:
+      reason: Same as a - b
+      selene-replace: ["%1 - %2"]
+    comment: Returns the difference in seconds between two timestamps. Same as a - b.
+    parameters:
+    - name: a
+      comment: First timestamp value.
+      type: number
+    - name: b
+      comment: Second timestamp value.
+      type: number
+    return-type: number
+    must-use: true
+  - name: time
+    comment: Returns the current Unix timestamp or the timestamp of the given date.
+    parameters:
+    - name: time
+      comment: Optional table with date/time fields; returns the corresponding Unix timestamp.
+      type: DateTypeArg
+      optional: true
+    return-type: number?
+    overloads:
+    - comment: Returns the current Unix timestamp.
+      parameters: []
+      return-type: number
+    must-use: true
+- name: quaternion
+  comment: Quaternion manipulation library.
+  callable:
+    name: quaternion
+    comment: Creates a new quaternion with the given component values.
+      Alias of quaternion.create.
+    parameters:
+    - name: x
+      comment: X component of the quaternion.
+      type: number
+    - name: "y"
+      comment: Y component of the quaternion.
+      type: number
+    - name: z
+      comment: Z component of the quaternion.
+      type: number
+    - name: s
+      comment: S component of the quaternion.
+      type: number
+    return-type: quaternion
+    must-use: true
+    typechecker: {checked: true}
+  functions:
+  - name: create
+    comment: Creates a new quaternion with the given component values.
+    parameters:
+    - name: x
+      comment: X component of the quaternion.
+      type: number
+    - name: "y"
+      comment: Y component of the quaternion.
+      type: number
+    - name: z
+      comment: Z component of the quaternion.
+      type: number
+    - name: s
+      comment: S component of the quaternion.
+      type: number
+    return-type: quaternion
+    must-use: true
+    typechecker: {checked: true}
+  - name: normalize
+    comment: Returns the normalized unit quaternion pointing the same direction as q.
+      If <0, 0, 0, 0>, return quaternion.identity = <0, 0, 0, 1>.
+    parameters:
+    - name: q
+      comment: Quaternion to normalize.
+      type: quaternion
+    return-type: quaternion
+    must-use: true
+    typechecker: {checked: true}
+  - name: magnitude
+    comment: Returns the magnitude (geometric length) of the quaternion.
+    parameters:
+    - name: q
+      comment: Quaternion to evaluate.
+      type: quaternion
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: dot
+    comment: Returns the dot product of two quaternions.
+    parameters:
+    - name: q1
+      comment: Left input quaternion.
+      type: quaternion
+    - name: q2
+      comment: Right input quaternion.
+      type: quaternion
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: slerp
+    comment: Spherical linear interpolation from start_q to end_q using factor t.
+    parameters:
+    - name: start_q
+      comment: Starting quaternion.
+      type: quaternion
+    - name: end_q
+      comment: Ending quaternion.
+      type: quaternion
+    - name: t
+      comment: Interpolation factor.
+      type: number
+    return-type: quaternion
+    must-use: true
+    typechecker: {checked: true}
+  - name: conjugate
+    comment: Returns the conjugate of the quaternion.
+      Equivalent to quaternion(-q.x, -q.y, -q.z, q.s))
+    parameters:
+    - name: q
+      comment: Quaternion to conjugate.
+      type: quaternion
+    return-type: quaternion
+    must-use: true
+    typechecker: {checked: true}
+  - name: tofwd
+    comment: Returns the unit vector pointing toward positive X direction (forward)
+      in the coordinate space of rotation q. Equivalent to vector(1, 0, 0) * q.
+    parameters:
+    - name: q
+      comment: Quaternion to convert.
+      type: quaternion
+    return-type: vector
+    must-use: true
+    typechecker: {checked: true}
+  - name: toleft
+    comment: Returns the unit vector pointing toward positive Y direction (left)
+      in the coordinate space of rotation q. Equivalent to vector(0, 1, 0) * q.
+    parameters:
+    - name: q
+      comment: Quaternion to convert.
+      type: quaternion
+    return-type: vector
+    must-use: true
+    typechecker: {checked: true}
+  - name: toup
+    comment: Returns the unit vector pointing toward positive Z direction (up)
+      in the coordinate space of rotation q. Equivalent to vector(0, 0, 1) * q.
+    parameters:
+    - name: q
+      comment: Quaternion to convert.
+      type: quaternion
+    return-type: vector
+    must-use: true
+    typechecker: {checked: true}
+  constants:
+  - name: identity
+    comment: Identity quaternion constant. Causes no change when rotated.
+    type: quaternion
+    value: quaternion(0, 0, 0, 1)
+- name: string
+  comment: String manipulation library.
+  functions:
+  - name: byte
+    comment: Returns the numeric code of every byte in the range start_index..end_index in the string src.
+      Negative indices count backward from the end of the string.
+    parameters:
+    - name: src
+      comment: Source string.
+      type: string
+    - name: start_index
+      comment: Starting byte index (inclusive), or 1 if omitted. Supports negative indexing.
+      type: number?
+      default-value: 1
+    - name: end_index
+      comment: Ending byte index (inclusive), or i if omitted. Supports negative indexing.
+      type: number?
+      default-value: i
+    return-type: '...number'
+    must-use: true
+    fastcall: true
+    typechecker: {builtin: true, checked: true}
+  - name: char
+    comment: Constructs and returns a string from the given byte integers.
+    parameters:
+    - name: ...
+      comment: Byte integers to convert.
+      type: ...number
+      optional: false
+    return-type: string
+    must-use: true
+    fastcall: true
+    typechecker: {builtin: true, checked: true}
+  - name: find
+    comment: Returns the start and end byte indices of the first occurrence of pattern
+      inside the string src, followed by any regex-captured substrings. Search starts from start_index. Returns nil if not found.
+      Negative indices count backward from the end of the string.
+    parameters:
+    - name: src
+      comment: Source string to search within.
+      type: string
+    - name: pattern
+      comment: Pattern to search for.
+      type: string
+    - name: start_index
+      comment: Byte index to start the search from, or 1 if omitted. Supports negative indexing.
+      type: number?
+      default-value: 1
+    - name: plain
+      comment: Perform raw search. If true, turns off pattern matching and performs a raw, case-sensitive substring match.
+      type: boolean?
+      default-value: false
+    return-type: (number?, number?, ...string)
+    must-use: true
+    typechecker: {builtin: true, magic: true, checked: true}
+  - name: format
+    comment: Formats input values into a string using printf-style format specifiers.
+    parameters:
+    - name: format_string
+      comment: Format string.
+      type: string
+    - name: ...
+      comment: Values to format.
+      type: ...any
+      optional: false
+    return-type: string
+    must-use: true
+    typechecker: {builtin: true, magic: true, checked: true}
+  - name: gmatch
+    comment: Returns an iterator function of all occurences of the regex pattern inside the string src.
+    parameters:
+    - name: src
+      comment: Source string to search within.
+      type: string
+    - name: pattern
+      comment: Regex pattern to search for.
+      type: string
+    return-type: () -> ...string
+    must-use: true
+    typechecker: {builtin: true, magic: true, checked: true}
+  - name: gsub
+    comment: Returns a copy of src with maxn occurrences of the regex pattern
+      replaced by repl, followed by the total number of substitutions that occurred. repl can be a string, function, or table.
+    parameters:
+    - name: src
+      comment: Original source string to search.
+      type: string
+    - name: pattern
+      comment: Regex pattern to find and replace.
+      type: string
+    - name: repl
+      comment: String, function, or table that to replaces the pattern.
+      type: 'string | { [string]: string } | (...string) -> string'
+    - name: maxn
+      comment: Maximum number of replacements to make (all if omitted).
+      type: number?
+      default-value: nil
+    return-type: (string, number)
+    must-use: true
+    typechecker: {builtin: true}
+  - name: len
+    comment: "Returns the number of bytes in the string. Identical to #str."
+    parameters:
+    - name: str
+      comment: String to measure.
+      type: string
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {builtin: true, checked: true}
+  - name: lower
+    comment: Returns a lowercase copy of the string src.
+      Only converts ASCII characters. Use ll.ToLower for strings that may contain Unicode.
+    parameters:
+    - name: src
+      comment: Source string to convert.
+      type: string
+    return-type: string
+    must-use: true
+    typechecker: {builtin: true, checked: true}
+  - name: match
+    comment: Returns all occurences of the regex pattern inside the string src, starting from start_index. Returns nil if no match is found.
+      Negative indices count backward from the end of the string.
+    parameters:
+    - name: src
+      comment: Source string to search within.
+      type: string
+    - name: pattern
+      comment: Regex pattern to search for.
+      type: string
+    - name: start_index
+      comment: Byte index to start at, or 1 if omitted. Supports negative indexing.
+      type: number?
+      default-value: 1
+    return-type: '...string?'
+    must-use: true
+    typechecker: {builtin: true, magic: true, checked: true}
+  - name: pack
+    comment: Packs values into a binary string.
+    parameters:
+    - name: format_string
+      comment: Pack format string.
+      type: string
+    - name: ...
+      comment: Values to encode.
+      type: ...any
+    return-type: string
+    must-use: true
+    typechecker: {builtin: true}
+  - name: packsize
+    comment: Returns the size of a packed string for the given format.
+    parameters:
+    - name: format_string
+      comment: Pack format string.
+      type: string
+    return-type: number
+    must-use: true
+    typechecker: {builtin: true, checked: true}
+  - name: rep
+    comment: Returns the string src repeated n times. Returns an empty string if n is zero or negative.
+    parameters:
+    - name: src
+      comment: Source string to repeat.
+      type: string
+    - name: count
+      comment: Number of times to repeat the source string.
+      type: number
+    return-type: string
+    must-use: true
+    typechecker: {builtin: true, checked: true}
+  - name: reverse
+    comment: Returns a copy of the string src with bytes in reverse order.
+    parameters:
+    - name: src
+      comment: Source string to reverse.
+      type: string
+    return-type: string
+    must-use: true
+    typechecker: {builtin: true, checked: true}
+  - name: split
+    comment: 'Splits a string by separator. Returns a list of substrings. If the separator is nil, splits at commas (","). If the separator is empty, splits into individual one-byte substrings.'
+    parameters:
+    - name: src
+      comment: Source string to parse.
+      type: string
+    - name: separator
+      comment: 'Separator to split on. If nil, splits at commas (","). If empty, splits into individual bytes.'
+      type: string?
+      default-value: '","'
+    return-type: '{string}'
+    must-use: true
+    typechecker: {builtin: true, checked: true}
+  - name: sub
+    comment: Returns a copy of the substring from src within the inclusive byte range
+      start_index..end_index. Negative indices count backward from the end of the string.
+    parameters:
+    - name: src
+      comment: Source string to slice. Supports negative indexing.
+      type: string
+    - name: start_index
+      comment: Starting byte index (inclusive). Supports negative indexing.
+      type: number
+    - name: end_index
+      comment: Ending byte index (inclusive), or the end of the string if omitted. Supports negative indexing.
+      type: number?
+      default-value: '#src'
+    return-type: string
+    must-use: true
+    fastcall: true
+    typechecker: {builtin: true, checked: true}
+  - name: unpack
+    comment: Decodes a binary string using a pack format, starting from index start and returns a tuple of the
+      decoded values, followed by a number representing the index of the first unread byte.
+      Negative indices count backward from the end of the string.
+    parameters:
+    - name: format_string
+      comment: Pack format string.
+      type: string
+    - name: src
+      comment: Encoded string.
+      type: string
+    - name: start
+      comment: Starting byte index, or 1 if omitted. Supports negative indexing.
+      type: number?
+      default-value: 1
+    return-type: '...any'
+    must-use: true
+    typechecker: {builtin: true, checked: true}
+  - name: upper
+    comment: Returns an uppercase copy of the string src.
+      Only converts ASCII characters. Use ll.ToUpper for strings that may contain Unicode.
+    parameters:
+    - name: src
+      comment: Source string to convert.
+      type: string
+    return-type: string
+    must-use: true
+    typechecker: {builtin: true, checked: true}
+- name: table
+  comment: Table manipulation library. Tables are collections of key-value pairs.
+  functions:
+  - name: concat
+    comment: Joins an array of strings into one string, with an optional separator.
+    parameters:
+    - name: a
+      comment: Array of strings.
+      type: '{string | number}'
+      typechecker: {"new-type": "{read string | number}"}
+    - name: sep
+      comment: Separator string.
+      type: string?
+      default-value: '""'
+    - name: i
+      comment: Starting index.
+      type: number?
+      default-value: 1
+    - name: j
+      comment: Ending index.
+      type: number?
+      default-value: '#a'
+    return-type: string
+    must-use: true
+  - name: foreach
+    comment: Iterates over all key-value pairs in the table (deprecated).
+    deprecated:
+      reason: Use a for loop instead
+    type-parameters: [K, V, R]
+    parameters:
+    - name: t
+      comment: Table to iterate over.
+      type: '{[K]: V}'
+      typechecker: {"new-type": "{read [K]: V}"}
+    - name: f
+      comment: Function applied to each key-value pair.
+      type: '(key: K, value: V) -> R?'
+      optional: false
+    return-type: R?
+  - name: foreachi
+    comment: Iterates over all index-value pairs in the array (deprecated).
+    deprecated:
+      reason: Use a for loop instead
+    type-parameters: [V, R]
+    parameters:
+    - name: a
+      comment: Array to iterate over.
+      type: '{V}'
+      typechecker: {"new-type": "{read V}"}
+    - name: f
+      comment: Function applied to each index-value pair.
+      type: '(index: number, value: V) -> R?'
+    return-type: R?
+  - name: getn
+    comment: 'Returns the length of an array (deprecated; use # instead).'
+    deprecated:
+      use: "#"
+      selene-replace: ["#%1"]
+    parameters:
+    - name: a
+      comment: Array to check.
+      type: '{any}'
+    return-type: number
+    must-use: true
+  - name: maxn
+    comment: Returns the highest numeric key in the table.
+    parameters:
+    - name: t
+      comment: Table to check.
+      type: '{any}'
+    return-type: number
+    must-use: true
+  - name: insert
+    comment: "Inserts an element at index i, shifting subsequent elements up by 1. The index must be within the range [1, #a]."
+    overloads:
+    - comment: "Appends an element to the end of the array. Equivalent to a[#a+1] = value."
+      type-parameters: [V]
+      parameters:
+      - name: a
+        comment: Array to insert into.
+        type: '{V}'
+        observes: write
+      - name: value
+        comment: Value to insert.
+        type: V
+      return-type: ()
+    type-parameters: [V]
+    parameters:
+    - name: a
+      comment: Array to insert into.
+      type: '{V}'
+      observes: write
+    - name: i
+      comment: "Index to insert at. Elements at or above this index will shift up by 1."
+      type: number
+      optional: true
+    - name: value
+      comment: Value to insert.
+      type: V
+    return-type: ()
+    fastcall: true
+  - name: append
+    comment: Appends one or more elements to the end of the array.
+    type-parameters: [V]
+    parameters:
+    - name: a
+      comment: Array to be appended to.
+      type: '{V}'
+      observes: write
+    - name: ...
+      comment: Values to append.
+      type: ...V
+    return-type: ()
+  - name: extend
+    comment: "Appends all elements from one array to the end of another.
+      Shorthand for table.move(b, 1, #b, #a+1, a)."
+    type-parameters: [V]
+    parameters:
+    - name: a
+      comment: Array to be appended to.
+      type: '{V}'
+      observes: write
+    - name: b
+      comment: Array to append.
+      type: '{V}'
+    return-type: '{V}'
+  - name: remove
+    comment: Removes and returns the element at index i, shifting subsequent elements down by 1. Defaults to the end of the array. Returns nil if no element was removed.
+    type-parameters: [V]
+    parameters:
+    - name: a
+      comment: Array to remove from.
+      type: '{V}'
+      observes: write
+    - name: i
+      comment: "Index of the element to remove. Subsequent elements will shift down by 1."
+      type: number?
+      default-value: '#a'
+    return-type: V?
+  - name: sort
+    comment: Sorts an array in place.
+    type-parameters: [V]
+    parameters:
+    - name: a
+      comment: Array to be sorted.
+      type: '{V}'
+      observes: write
+    - name: f
+      comment: Comparison function.
+      type: '((a: V, b: V) -> boolean)?'
+      default-value: nil
+    return-type: ()
+  - name: pack
+    comment: Packs arguments into a table and sets an 'n' field with the total count. This is the safest way to pack varargs (...) that might contain nil values.
+    type-parameters: [V]
+    parameters:
+    - name: ...
+      comment: Array elements.
+      type: ...V
+    return-type: '{ n: number, [number]: V }'
+    must-use: true
+    typechecker: {magic: true}
+  - name: unpack
+    comment: Unpacks array elements into multiple return values.
+    type-parameters: [V]
+    parameters:
+    - name: a
+      comment: Array to unpack.
+      type: '{V}'
+      typechecker: {"new-type": "{read V}"}
+    - name: i
+      comment: Starting index.
+      type: number?
+      default-value: 1
+    - name: j
+      comment: Ending index.
+      type: number?
+      default-value: '#a'
+    return-type: '...V'
+    must-use: true
+    fastcall: true
+  - name: move
+    comment: "Copies elements [i..j] from src array into dest array starting at [d], overwriting existing elements."
+    type-parameters: [V]
+    parameters:
+    - name: src
+      comment: Source array.
+      type: '{V}'
+    - name: i
+      comment: Starting index.
+      type: number
+    - name: j
+      comment: Ending index.
+      type: number
+    - name: d
+      comment: Destination index.
+      type: number
+    - name: dest
+      comment: Destination array.
+      type: '{V}?'
+      default-value: src
+      observes: write
+    return-type: '{V}'
+  - name: create
+    comment: Creates a new table with pre-allocated array capacity, optionally filled. Preallocation only benefits array portions and is counter-productive for dictionaries.
+    type-parameters: [V]
+    parameters:
+    - name: "n"
+      comment: Number of elements to allocate.
+      type: number
+    - name: v
+      comment: Value to prefill elements with.
+      type: V
+      optional: true
+      default-value: nil
+    return-type: '{V}'
+    overloads:
+    - comment: Creates a new unfilled table with pre-allocated array capacity.
+      parameters:
+      - name: "n"
+        comment: Number of elements to allocate.
+        type: number
+      return-type: '{any}'
+    must-use: true
+  - name: find
+    comment: Finds the first occurrence of a value in the array and returns its index. Traversal stops at the first nil.
+    type-parameters: [V]
+    parameters:
+    - name: t
+      comment: Table to search in.
+      type: '{V}'
+      typechecker: {"new-type": "{read V}"}
+    - name: v
+      comment: Value to search for.
+      type: V
+    - name: i
+      comment: Starting index.
+      type: number?
+      default-value: 1
+    return-type: number?
+    must-use: true
+  - name: clear
+    comment: Clears all elements from a table while keeping its capacity to avoid memory reallocations during future assignments.
+    parameters:
+    - name: t
+      comment: Table to clear.
+      type: '{}'
+      observes: write
+    return-type: ()
+  - name: shrink
+    comment: Reduces the memory usage of the table to the minimum necessary.
+    type-parameters: [V]
+    parameters:
+    - name: t
+      comment: Table to shrink.
+      type: '{V}'
+    - name: shrink_sparse
+      comment: Allow moving sparse array elements to hash table storage.
+      type: boolean?
+      default-value: false
+    return-type: '{V}'
+  - name: freeze
+    comment: Freezes a table, making it read-only. The freeze is shallow and does not affect nested tables. Raises an error if the table is already frozen or has a protected metatable.
+    type-parameters: [table]
+    parameters:
+    - name: t
+      comment: Table to freeze.
+      type: table # should be: generic table. See #56
+      selene-type: table
+    return-type: table
+    typechecker: {magic: true}
+  - name: isfrozen
+    comment: Returns true if a table is frozen.
+    parameters:
+    - name: t
+      comment: Table to check.
+      type: '{}'
+    return-type: boolean
+    must-use: true
+  - name: clone
+    comment: Creates a shallow copy of the table, copying its keys, values, and metatable. The clone is always unfrozen even if the source was frozen.
+    type-parameters: [table]
+    parameters:
+    - name: t
+      comment: Table to clone.
+      type: table # should be: generic table. See #56
+      selene-type: table
+    return-type: table
+    must-use: true
+    typechecker: {magic: true}
+- name: utf8
+  comment: UTF-8 support library.
+  functions:
+  - name: char
+    comment: Constructs and returns a string from the given Unicode codepoint ordinals.
+    parameters:
+    - name: ...
+      comment: Unicode codepoint integers (ordinals) to convert.
+      type: ...number
+      optional: false
+    return-type: string
+    typechecker: {checked: true}
+  - name: codes
+    comment: Returns an iterator that produces
+      the byte offset and Unicode codepoint for each character in the string src.
+    parameters:
+    - name: src
+      comment: Source string.
+      type: string
+    return-type: ((string, number) -> (number, number), string, number)
+    must-use: true
+    typechecker: {checked: true}
+  - name: codepoint
+    comment: Returns the ordinals (Unicode copepoint integers) of the characters
+      in the inclusive byte range start_index..end_index in the string src.
+      Negative indices count backward from the end of the string.
+    parameters:
+    - name: src
+      comment: Source string.
+      type: string
+    - name: start_index
+      comment: Starting byte index (inclusive), or 1 if omitted. Supports negative indexing.
+      type: number?
+      default-value: 1
+    - name: end_index
+      comment: Ending byte index (inclusive), or i if omitted. Supports negative indexing.
+      type: number?
+      default-value: i
+    return-type: '...number'
+    must-use: true
+    typechecker: {checked: true}
+  - name: len
+    comment: Returns the number of Unicode codepoints in the inclusive byte range start_index..end_index
+      of the string src. If the string is not utf8, returns (nil, error index) instead.
+      Negative indices count backward from the end of the string.
+    parameters:
+    - name: str
+      comment: Source string to measure.
+      type: string
+    - name: start_index
+      comment: Starting byte index (inclusive), or 1 if omitted. Supports negative indexing.
+      type: number?
+      default-value: 1
+    - name: end_index
+      comment: Ending byte index (inclusive), or the end of the string if omitted. Supports negative indexing.
+      type: number?
+      default-value: '#str'
+    return-type: (number?, number?)
+    must-use: true
+    typechecker: {checked: true}
+  - name: offset
+    comment: Returns the byte offset of the nth Unicode codepoint in the string.
+      Negative indices count backward from the end of the string.
+    parameters:
+    - name: str
+      comment: String to index.
+      type: string
+    - name: n
+      comment: Character index. Supports negative indexing.
+      type: number
+    - name: start_index
+      comment: Starting byte index, or 1 if omitted. Supports negative indexing.
+      type: number?
+      default-value: 'if n >= 0 then 1 else #str + 1'
+    return-type: number?
+    must-use: true
+    typechecker: {checked: true}
+  constants:
+  - name: charpattern
+    comment: Pattern that matches exactly one UTF-8 byte sequence.
+    type: string
+    value: '"[\x00-\x7F\xC2-\xF4][\x80-\xBF]*"'
+- name: uuid
+  comment: UUID library.
+  callable:
+    name: uuid
+    comment: Creates a new uuid from a string, buffer, or existing uuid. Throws
+      an error if the string is not a valid UUID, or the buffer is
+      shorter than 16 bytes. Alias of uuid.create.
+    parameters:
+    - name: value
+      type: string? | buffer | uuid
+    return-type: uuid
+    must-use: true
+    typechecker: {checked: true}
+  functions:
+  - name: create
+    comment: Creates a new uuid from a string, buffer, or existing uuid. Throws
+      an error if the string is not a valid UUID, or the buffer is
+      shorter than 16 bytes.
+    parameters:
+    - name: value
+      type: string? | buffer | uuid
+    return-type: uuid
+    must-use: true
+    typechecker: {checked: true}
+- name: vector
+  comment: Vector manipulation library.
+  callable:
+    name: vector
+    comment: Creates a new vector with the given component values.
+      Alias of vector.create.
+    parameters:
+    - name: x
+      comment: X component of the vector.
+      type: number
+    - name: "y"
+      comment: Y component of the vector.
+      type: number
+    - name: z
+      comment: Z component of the vector.
+      type: number?
+      default-value: 0
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  functions:
+  - name: create
+    comment: Creates a new vector with the given component values.
+    parameters:
+    - name: x
+      comment: X component of the vector.
+      type: number
+    - name: "y"
+      comment: Y component of the vector.
+      type: number
+    - name: z
+      comment: Z component of the vector.
+      type: number?
+      default-value: 0
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: magnitude
+    comment: Returns the magnitude (geometric length) of the vector.
+    parameters:
+    - name: vec
+      comment: Vector to evaluate.
+      type: vector
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: normalize
+    comment: Returns the normalized unit vector pointing the same direction as vec.
+      If <0, 0, 0>, return <NaN, NaN, NaN>.
+    parameters:
+    - name: vec
+      comment: Vector to normalize.
+      type: vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: cross
+    comment: Returns the cross product of two vectors.
+    parameters:
+    - name: start_vec
+      comment: Starting vector.
+      type: vector
+    - name: end_vec
+      comment: Ending vector.
+      type: vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: dot
+    comment: Returns the dot product of two vectors.
+    parameters:
+    - name: vec1
+      comment: Left input vector.
+      type: vector
+    - name: vec2
+      comment: Right input vector.
+      type: vector
+    return-type: number
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: angle
+    comment: Returns the angle from start_vec to end_vec in radians.
+      The axis, if specified, is used to determine the sign of the angle.
+      If no axis is specified, the angle is positive, as if axis was vector.cross(start_vec, end_vec).
+    parameters:
+    - name: start_vec
+      type: vector
+      comment: Starting vector.
+    - name: end_vec
+      comment: Ending vector.
+      type: vector
+    - name: axis
+      comment: Axis to determine the sign of the angle.
+      type: vector?
+      default-value: nil
+    return-type: number
+    must-use: true
+    typechecker: {checked: true}
+  - name: floor
+    comment: Applies math.floor to each component of the vector.
+    parameters:
+    - name: vec
+      comment: Vector to round down.
+      type: vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: ceil
+    comment: Applies math.ceil to each component of the vector.
+    parameters:
+    - name: vec
+      comment: Vector to round up.
+      type: vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: abs
+    comment: Applies math.abs to each component of the vector.
+    parameters:
+    - name: vec
+      comment: Vector to convert.
+      type: vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: sign
+    comment: Applies math.sign to each component of the vector.
+    parameters:
+    - name: vec
+      comment: Vector to get the sign of.
+      type: vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: clamp
+    comment: Clamps each component of the vector between min and max values.
+    parameters:
+    - name: vec
+      comment: Vector to be clamped.
+      type: vector
+    - name: min
+      comment: Minimum vector value.
+      type: vector
+    - name: max
+      comment: Maximum vector value.
+      type: vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: max
+    comment: Applies math.max to each component of the vectors.
+    parameters:
+    - name: vec
+      comment: Vector to find the maximum from.
+      type: vector
+    - name: ...
+      comment: Vectors to find the maximum from.
+      type: ...vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: min
+    comment: Applies math.min to each component of the vectors.
+    parameters:
+    - name: vec
+      comment: Vector to find the minimum from.
+      type: vector
+    - name: ...
+      comment: Vectors to find the minimum from.
+      type: ...vector
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  - name: lerp
+    comment: Linearly interpolates between start_vec and end_vec using factor t.
+    parameters:
+    - name: start_vec
+      comment: Starting vector.
+      type: vector
+    - name: end_vec
+      comment: Ending vector.
+      type: vector
+    - name: t
+      comment: Interpolation factor.
+      type: number
+    return-type: vector
+    must-use: true
+    fastcall: true
+    typechecker: {checked: true}
+  constants:
+  - name: zero
+    comment: Vector constant with all components set to 0.
+    type: vector
+    value: vector(0, 0, 0)
+  - name: one
+    comment: Vector constant with all components set to 1.
+    type: vector
+    value: vector(1, 1, 1)
+- name: ll
+  # auto-generated from lsl_definitions.yaml
+  comment: Library for functions shared between LSL and SLua.
+- name: llcompat
+  # auto-generated from lsl_definitions.yaml
+  comment: Like ll, but exactly matches LSL semantics.
+# auto-generated from lsl_definitions.yaml
+constants:
+- name: "_G"
+  comment: Table of Lua builtin globals.
+  type: any
+  value: '{}'
+- name: _VERSION
+  type: string
+  value: '"Luau"'
+
+# Everything below here is only for keywords.xml generation, not typechecking
+controls:
+  do:
+    tooltip: "Lua do block: do ... end"
+  if:
+    tooltip: "Lua if statement: if condition then ... end"
+  then:
+    tooltip: "Lua then keyword: introduces the block executed when an if condition is true."
+  else:
+    tooltip: "Lua else keyword: specifies the alternative block in an if/else statement."
+  elseif:
+    tooltip: "Lua elseif keyword: provides an additional conditional branch in an if statement."
+  end:
+    tooltip: "Lua end keyword: closes control structures like if, do, while, for, and function."
+  for:
+    tooltip: "Lua for loop (numeric, generic or generalized): for var = start, end, step do ... end OR for key, val in iterator do ... end OR for key, val in tab do ... end"
+  return:
+    tooltip: "Lua return statement: returns a value from a function."
+  while:
+    tooltip: "Lua while loop: while condition do ... end"
+  repeat:
+    tooltip: "Lua repeat loop: repeat ... until condition"
+  until:
+    tooltip: "Lua until keyword: ends a repeat loop by testing a condition."
+  function:
+    tooltip: "Lua function keyword: begins a function definition."
+  break:
+    tooltip: "Lua break statement: exits the nearest loop."
+  continue:
+    tooltip: "Luau continue statement: skips to the next loop iteration."
+  local:
+    tooltip: "Lua local keyword: declares a local variable or function."
+  const:
+    tooltip: "Luau const keyword: declares a local constant variable or function."
+  export:
+    tooltip: "Luau export keyword: declares a type that can be used outside this module."
+  read:
+    tooltip: "Luau read keyword: declares a type field is read-only."
+  write:
+    tooltip: "Luau write keyword: declares a type field is write-only."
+  in:
+    tooltip: "Lua in keyword: used in generic for loops to iterate over elements."
+  not:
+    tooltip: "Lua not operator: performs logical negation."
+  and:
+    tooltip: "Lua and operator: performs logical conjunction."
+  or:
+    tooltip: "Lua or operator: performs logical disjunction."
+builtin-types:
+  any:
+    tooltip: The unspecified type. Disables type-checking. Use unknown instead to use type-checking.
+  boolean:
+    tooltip: "Boolean: represents a true or false value."
+  buffer:
+    tooltip: Read-write binary data.
+  integer:
+    tooltip: 64-bit integer.
+  never:
+    tooltip: The empty type that contains no values.
+  number:
+    tooltip: Double‑precision (64-bit) floating point number.
+  string:
+    tooltip: Read-only binary data. Usually UTF-8-encoded text.
+  thread:
+    tooltip: Represents a coroutine.
+  unknown:
+    tooltip: The union of every type. Similar to any without disabling type-checking.
+builtin-constants:
+  - name: nil
+    comment: "Lua nil: represents the absence of a useful value."
+    type: nil
+    value: nil
+  - name: 'true'
+    comment: "Lua true: Boolean true value."
+    type: boolean
+    value: 'true'
+  - name: 'false'
+    comment: "Lua false: Boolean false value."
+    type: boolean
+    value: 'false'
+metamethods:
+  - name: __add
+    comment: "Defines behavior for the addition (+) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Left operand of the addition."
+      - name: right
+        type: any
+        comment: "Right operand of the addition."
+    return-type: any
+  - name: __call
+    comment: "Called when the table or object is called as if it were a function."
+    type-parameters: [A..., R...]
+    type: "<A..., R...>(self: {}, A...) -> R..."
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Table being invoked."
+      - name: ...
+        type: "A..."
+        comment: "Arguments passed to the call."
+    return-type: "R..."
+  - name: __concat
+    comment: "Defines behavior for the concatenation (..) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Left operand or object to concatenate."
+      - name: right
+        type: any
+        comment: "Right operand or object to concatenate."
+    return-type: any
+  - name: __div
+    comment: "Defines behavior for the division (/) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Left operand of the division (dividend)."
+      - name: right
+        type: any
+        comment: "Right operand of the division (divisor)."
+    return-type: any
+  - name: __eq
+    comment: "Defines behavior for the equality (==) operator."
+    type: "(left: {}, right: {}) -> boolean"
+    parameters:
+      - name: left
+        type: '{}'
+        comment: "First value to compare."
+      - name: right
+        type: '{}'
+        comment: "Second value to compare."
+    return-type: boolean
+  - name: __idiv
+    comment: "Defines behavior for the floor division (//) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Left operand of the floor division."
+      - name: right
+        type: any
+        comment: "Right operand of the floor division."
+    return-type: any
+  - name: __index
+    comment: "Called when looking up a key that does not exist in the table."
+    type: "((self: {}, key: any) -> any) | { [any]: any }"
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Table being accessed."
+      - name: key
+        type: any
+        comment: "Key that was not found in the table."
+    return-type: any
+    variants:
+      - comment: "Called as a function fallback when looking up a key that does not exist in the table."
+        type: "(self: {}, key: any) -> any"
+        parameters:
+          - name: self
+            type: '{}'
+            comment: "Table being accessed."
+          - name: key
+            type: any
+            comment: "Key that was not found in the table."
+        return-type: any
+      - comment: "A fallback dictionary/table used to search for missing keys."
+        type: "{ [any]: any }"
+        return-type: any
+  - name: __iter
+    comment: "Called before generalized iteration begins on a table or userdata. Returns an iterator generator function, a state object, and an initial control variable."
+    type-parameters: [S, K, V...]
+    type: "<S, K, V...>(self: {}) -> ((state: S, index: K) -> (K?, V...), S, K)"
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Table or object being iterated."
+    return-type: "((state: S, index: K) -> (K?, V...), S, K)"
+  - name: __jsonhint
+    comment: "String property used by lljson.encode to enforce table formatting rules."
+    type: '"array" | "object"'
+  - name: __le
+    comment: "Defines behavior for the less-than-or-equal-to (<=) operator."
+    type: "(left: {}, right: {}) -> boolean"
+    parameters:
+      - name: left
+        type: '{}'
+        comment: "Left operand of the comparison."
+      - name: right
+        type: '{}'
+        comment: "Right operand of the comparison."
+    return-type: boolean
+  - name: __len
+    comment: "Defines behavior for the length (#) operator."
+    type: "(self: {}) -> number"
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Object whose length is being measured."
+    return-type: number
+  - name: __lt
+    comment: "Defines behavior for the less-than (<) operator."
+    type: "(left: {}, right: {}) -> boolean"
+    parameters:
+      - name: left
+        type: '{}'
+        comment: "Left operand of the comparison."
+      - name: right
+        type: '{}'
+        comment: "Right operand of the comparison."
+    return-type: boolean
+  - name: __metatable
+    comment: "Protects the metatable. If present, getmetatable returns this value, and setmetatable will raise an error."
+    type: any
+  - name: __mod
+    comment: "Defines behavior for the modulo (%) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Left operand (dividend)."
+      - name: right
+        type: any
+        comment: "Right operand (divisor)."
+    return-type: any
+  - name: __mode
+    comment: "Controls weak mapping of table elements. Valid values are 'k' (weak keys), 'v' (weak values), or 'kv' (both)."
+    type: '"k" | "v" | "kv"'
+  - name: __mul
+    comment: "Defines behavior for the multiplication (*) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Left operand of the multiplication."
+      - name: right
+        type: any
+        comment: "Right operand of the multiplication."
+    return-type: any
+  - name: __newindex
+    comment: "Called when assigning a value to a key that does not exist in the table."
+    type: "((self: {}, key: any, value: any) -> ()) | { [any]: any }"
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Table being assigned."
+      - name: key
+        type: any
+        comment: "Key being assigned."
+      - name: value
+        type: any
+        comment: "Value being assigned to the key."
+    return-type: "()"
+    variants:
+      - comment: "Called as a function fallback when assigning a value to a key that does not exist in the table."
+        type: "(self: {}, key: any, value: any) -> ()"
+        parameters:
+          - name: self
+            type: '{}'
+            comment: "Table being assigned."
+          - name: key
+            type: any
+            comment: "Key being created."
+          - name: value
+            type: any
+            comment: "Value being assigned to the key."
+        return-type: "()"
+      - comment: "A fallback dictionary/table where new key-value assignments are forwarded."
+        type: "{ [any]: any }"
+        return-type: "()"
+  - name: __pow
+    comment: "Defines behavior for the exponentiation (^) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Base value."
+      - name: right
+        type: any
+        comment: "Exponent value."
+    return-type: any
+  - name: __sub
+    comment: "Defines behavior for the subtraction (-) operator."
+    type: "(left: any, right: any) -> any"
+    parameters:
+      - name: left
+        type: any
+        comment: "Left operand of the subtraction (minuend)."
+      - name: right
+        type: any
+        comment: "Right operand of the subtraction (subtrahend)."
+    return-type: any
+  - name: __tojson
+    comment: "Called during JSON serialization (with lljson.encode or lljson.slencode). Returns an alternative representation of the table to be serialized in its place."
+    type: '(self: {}, ctx: { mode: "json" | "sljson", tight: boolean }) -> any'
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Table being serialized."
+      - name: ctx
+        type: '{ mode: "json" | "sljson", tight: boolean }'
+        comment: "Context table containing metadata about the current serialization process, including 'mode' ('json' or 'sljson') and 'tight' (boolean)."
+    return-type: any
+  - name: __tostring
+    comment: "Called by tostring to convert the value to a string."
+    type: "(self: {}) -> string"
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Object being converted to a string."
+    return-type: string
+  - name: __unm
+    comment: "Defines behavior for the unary negation (-) operator."
+    type: "(self: {}) -> any"
+    parameters:
+      - name: self
+        type: '{}'
+        comment: "Value being negated."
+    return-type: any
