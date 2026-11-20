@@ -4,6 +4,7 @@
 #include "homeworldz/script/parser.h"
 
 #include <cstdint>
+#include <exception>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -167,16 +168,56 @@ enum class Scope { Local, Global };
 class Compiler {
 public:
     Program compile(const ast::Script& script) {
-        for (const auto& global : script.globals) {
-            declare_global(global);
-        }
-        for (const auto& handler : script.events) {
-            compile_event(handler);
+        try {
+            for (const auto& global : script.globals) {
+                declare_global(global);
+            }
+            for (const auto& handler : script.events) {
+                compile_event(handler);
+            }
+        } catch (const ScriptError& error) {
+            // A semantic error is raised without a place; it belongs to the
+            // node being compiled when it was raised.
+            if (error.line != 0 || line_ == 0) throw;
+            throw ScriptError(error.message, line_, column_);
         }
         return std::move(program_);
     }
 
 private:
+    // The node being compiled, for placing errors. Entering a node moves here;
+    // leaving it normally moves back to its parent, so a check the parent makes
+    // after compiling its operands is reported at the parent. An error leaves
+    // the position where it was raised.
+    class Here {
+    public:
+        template <typename Node>
+        Here(Compiler& compiler, const Node& node)
+            : compiler_(compiler), line_(compiler.line_), column_(compiler.column_),
+              exceptions_(std::uncaught_exceptions()) {
+            if (node.line != 0) {
+                compiler.line_ = node.line;
+                compiler.column_ = node.column;
+            }
+        }
+        ~Here() {
+            if (std::uncaught_exceptions() != exceptions_) return;
+            compiler_.line_ = line_;
+            compiler_.column_ = column_;
+        }
+        Here(const Here&) = delete;
+        Here& operator=(const Here&) = delete;
+
+    private:
+        Compiler& compiler_;
+        int line_;
+        int column_;
+        int exceptions_;
+    };
+
+    int line_ = 0;
+    int column_ = 0;
+
     struct Symbol {
         Scope scope;
         std::int32_t slot;
@@ -184,6 +225,7 @@ private:
     };
 
     void declare_global(const ast::GlobalVar& global) {
+        const Here position(*this, global);
         if (globals_.count(global.name) != 0) {
             throw ScriptError("global '" + global.name + "' already declared");
         }
@@ -250,6 +292,7 @@ private:
     }
 
     void compile_event(const ast::EventHandler& handler) {
+        const Here position(*this, handler);
         const std::vector<Type>* signature = lookup_event(handler.name);
         if (signature == nullptr) {
             throw ScriptError("unsupported event '" + handler.name + "' in this PoC");
@@ -340,6 +383,7 @@ private:
     }
 
     void compile_statement(const ast::Stmt& stmt) {
+        const Here position(*this, stmt);
         if (const auto* block = dynamic_cast<const ast::Block*>(&stmt)) {
             compile_block(*block);
         } else if (const auto* decl = dynamic_cast<const ast::VarDecl*>(&stmt)) {
@@ -428,6 +472,7 @@ private:
     // Emits code that pushes exactly one value (unless the result is Void, for a
     // void host call used as a statement) and returns the value's static type.
     Type compile_expression(const ast::Expr& expr) {
+        const Here position(*this, expr);
         if (const auto* lit = dynamic_cast<const ast::IntLiteral*>(&expr)) {
             emit(Op::PushConst, add_constant(Value::make_integer(lit->value)));
             return Type::Integer;

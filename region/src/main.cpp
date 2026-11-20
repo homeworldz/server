@@ -3866,7 +3866,7 @@ int main(int argc, char* argv[]) {
                 {item.asset_id, item.item_id, entity.object_id, entity.owner_id},
                 source, effective_enabled);
         } catch (const std::exception& error) {
-            return homeworldz::script::FalconRezResult{false, false, error.what()};
+            return homeworldz::script::FalconRezResult{false, false, error.what(), error.what()};
         }
     };
     // Re-send an entity's ObjectUpdate to every nearby viewer. A script rez,
@@ -10979,7 +10979,7 @@ int main(int argc, char* argv[]) {
                                           homeworldz::viewer::inventory_asset_update_complete_xml(
                                               update.asset_id, update.asset_type == 10,
                                               compiled && compiled->compiled,
-                                              compiled ? compiled->diagnostic : std::string{}))
+                                              compiled ? compiled->viewer_error : std::string{}))
                                     : homeworldz::http::response_for_content(
                                           request, 500, "application/llsd+xml", "<llsd><undef/></llsd>");
                                 std::cout << "{\"level\":" << (stored ? "\"info\"" : "\"warn\"")

@@ -15,6 +15,10 @@ namespace homeworldz::script::ast {
 
 struct Expr {
     virtual ~Expr() = default;
+    // Where the expression starts in the source, from 1; an operator's own
+    // position for a binary expression. Used to place compile errors.
+    int line = 0;
+    int column = 0;
 };
 using ExprPtr = std::unique_ptr<Expr>;
 
@@ -69,6 +73,8 @@ struct Call : Expr {
 
 struct Stmt {
     virtual ~Stmt() = default;
+    int line = 0;
+    int column = 0;
 };
 using StmtPtr = std::unique_ptr<Stmt>;
 
@@ -114,6 +120,8 @@ struct EventHandler {
     std::string name; // "state_entry", "touch_start", ...
     std::vector<Param> params;
     std::unique_ptr<Block> body;
+    int line = 0;
+    int column = 0;
 };
 
 // A script-level global variable, persistent across events. Its initializer,
@@ -124,6 +132,8 @@ struct GlobalVar {
     Type type = Type::Integer;
     std::string name;
     ExprPtr init; // may be null
+    int line = 0;
+    int column = 0;
 };
 
 // The compiled script: globals plus the default state's event handlers. Named

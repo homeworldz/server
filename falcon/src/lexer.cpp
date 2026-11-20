@@ -34,9 +34,8 @@ TokenKind keyword_kind(const std::string& word) {
     return it == keywords.end() ? TokenKind::Identifier : it->second;
 }
 
-std::string located(std::string message, int line, std::size_t column) {
-    return std::move(message) + " (line " + std::to_string(line) +
-           ", column " + std::to_string(column) + ")";
+ScriptError located(const std::string& message, int line, std::size_t column) {
+    return ScriptError(message, line, static_cast<int>(column));
 }
 
 } // namespace
@@ -81,8 +80,8 @@ std::vector<Token> tokenize(const std::string& source) {
                 ++i;
             }
             if (i + 1 >= n) {
-                throw ScriptError(located(
-                    "unterminated block comment", comment_line, comment_column));
+                throw located(
+                    "unterminated block comment", comment_line, comment_column);
             }
             i += 2;
             continue;
@@ -90,6 +89,7 @@ std::vector<Token> tokenize(const std::string& source) {
 
         Token token;
         token.line = line;
+        token.column = static_cast<int>(i - line_start + 1);
 
         if (is_ident_start(c)) {
             std::size_t start = i;
@@ -107,8 +107,8 @@ std::vector<Token> tokenize(const std::string& source) {
             while (i < n && std::isdigit(static_cast<unsigned char>(source[i])) != 0) {
                 value = value * 10 + (source[i] - '0');
                 if (value > 0x7fffffffLL) {
-                    throw ScriptError(located(
-                        "integer literal out of range", line, literal_column));
+                    throw located(
+                        "integer literal out of range", line, literal_column);
                 }
                 ++i;
             }
@@ -159,15 +159,15 @@ std::vector<Token> tokenize(const std::string& source) {
                     continue;
                 }
                 if (ch == '\n') {
-                    throw ScriptError(located(
-                        "unterminated string literal", string_line, string_column));
+                    throw located(
+                        "unterminated string literal", string_line, string_column);
                 }
                 text.push_back(ch);
                 ++i;
             }
             if (i >= n) {
-                throw ScriptError(located(
-                    "unterminated string literal", string_line, string_column));
+                throw located(
+                    "unterminated string literal", string_line, string_column);
             }
             ++i; // closing quote
             token.kind = TokenKind::StringLiteral;
@@ -222,15 +222,15 @@ std::vector<Token> tokenize(const std::string& source) {
             }
             break;
         default:
-            throw ScriptError(located(
+            throw located(
                 std::string("unexpected character '") + c + "'",
-                line, i - line_start + 1));
+                line, i - line_start + 1);
         }
         ++i;
         tokens.push_back(std::move(token));
     }
 
-    tokens.push_back(Token{TokenKind::End, {}, 0, 0.0, line});
+    tokens.push_back(Token{TokenKind::End, {}, 0, 0.0, line, static_cast<int>(n - line_start + 1)});
     return tokens;
 }
 

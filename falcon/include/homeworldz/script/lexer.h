@@ -19,7 +19,17 @@ namespace homeworldz::script {
 
 // Raised for malformed source (unterminated string, stray character, etc.).
 struct ScriptError : std::runtime_error {
-    using std::runtime_error::runtime_error;
+    // An error with no place in the source, or whose place is not known yet.
+    explicit ScriptError(const std::string& what) : std::runtime_error(what), message(what) {}
+    // An error at a place in the source. Lines and columns count from 1.
+    ScriptError(const std::string& what, int at_line, int at_column)
+        : std::runtime_error(what + " (line " + std::to_string(at_line) + ", column " +
+                             std::to_string(at_column) + ")"),
+          message(what), line(at_line), column(at_column) {}
+
+    std::string message; // what() without the position
+    int line = 0;        // 0 when the position is not known
+    int column = 0;
 };
 
 enum class TokenKind : std::uint8_t {
@@ -64,6 +74,7 @@ struct Token {
     std::int32_t integer = 0; // value for IntLiteral
     double number = 0.0;      // value for FloatLiteral
     int line = 1;
+    int column = 1;
 };
 
 // Tokenizes the whole source. Throws ScriptError on the first lexical error.

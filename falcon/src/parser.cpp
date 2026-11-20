@@ -65,7 +65,7 @@ public:
         expect(TokenKind::RBrace, "expected '}' to close default state");
         expect(TokenKind::End, "unexpected trailing tokens after default state");
         if (script.events.empty()) {
-            throw ScriptError("the default state has no event handlers");
+            fail("the default state has no event handlers");
         }
         return script;
     }
@@ -91,10 +91,23 @@ private:
         return false;
     }
 
+    // A syntax error at the token the parser is looking at.
+    [[noreturn]] void fail(const std::string& message) const {
+        throw ScriptError(message, peek().line, peek().column);
+    }
+
+    // A node that starts at the given token.
+    template <typename Node>
+    static std::unique_ptr<Node> make(const Token& at) {
+        auto node = std::make_unique<Node>();
+        node->line = at.line;
+        node->column = at.column;
+        return node;
+    }
+
     const Token& expect(TokenKind kind, const char* message) {
         if (!check(kind)) {
-            throw ScriptError(std::string(message) + " (line " +
-                              std::to_string(peek().line) + ")");
+            fail(message);
         }
         return advance();
     }
@@ -105,11 +118,13 @@ private:
         if (match(TokenKind::KwKey)) return Type::Key;
         if (match(TokenKind::KwVector)) return Type::Vector;
         if (match(TokenKind::KwRotation)) return Type::Rotation;
-        throw ScriptError("expected a type (line " + std::to_string(peek().line) + ")");
+        fail("expected a type");
     }
 
     ast::GlobalVar parse_global() {
         ast::GlobalVar global;
+        global.line = peek().line;
+        global.column = peek().column;
         global.type = type_keyword();
         global.name = expect(TokenKind::Identifier, "expected global variable name").text;
         if (match(TokenKind::Assign)) {
@@ -121,6 +136,8 @@ private:
 
     ast::EventHandler parse_event_handler() {
         ast::EventHandler handler;
+        handler.line = peek().line;
+        handler.column = peek().column;
         handler.name = expect(TokenKind::Identifier, "expected an event name").text;
         expect(TokenKind::LParen, "expected '(' after event name");
         if (!check(TokenKind::RParen)) {
@@ -140,8 +157,8 @@ private:
     }
 
     std::unique_ptr<ast::Block> parse_block() {
+        auto block = make<ast::Block>(peek());
         expect(TokenKind::LBrace, "expected '{'");
-        auto block = std::make_unique<ast::Block>();
         while (!check(TokenKind::RBrace) && !check(TokenKind::End)) {
             block->statements.push_back(parse_statement());
         }
@@ -164,21 +181,21 @@ private:
         }
         // Assignment (ident = expr;) or an expression statement (e.g. a call).
         if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Assign) {
-            auto assign = std::make_unique<ast::Assign>();
+            auto assign = make<ast::Assign>(peek());
             assign->name = advance().text;
             expect(TokenKind::Assign, "expected '='");
             assign->value = parse_expression(0);
             expect(TokenKind::Semicolon, "expected ';' after assignment");
             return assign;
         }
-        auto stmt = std::make_unique<ast::ExprStmt>();
+        auto stmt = make<ast::ExprStmt>(peek());
         stmt->expr = parse_expression(0);
         expect(TokenKind::Semicolon, "expected ';' after expression");
         return stmt;
     }
 
     ast::StmtPtr parse_var_decl() {
-        auto decl = std::make_unique<ast::VarDecl>();
+        auto decl = make<ast::VarDecl>(peek());
         decl->type = type_keyword();
         decl->name = expect(TokenKind::Identifier, "expected variable name").text;
         if (match(TokenKind::Assign)) {
@@ -189,9 +206,8 @@ private:
     }
 
     ast::StmtPtr parse_while() {
-        advance(); // while
+        auto node = make<ast::While>(advance()); // while
         expect(TokenKind::LParen, "expected '(' after 'while'");
-        auto node = std::make_unique<ast::While>();
         node->condition = parse_expression(0);
         expect(TokenKind::RParen, "expected ')' after condition");
         node->body = parse_block();
@@ -199,16 +215,15 @@ private:
     }
 
     ast::StmtPtr parse_if() {
-        advance(); // if
+        auto node = make<ast::If>(advance()); // if
         expect(TokenKind::LParen, "expected '(' after 'if'");
-        auto node = std::make_unique<ast::If>();
         node->condition = parse_expression(0);
         expect(TokenKind::RParen, "expected ')' after condition");
         node->then_branch = parse_block();
         if (match(TokenKind::KwElse)) {
             if (check(TokenKind::KwIf)) {
                 // `else if` is an `else` whose block is one more `if`.
-                node->else_branch = std::make_unique<ast::Block>();
+                node->else_branch = make<ast::Block>(peek());
                 node->else_branch->statements.push_back(parse_if());
             } else {
                 node->else_branch = parse_block();
@@ -224,9 +239,9 @@ private:
             if (prec < 0 || prec < min_precedence) {
                 break;
             }
-            const TokenKind op_kind = advance().kind;
-            auto binary = std::make_unique<ast::Binary>();
-            binary->op = binary_op_of(op_kind);
+            const Token& op = advance();
+            auto binary = make<ast::Binary>(op);
+            binary->op = binary_op_of(op.kind);
             binary->lhs = std::move(left);
             binary->rhs = parse_expression(prec + 1); // left-associative
             left = std::move(binary);
@@ -240,19 +255,19 @@ private:
             (peek(1).kind == TokenKind::KwInteger || peek(1).kind == TokenKind::KwString ||
              peek(1).kind == TokenKind::KwKey) &&
             peek(2).kind == TokenKind::RParen) {
-            advance(); // (
+            const Token& open = advance(); // (
             const Type target = check(TokenKind::KwString) ? Type::String
                               : check(TokenKind::KwKey)    ? Type::Key
                                                            : Type::Integer;
             advance(); // type
             advance(); // )
-            auto cast = std::make_unique<ast::Cast>();
+            auto cast = make<ast::Cast>(open);
             cast->target = target;
             cast->operand = parse_unary();
             return cast;
         }
         if (check(TokenKind::Minus) || check(TokenKind::Bang)) {
-            auto unary = std::make_unique<ast::Unary>();
+            auto unary = make<ast::Unary>(peek());
             unary->op = advance().kind == TokenKind::Minus ? ast::UnaryOp::Negate
                                                            : ast::UnaryOp::Not;
             unary->operand = parse_unary();
@@ -271,8 +286,7 @@ private:
         if (check(TokenKind::FloatLiteral)) return sign * advance().number;
         if (check(TokenKind::IntLiteral))
             return sign * static_cast<double>(advance().integer);
-        throw ScriptError("expected a number inside a vector or rotation literal (line " +
-                          std::to_string(peek().line) + ")");
+        fail("expected a number inside a vector or rotation literal");
     }
 
     ast::ExprPtr parse_primary() {
@@ -281,34 +295,33 @@ private:
         // resolution of the ambiguity, and it is why the literal is only
         // recognized here rather than anywhere an operator could appear.
         if (check(TokenKind::Less)) {
-            advance();
-            auto node = std::make_unique<ast::VectorLiteral>();
+            auto node = make<ast::VectorLiteral>(advance());
             node->components.push_back(parse_vector_component());
             while (match(TokenKind::Comma))
                 node->components.push_back(parse_vector_component());
             expect(TokenKind::Greater, "expected '>' to close a vector or rotation literal");
             if (node->components.size() != 3 && node->components.size() != 4)
-                throw ScriptError("a vector takes 3 components and a rotation 4 (line " +
-                                  std::to_string(peek().line) + ")");
+                throw ScriptError("a vector takes 3 components and a rotation 4", node->line,
+                                  node->column);
             return node;
         }
         if (check(TokenKind::FloatLiteral))
-            throw ScriptError("floats are only available inside vector and rotation "
-                              "literals so far (line " + std::to_string(peek().line) + ")");
+            fail("floats are only available inside vector and rotation literals so far");
         if (check(TokenKind::IntLiteral)) {
-            auto node = std::make_unique<ast::IntLiteral>();
+            auto node = make<ast::IntLiteral>(peek());
             node->value = advance().integer;
             return node;
         }
         if (check(TokenKind::StringLiteral)) {
-            auto node = std::make_unique<ast::StringLiteral>();
+            auto node = make<ast::StringLiteral>(peek());
             node->value = advance().text;
             return node;
         }
         if (check(TokenKind::Identifier)) {
-            std::string name = advance().text;
+            const Token& identifier = advance();
+            std::string name = identifier.text;
             if (match(TokenKind::LParen)) {
-                auto call = std::make_unique<ast::Call>();
+                auto call = make<ast::Call>(identifier);
                 call->callee = std::move(name);
                 if (!check(TokenKind::RParen)) {
                     call->args.push_back(parse_expression(0));
@@ -319,7 +332,7 @@ private:
                 expect(TokenKind::RParen, "expected ')' to close call arguments");
                 return call;
             }
-            auto ref = std::make_unique<ast::VarRef>();
+            auto ref = make<ast::VarRef>(identifier);
             ref->name = std::move(name);
             return ref;
         }
@@ -328,8 +341,7 @@ private:
             expect(TokenKind::RParen, "expected ')'");
             return inner;
         }
-        throw ScriptError("expected an expression (line " +
-                          std::to_string(peek().line) + ")");
+        fail("expected an expression");
     }
 
     std::vector<Token> tokens_;

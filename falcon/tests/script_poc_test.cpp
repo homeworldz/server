@@ -206,6 +206,39 @@ int main() {
                 "lexical diagnostics include line and column");
     }
 
+    // Syntax and semantic diagnostics carry the position too, at the token or
+    // the node the error belongs to.
+    {
+        const auto error_of = [](const std::string& source) {
+            try {
+                compile_source(source);
+            } catch (const ScriptError& error) {
+                return error;
+            }
+            return ScriptError("compiled");
+        };
+        // A missing semicolon is noticed at the token that should have been one.
+        auto error = error_of("default\n{\n    state_entry()\n    {\n        llOwnerSay(\"a\")\n    }\n}");
+        require(error.line == 6 && error.column == 5 &&
+                    std::string(error.what()) == "expected ';' after expression (line 6, column 5)",
+                "a syntax error names the token it stopped at");
+        // An unknown function is reported at the call, not at its argument.
+        error = error_of("default\n{\n    state_entry()\n    {\n        integer i = 1;\n"
+                         "        llNoSuchThing(i);\n    }\n}");
+        require(error.line == 6 && error.column == 9 && error.message == "unknown function 'llNoSuchThing'",
+                "an unknown function is reported at the call");
+        // A type error found after both operands compiled belongs to the operator.
+        error = error_of("default\n{\n    state_entry()\n    {\n        integer i = \"x\" & 1;\n    }\n}");
+        require(error.line == 5 && error.column == 25, "an operator's type error is reported at the operator");
+        // A bad argument is reported at the call that refused it.
+        error = error_of("default { state_entry() {\n  llSay(\"zero\", \"hi\");\n} }");
+        require(error.line == 2 && error.column == 3, "a refused argument is reported at its call");
+        error = error_of("integer a;\ninteger a;\ndefault { state_entry() { } }");
+        require(error.line == 2 && error.column == 1, "a duplicate global is reported where it is declared again");
+        error = error_of("default {\n  state_entry() { }\n  no_such_event() { }\n}");
+        require(error.line == 3 && error.column == 3, "an unsupported event is reported at its handler");
+    }
+
     // (6) Events: state_entry then repeated touch_start, mutating a global.
     const Program touch = compile_source(kTouchSource);
     {

@@ -56,6 +56,14 @@ int main() {
         {"bad", "bad", "object", "owner"},
         "default { state_entry() { integer value = \"bad\"; } }", true);
     assert(!invalid.compiled && !invalid.diagnostic.empty() && runtime.size() == 3);
+    // The viewer's script editor reads the position from the front of the
+    // error, counted from 0, and moves the cursor there on a click.
+    const auto placed = runtime.rez(
+        {"bad", "bad", "object", "owner"},
+        "default\n{\n    state_entry()\n    {\n        llNoSuchThing();\n    }\n}", true);
+    assert(!placed.compiled && runtime.size() == 3);
+    assert(placed.viewer_error == "(4, 8) : ERROR : unknown function 'llNoSuchThing'");
+    assert(placed.diagnostic == "unknown function 'llNoSuchThing' (line 5, column 9)");
 
     assert(runtime.erase("object", "item") && runtime.size() == 2);
 
@@ -157,5 +165,62 @@ int main() {
         default { state_entry() { llSitTarget(<0, 0, 0, 0, 0>, <0, 0, 0, 1>); } }
     )LSL", true);
     assert(!miscounted.compiled);
+
+    // Scheduling. Four scripts that never finish, and a tick budget that
+    // reaches only one of them: every one must still get its turn. Walking the
+    // scripts in a fixed order from the start gave every tick to the same one.
+    {
+        std::vector<FalconHostMessage> said;
+        FalconRuntime fair([&](FalconHostMessage message) { said.push_back(std::move(message)); });
+        const std::string looper = R"LSL(
+            default { state_entry() { integer i = 0; while (i < 1) { llOwnerSay("turn"); } } }
+        )LSL";
+        const std::vector<std::string> items{"loop-a", "loop-b", "loop-c", "loop-d"};
+        for (const auto& item : items)
+            assert(fair.rez({"loop-asset", item, "loop-object-" + item, "owner"}, looper, true).running);
+        // One source, one program.
+        assert(fair.size() == 4 && fair.compiled_programs() == 1);
+        for (int tick = 0; tick < 4; ++tick) {
+            const auto ran = fair.run_tick(64, 64);
+            assert(ran.scripts_visited == 1 && ran.instructions == 64);
+        }
+        for (const auto& item : items) {
+            bool spoke = false;
+            for (const auto& message : said)
+                if (message.identity.inventory_item_id == item) spoke = true;
+            assert(spoke);
+        }
+        // With budget for all four, each runs one slice a tick, no more.
+        const auto all = fair.run_tick(1000, 64);
+        assert(all.scripts_visited == 4 && all.instructions == 256);
+
+        // A script stopped part-way through an event is skipped, and picks up
+        // where it was when it is started again.
+        assert(fair.set_enabled("loop-object-loop-a", "loop-a", false));
+        assert(fair.run_tick(1000, 64).scripts_visited == 3);
+        assert(fair.set_enabled("loop-object-loop-a", "loop-a", true));
+        assert(fair.run_tick(1000, 64).scripts_visited == 4);
+
+        // Removing a script that is waiting its turn leaves the rest running,
+        // and the program stays while any script uses it.
+        assert(fair.erase("loop-object-loop-b", "loop-b"));
+        assert(fair.run_tick(1000, 64).scripts_visited == 3 && fair.compiled_programs() == 1);
+        // Saving a different source into an item replaces the script there.
+        assert(fair.rez({"other-asset", "loop-c", "loop-object-loop-c", "owner"},
+                        "default { state_entry() { llOwnerSay(\"replaced\"); } }", true).running);
+        assert(fair.size() == 3 && fair.compiled_programs() == 2);
+        said.clear();
+        assert(fair.run_tick(1000, 64).scripts_visited == 3);
+        bool replaced = false;
+        for (const auto& message : said)
+            if (message.text == "replaced" && message.identity.inventory_item_id == "loop-c") replaced = true;
+        assert(replaced);
+        // The last scripts on the looping source go, and so does its program.
+        assert(fair.erase("loop-object-loop-a", "loop-a") && fair.erase("loop-object-loop-d", "loop-d"));
+        assert(fair.size() == 1 && fair.compiled_programs() == 1);
+        // An idle region costs a tick nothing.
+        fair.run_tick();
+        assert(fair.run_tick().scripts_visited == 0);
+    }
     return 0;
 }

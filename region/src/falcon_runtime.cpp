@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 
@@ -45,23 +46,30 @@ struct FalconRuntime::Impl {
         static constexpr std::size_t max_pending = 0x40;
 
         Identity identity;
-        Program program;
+        // Shared with every other script compiled from the same source; the
+        // VM holds a reference to it, so it is declared first.
+        std::shared_ptr<const Program> program;
         VM vm;
         bool enabled{};
         bool trapped{};
+        // Whether the script is in the runtime's ready queue.
+        bool queued{};
         std::deque<PendingEvent> pending;
 
+        bool has_work() const { return !vm.finished() || !pending.empty(); }
+
         bool queue_event(std::string event, std::vector<Value> args) {
-            if (!enabled || trapped || !program.find_event(event)) return false;
+            if (!enabled || trapped || !program->find_event(event)) return false;
             if (pending.size() >= max_pending) return false;
             pending.push_back({std::move(event), std::move(args)});
             return true;
         }
 
-        LiveScript(Identity script_identity, Program compiled, bool start_enabled,
+        LiveScript(Identity script_identity, std::shared_ptr<const Program> compiled,
+                   bool start_enabled,
                    const HostSink& sink, const SitTargetSink& sit_target_sink,
                    const RegionCall& region_call)
-            : identity(std::move(script_identity)), program(std::move(compiled)), vm(program),
+            : identity(std::move(script_identity)), program(std::move(compiled)), vm(*program),
               enabled(start_enabled) {
             const auto host_identity = identity;
             vm.set_host([sink, sit_target_sink, region_call, host_identity](
@@ -92,7 +100,7 @@ struct FalconRuntime::Impl {
                 }
                 return std::nullopt;
             });
-            if (enabled && program.find_event("state_entry"))
+            if (enabled && program->find_event("state_entry"))
                 vm.dispatch("state_entry", {});
         }
     };
@@ -101,6 +109,56 @@ struct FalconRuntime::Impl {
     SitTargetSink sit_target_sink;
     RegionCall region_call;
     std::unordered_map<std::string, std::unique_ptr<LiveScript>> scripts;
+    // The scripts in each object, so an event for one object does not walk
+    // every script in the region.
+    std::unordered_map<std::string, std::vector<LiveScript*>> by_object;
+    // Scripts with something to run, in the order they asked. A tick serves
+    // the front of the queue and a script that still has work rejoins at the
+    // back, so a script late in the region is never starved by ones ahead of
+    // it that never finish.
+    std::deque<LiveScript*> ready;
+    // One compiled program per distinct source: a region holds the same door
+    // script in hundreds of prims. Weak, so a program nothing runs is freed.
+    std::unordered_map<std::string, std::weak_ptr<const Program>> programs;
+
+    void mark_ready(LiveScript& script) {
+        if (script.queued || !script.enabled || script.trapped || !script.has_work()) return;
+        script.queued = true;
+        ready.push_back(&script);
+    }
+
+    bool queue_event(LiveScript& script, const std::string& event, const std::vector<Value>& args) {
+        if (!script.queue_event(event, args)) return false;
+        mark_ready(script);
+        return true;
+    }
+
+    std::shared_ptr<const Program> compile(std::string_view source) {
+        const std::string text(source);
+        if (const auto found = programs.find(text); found != programs.end())
+            if (auto program = found->second.lock()) return program;
+        auto program = std::make_shared<const Program>(compile_source(text));
+        // Entries whose scripts have all gone are swept when the table has
+        // clearly outgrown the scripts that could be using it.
+        if (programs.size() > scripts.size() + 0x40)
+            std::erase_if(programs, [](const auto& entry) { return entry.second.expired(); });
+        programs[text] = program;
+        return program;
+    }
+
+    bool erase(const std::string& key) {
+        const auto found = scripts.find(key);
+        if (found == scripts.end()) return false;
+        auto* script = found->second.get();
+        if (script->queued) std::erase(ready, script);
+        const auto object = by_object.find(script->identity.object_id);
+        if (object != by_object.end()) {
+            std::erase(object->second, script);
+            if (object->second.empty()) by_object.erase(object);
+        }
+        scripts.erase(found);
+        return true;
+    }
 };
 
 FalconRuntime::FalconRuntime(HostSink host_sink, SitTargetSink sit_target_sink,
@@ -119,17 +177,25 @@ FalconRezResult FalconRuntime::rez(Identity identity, std::string_view source,
         // Firestorm terminates script-editor uploads with a wire-format NUL.
         // It is not part of the LSL source and must not reach the lexer.
         while (!source.empty() && source.back() == '\0') source.remove_suffix(1);
-        auto program = compile_source(std::string(source));
+        auto program = impl_->compile(source);
         auto live = std::make_unique<Impl::LiveScript>(
             identity, std::move(program), enabled, impl_->sink, impl_->sit_target_sink,
             impl_->region_call);
-        impl_->scripts.insert_or_assign(
-            instance_key(identity.object_id, identity.inventory_item_id), std::move(live));
-        return {true, enabled, {}};
+        // A failed compile has already thrown, so a script being replaced
+        // keeps running until its replacement is ready.
+        const auto key = instance_key(identity.object_id, identity.inventory_item_id);
+        impl_->erase(key);
+        auto& stored = *impl_->scripts.emplace(key, std::move(live)).first->second;
+        impl_->by_object[identity.object_id].push_back(&stored);
+        impl_->mark_ready(stored);
+        return {true, enabled, {}, {}};
     } catch (const ScriptError& error) {
-        return {false, false, error.what()};
+        if (error.line == 0) return {false, false, error.what(), error.what()};
+        return {false, false, error.what(),
+                "(" + std::to_string(error.line - 1) + ", " + std::to_string(error.column - 1) +
+                    ") : ERROR : " + error.message};
     } catch (const std::exception& error) {
-        return {false, false, error.what()};
+        return {false, false, error.what(), error.what()};
     }
 }
 
@@ -138,24 +204,27 @@ bool FalconRuntime::set_enabled(std::string_view object_id,
     const auto found = impl_->scripts.find(instance_key(object_id, inventory_item_id));
     if (found == impl_->scripts.end()) return false;
     found->second->enabled = enabled;
+    // A script stopped part-way through an event, or with events waiting,
+    // picks up where it was.
+    impl_->mark_ready(*found->second);
     return true;
 }
 
 bool FalconRuntime::erase(std::string_view object_id, std::string_view inventory_item_id) {
-    return impl_->scripts.erase(instance_key(object_id, inventory_item_id)) != 0;
+    return impl_->erase(instance_key(object_id, inventory_item_id));
 }
 
 FalconRuntime::ScriptStatus FalconRuntime::object_script_status(
     std::string_view object_id) const {
     ScriptStatus status;
-    for (const auto& [key, script] : impl_->scripts) {
-        (void)key;
-        if (script->identity.object_id != object_id) continue;
+    const auto object = impl_->by_object.find(std::string(object_id));
+    if (object == impl_->by_object.end()) return status;
+    for (const auto* script : object->second) {
         status.scripted = true;
         if (script->enabled && !script->trapped &&
-            (script->program.find_event("touch_start") ||
-             script->program.find_event("touch") ||
-             script->program.find_event("touch_end")))
+            (script->program->find_event("touch_start") ||
+             script->program->find_event("touch") ||
+             script->program->find_event("touch_end")))
             status.handles_touch = true;
     }
     return status;
@@ -169,11 +238,10 @@ std::size_t FalconRuntime::dispatch_touch_start(std::string_view object_id,
 std::size_t FalconRuntime::dispatch_event(std::string_view object_id, const std::string& event,
                                           const std::vector<Value>& args) {
     std::size_t accepted = 0;
-    for (auto& [key, script] : impl_->scripts) {
-        (void)key;
-        if (script->identity.object_id != object_id) continue;
-        if (script->queue_event(event, args)) ++accepted;
-    }
+    const auto object = impl_->by_object.find(std::string(object_id));
+    if (object == impl_->by_object.end()) return accepted;
+    for (auto* script : object->second)
+        if (impl_->queue_event(*script, event, args)) ++accepted;
     return accepted;
 }
 
@@ -181,7 +249,7 @@ bool FalconRuntime::dispatch_to_script(std::string_view object_id,
                                        std::string_view inventory_item_id,
                                        const std::string& event, const std::vector<Value>& args) {
     const auto found = impl_->scripts.find(instance_key(object_id, inventory_item_id));
-    return found != impl_->scripts.end() && found->second->queue_event(event, args);
+    return found != impl_->scripts.end() && impl_->queue_event(*found->second, event, args);
 }
 
 FalconTickResult FalconRuntime::run_tick(std::uint64_t total_instruction_budget,
@@ -189,9 +257,13 @@ FalconTickResult FalconRuntime::run_tick(std::uint64_t total_instruction_budget,
     FalconTickResult result;
     if (total_instruction_budget == 0 || per_script_slice == 0) return result;
     auto remaining = total_instruction_budget;
-    for (auto& [key, script] : impl_->scripts) {
-        (void)key;
-        if (remaining == 0) break;
+    // Only the scripts waiting when the tick began: one that rejoins the queue
+    // gets its next slice on a later tick, so each runs at most one slice per
+    // tick. When the budget runs out, the rest stay at the front for the next.
+    for (auto waiting = impl_->ready.size(); waiting != 0 && remaining != 0; --waiting) {
+        auto* script = impl_->ready.front();
+        impl_->ready.pop_front();
+        script->queued = false;
         if (!script->enabled || script->trapped) continue;
         if (script->vm.finished()) {
             // Idle: seed the next queued event, or skip if nothing is pending.
@@ -211,10 +283,17 @@ FalconTickResult FalconRuntime::run_tick(std::uint64_t total_instruction_budget,
             script->trapped = true;
             ++result.trapped;
         }
+        impl_->mark_ready(*script);
     }
     return result;
 }
 
 std::size_t FalconRuntime::size() const { return impl_->scripts.size(); }
+
+std::size_t FalconRuntime::compiled_programs() const {
+    return static_cast<std::size_t>(
+        std::count_if(impl_->programs.begin(), impl_->programs.end(),
+                      [](const auto& entry) { return !entry.second.expired(); }));
+}
 
 } // namespace homeworldz::script

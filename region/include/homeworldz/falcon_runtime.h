@@ -34,6 +34,11 @@ struct FalconRezResult {
     bool compiled{};
     bool running{};
     std::string diagnostic;
+    // The same error as a viewer's script editor reads it,
+    // "(row, column) : ERROR : message" with both counted from 0, which is
+    // what lets a click on the error move the cursor to it. Without a known
+    // position it is the diagnostic alone.
+    std::string viewer_error;
 };
 
 struct FalconTickResult {
@@ -88,9 +93,16 @@ public:
     // script that asked.
     bool dispatch_to_script(std::string_view object_id, std::string_view inventory_item_id,
                             const std::string& event, const std::vector<Value>& args);
+    // Runs the scripts that have work, in the order they came to have it, one
+    // slice each, until the tick's budget is spent. Scripts the budget did not
+    // reach are first in line on the next tick; one that still has work after
+    // its slice goes to the back.
     FalconTickResult run_tick(std::uint64_t total_instruction_budget = 0x00010000,
                               std::uint64_t per_script_slice = 0x00000400);
     std::size_t size() const;
+    // How many distinct programs the running scripts share: scripts with the
+    // same source are compiled once.
+    std::size_t compiled_programs() const;
 
 private:
     struct Impl;
