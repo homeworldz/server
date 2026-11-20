@@ -15489,7 +15489,12 @@ int main(int argc, char* argv[]) {
                                     falcon.dispatch_touch_start(clicked->object_id, 1);
                                 const auto root_id = clicked->parent_id == 0
                                     ? clicked->id : clicked->parent_id;
-                                if (root_id != clicked->id) {
+                                // Second Life's rule: a touch reaches the root's
+                                // scripts only when no script in the touched prim
+                                // handles touches.
+                                if (root_id != clicked->id &&
+                                    !falcon.object_script_status(clicked->object_id)
+                                         .handles_touch) {
                                     if (const auto* root = scene.find(root_id))
                                         fired += falcon.dispatch_touch_start(
                                             root->object_id, 1);
