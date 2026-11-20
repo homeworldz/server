@@ -3,7 +3,10 @@ bugs/0016.lsl
 bugs/mutable_global_rvalue.lsl
 global_list_refs.lsl
 lenient_salist.lsl
+many_statements.lsl
 simple_declarations.lsl
+simple_function_defs.lsl
 stack_heap_collide.lsl
+streamcomment.lsl
 strict_salist.lsl
 sub_replacement.lsl

@@ -841,6 +841,185 @@ int main() {
                 "a key stays a key through assignment and a host call, and a string a string");
     }
 
+    // (functions) A script's own functions run in call frames the VM keeps as
+    // data, so a call can be interrupted and snapshotted like anything else.
+    {
+        std::vector<std::string> out;
+        const auto run = [&out](const std::string& source) {
+            out.clear();
+            const Program program = compile_source(source);
+            VM vm(program);
+            vm.set_host(make_host(out));
+            vm.dispatch("state_entry", {});
+            const RunStatus status = vm.run(1000000);
+            if (status == RunStatus::Error) {
+                out.push_back("error: " + vm.error() + " at line " + std::to_string(vm.error_line()));
+            }
+            return status;
+        };
+        const auto refused = [](const std::string& source) {
+            try {
+                compile_source(source);
+            } catch (const ScriptError&) {
+                return true;
+            }
+            return false;
+        };
+        const std::string entry = "default { state_entry() { ";
+
+        run("integer fact(integer n) { if (n <= 1) return 1; return n * fact(n - 1); }\n"
+            "integer fib(integer n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }\n"
+            "integer even(integer n) { if (n == 0) return 1; return odd(n - 1); }\n"
+            "integer odd(integer n) { if (n == 0) { return 0; } else { return even(n - 1); } }\n"
+            "string count;\n"
+            "note(string what) { count = count + what; if (what == \"stop\") return; count = count + \",\"; }\n"
+            "float half(float x) { return x / 2; }\n"
+            "float whole(integer n) { return n; }\n"
+            "key named(string text) { return text; }\n"
+            "list pair(integer a, string b) { return [a, b]; }\n" +
+            entry +
+            "llOwnerSay((string)fact(10) + \" \" + (string)fib(15) + \" \" + (string)even(10) + (string)even(7));\n"
+            "note(\"a\"); note(\"stop\"); note(\"b\"); llOwnerSay(count);\n"
+            "llOwnerSay((string)half(5) + \" \" + (string)whole(16777217) + \" \" + (string)llGetListEntryType([named(\"k\")], 0)"
+            " + \" \" + (string)pair(1, \"x\") + (string)llGetListLength(pair(2, \"y\")));\n"
+            "} }");
+        require(out == std::vector<std::string>{"3628800 610 10", "a,stopb,", "2.500000 16777216.000000 4 1x2"},
+                "functions recurse, call each other in any order, and convert what they are given and return");
+
+        // Each call has locals of its own, and a caller's survive the call.
+        run("integer depth(integer n) { integer mine = n * 10; if (n > 0) { integer below = depth(n - 1);"
+            " return mine + below; } return mine; }\n"
+            "integer g = 1;\n"
+            "integer g(integer g) { return g + 1; }\n" +
+            entry + "integer keep = 7; integer sum = depth(3); llOwnerSay((string)sum + \" \" + (string)keep + \" \" + (string)g(g)); } }");
+        require(out == std::vector<std::string>{"60 7 2"},
+                "each call has its own locals, and a function may share a global's name");
+
+        // LSL runs the right operand first, then the left; arguments and list
+        // elements run left to right. The value is the same either way.
+        run("integer f(integer x) { llOwnerSay(\"f\" + (string)x); return x; }\n"
+            "string s(string x) { llOwnerSay(\"s\" + x); return x; }\n"
+            "integer two(integer a, integer b) { return a * 10 + b; }\n" +
+            entry +
+            "llOwnerSay((string)(f(1) - f(2)));\n"
+            "llOwnerSay(s(\"a\") + s(\"b\"));\n"
+            "llOwnerSay((string)two(f(3), f(4)) + (string)[f(5), f(6)]);\n"
+            "llOwnerSay((string)(f(7) < f(8)) + (string)(f(8) / f(2)) + (string)(f(9) % f(4)) + (string)(f(1) >= f(1)));\n"
+            "llOwnerSay((string)([f(1)] + f(2)) + (string)(f(3) + [f(4)]) + (string)([1, 2, 3] != [f(0)]));\n"
+            "} }");
+        // In a chain of +, that means the last term runs first.
+        require(out == std::vector<std::string>{"f2", "f1", "-1", "sb", "sa", "ab", "f5", "f6", "f3", "f4", "3456",
+                                                "f1", "f1", "f4", "f9", "f2", "f8", "f8", "f7", "1411",
+                                                "f0", "f4", "f3", "f2", "f1", "12342"},
+                "the right operand of an operator runs first, and the result is unchanged");
+
+        run("spin(integer n) { spin(n + 1); }\n"
+            "default {\n state_entry() {\n  spin(0);\n }\n touch_start(integer n) { llOwnerSay(\"still here\"); }\n}");
+        require(out == std::vector<std::string>{"error: Stack-Heap Collision at line 1"},
+                "recursion with no end stops the event with a Stack-Heap Collision");
+
+        run("integer zero;\n"
+            "integer divide(integer n) {\n"
+            "  return n /\n"
+            "      zero;\n"
+            "}\n"
+            "default { state_entry() { llOwnerSay(\"a\"); return; llOwnerSay(\"b\"); }\n"
+            " touch_start(integer n) { llOwnerSay((string)divide(n)); } }");
+        require(out == std::vector<std::string>{"a"}, "a bare return ends an event handler");
+        {
+            const Program program = compile_source(
+                "integer zero;\n"
+                "integer divide(integer n) {\n"
+                "  return n /\n"
+                "      zero;\n"
+                "}\n"
+                "default { touch_start(integer n) { llOwnerSay((string)divide(n)); llOwnerSay(\"unreached\"); }\n"
+                " timer() { llOwnerSay((string)divide(0 - 1 + 1)); } }");
+            VM vm(program);
+            out.clear();
+            vm.set_host(make_host(out));
+            vm.dispatch("touch_start", {Value::make_integer(4)});
+            const bool faulted = vm.run(1000) == RunStatus::Error && vm.error() == "Math Error" && vm.error_line() == 3;
+            // The frame the error left behind is gone when the next event starts.
+            vm.dispatch("touch_start", {Value::make_integer(4)});
+            require(faulted && vm.run(1000) == RunStatus::Error && vm.error_line() == 3 && out.empty(),
+                    "a runtime error inside a function names its line and ends the event");
+        }
+
+        const std::string tail = " default { state_entry() { } }";
+        require(refused("integer f() { }" + tail) && refused("integer f(integer n) { if (n) return 1; }" + tail) &&
+                    refused("f() { return 1; }" + tail) && refused("integer f() { return; }" + tail) &&
+                    refused("integer f() { return \"s\"; }" + tail) && refused("f() { } f() { }" + tail) &&
+                    refused("llOwnerSay(string s) { }" + tail) && refused("llGetPos() { }" + tail) &&
+                    refused("f(integer a, integer a) { }" + tail) &&
+                    refused("f(integer a) { }" + entry + "f(); } }") &&
+                    refused("f(integer a) { }" + entry + "f(\"s\"); } }") &&
+                    refused("f() { }" + entry + "integer n = f(); } }") &&
+                    refused(entry + "return 1; } }") && refused(entry + "g(); } }") &&
+                    refused(entry + "if (1) integer n = 2; } }") &&
+                    !refused("integer f(integer n) { if (n) return 1; else return 2; }\n"
+                             "g() { ; if (1) ; else f(1); while (0) f(2); }" + entry + "g(); f(1); } }"),
+                "a function must return what it says, and a call must match its definition");
+
+        // Source nested or chained without end is refused with an error; it
+        // must never reach the bottom of the native stack.
+        {
+            const auto repeat = [](const std::string& piece, int times) {
+                std::string all;
+                for (int i = 0; i < times; ++i) all += piece;
+                return all;
+            };
+            const auto message = [](const std::string& body) -> std::string {
+                try {
+                    compile_source("default { state_entry() { " + body + " } }");
+                } catch (const ScriptError& error) {
+                    return error.message;
+                }
+                return "compiled";
+            };
+            require(message("integer n = " + repeat("(", 10000) + "1" + repeat(")", 10000) + ";") == "nested too deeply" &&
+                        message("integer n = " + repeat("-", 10000) + "1;") == "nested too deeply" &&
+                        message("integer n = 1" + repeat(" + 1", 10000) + ";") ==
+                            "expression too long or nested too deeply" &&
+                        message("list l = " + repeat("(list)", 150) + repeat("[", 1) + "1" + repeat(" + 1", 150) + "];") ==
+                            "expression too long or nested too deeply" &&
+                        message(repeat("if (1) ", 10000) + ";") == "nested too deeply" &&
+                        message(repeat("if (1) { ", 10000) + repeat("}", 10000)) == "nested too deeply" &&
+                        message("integer n = " + repeat("(", 150) + "1" + repeat(" + 1", 150) + repeat(")", 150) + ";" +
+                                repeat("if (n) ", 150) + ";") == "compiled",
+                    "source nested or chained past the limit is refused, not followed off the stack");
+        }
+
+        // A script deep in recursion crosses a snapshot after any instruction.
+        const Program crossing = compile_source(
+            "string path;\n"
+            "integer walk(integer n) { path = path + (string)n; if (n == 0) return 0;"
+            " integer left = walk(n - 1); return left + n; }\n"
+            "default { state_entry() { llOwnerSay((string)walk(4) + \" \" + path + \" \" + (string)(walk(1) - walk(2))); } }");
+        VM whole(crossing);
+        std::vector<std::string> whole_out;
+        whole.set_host(make_host(whole_out));
+        whole.dispatch("state_entry", {});
+        whole.run(100000);
+        // Right to left: the difference runs first, and `path` is read before
+        // walk(4) adds to it.
+        bool every_point = whole_out == std::vector<std::string>{"10 21010 -2"};
+        for (std::uint64_t cut = 1; cut < whole.total_instructions(); ++cut) {
+            VM first(crossing);
+            std::vector<std::string> cut_out;
+            first.set_host(make_host(cut_out));
+            first.dispatch("state_entry", {});
+            first.run(cut);
+            VM second(crossing);
+            second.set_host(make_host(cut_out));
+            second.restore(first.snapshot());
+            second.run(100000);
+            every_point = every_point && cut_out == whole_out;
+        }
+        require(every_point && whole.total_instructions() > 100,
+                "a script inside nested calls can be snapshotted after any instruction");
+    }
+
     if (g_failures == 0) {
         std::cout << "ALL PoC CHECKS PASSED\n";
         return EXIT_SUCCESS;

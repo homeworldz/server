@@ -6,6 +6,7 @@
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
@@ -21,8 +22,11 @@ struct VmFault : std::runtime_error {
 
 // v3 records vectors and rotations as themselves; v2 wrote them as integers.
 // v4 adds floats, the sleep left, and the host call in progress.
-// v5 adds keys and lists.
-constexpr std::uint16_t kSnapshotVersion = 5;
+// v5 adds keys and lists. v6 adds call frames.
+constexpr std::uint16_t kSnapshotVersion = 6;
+// How deep calls may nest. Recursion with no end stops here, with the error
+// Second Life gives a script that runs out of memory that way.
+constexpr std::size_t kMaxCallDepth = 1024;
 constexpr unsigned char kMagic[4] = {'H', 'W', 'Z', 'S'};
 constexpr std::uint32_t kMaxSnapshotValues = 1'000'000; // corrupt-input guard
 
@@ -205,6 +209,8 @@ void VM::dispatch(const std::string& event, const std::vector<Value>& args) {
         locals_[i] = args[i];
     }
     stack_.clear();
+    frames_.clear();
+    base_ = 0;
     ip_ = static_cast<std::size_t>(entry->entry_ip);
     finished_ = false;
     error_.clear();
@@ -291,12 +297,13 @@ void VM::step() {
         }
         return v;
     };
-    const auto slot_ref = [](std::vector<Value>& bank, std::int32_t slot,
+    // A slot of the globals, or of the running function's locals.
+    const auto slot_ref = [](std::vector<Value>& bank, std::size_t base, std::int32_t slot,
                              const char* which) -> Value& {
-        if (slot < 0 || static_cast<std::size_t>(slot) >= bank.size()) {
+        if (slot < 0 || base + static_cast<std::size_t>(slot) >= bank.size()) {
             throw VmFault(std::string(which) + " slot out of range");
         }
-        return bank[static_cast<std::size_t>(slot)];
+        return bank[base + static_cast<std::size_t>(slot)];
     };
 
     switch (instr.op) {
@@ -308,16 +315,16 @@ void VM::step() {
         break;
     }
     case Op::LoadLocal:
-        stack_.push_back(slot_ref(locals_, instr.a, "local"));
+        stack_.push_back(slot_ref(locals_, base_, instr.a, "local"));
         break;
     case Op::StoreLocal:
-        slot_ref(locals_, instr.a, "local") = pop();
+        slot_ref(locals_, base_, instr.a, "local") = pop();
         break;
     case Op::LoadGlobal:
-        stack_.push_back(slot_ref(globals_, instr.a, "global"));
+        stack_.push_back(slot_ref(globals_, 0, instr.a, "global"));
         break;
     case Op::StoreGlobal:
-        slot_ref(globals_, instr.a, "global") = pop();
+        slot_ref(globals_, 0, instr.a, "global") = pop();
         break;
     case Op::AddInt: {
         std::int32_t b = pop_int();
@@ -535,6 +542,52 @@ void VM::step() {
     case Op::Pop:
         (void)pop();
         break;
+    case Op::Swap: {
+        if (stack_.size() < 2) throw VmFault("operand stack underflow");
+        std::swap(stack_[stack_.size() - 1], stack_[stack_.size() - 2]);
+        break;
+    }
+    case Op::Call: {
+        if (instr.a < 0 || static_cast<std::size_t>(instr.a) >= program_.functions.size()) {
+            throw VmFault("function index out of range");
+        }
+        const FunctionEntry& function = program_.functions[static_cast<std::size_t>(instr.a)];
+        if (frames_.size() >= kMaxCallDepth) throw VmFault("Stack-Heap Collision");
+        const auto params = static_cast<std::size_t>(function.param_count);
+        if (function.param_count < 0 || function.local_count < function.param_count ||
+            params > stack_.size()) {
+            throw VmFault("call argument underflow");
+        }
+        // The arguments leave the operand stack for the first local slots.
+        const std::size_t base = locals_.size();
+        locals_.resize(base + static_cast<std::size_t>(function.local_count), Value::make_integer(0));
+        std::move(stack_.end() - static_cast<std::ptrdiff_t>(params), stack_.end(), locals_.begin() + static_cast<std::ptrdiff_t>(base));
+        stack_.resize(stack_.size() - params);
+        frames_.push_back(Frame{ip_, base_});
+        base_ = base;
+        ip_ = static_cast<std::size_t>(function.entry_ip);
+        break;
+    }
+    case Op::Return: {
+        // Outside any function this is an event handler's `return;`.
+        if (frames_.empty()) {
+            finished_ = true;
+            break;
+        }
+        locals_.resize(base_);
+        ip_ = frames_.back().return_ip;
+        base_ = frames_.back().base;
+        frames_.pop_back();
+        break;
+    }
+    case Op::CastVecToStr: {
+        const Value v = pop();
+        if (v.type != Type::Vector && v.type != Type::Rotation) {
+            throw VmFault("expected a vector or rotation on the stack");
+        }
+        stack_.push_back(Value::make_string(element_string(v)));
+        break;
+    }
     case Op::Halt:
         finished_ = true;
         break;
@@ -621,6 +674,12 @@ std::vector<std::uint8_t> VM::snapshot() const {
     w.f64(sleep_seconds_);
     w.u8(waiting_ ? 1 : 0);
     w.u64(waiting_token_);
+    w.u64(static_cast<std::uint64_t>(base_));
+    w.u32(static_cast<std::uint32_t>(frames_.size()));
+    for (const Frame& frame : frames_) {
+        w.u64(static_cast<std::uint64_t>(frame.return_ip));
+        w.u64(static_cast<std::uint64_t>(frame.base));
+    }
     return w.take();
 }
 
@@ -650,6 +709,25 @@ void VM::restore(const std::vector<std::uint8_t>& bytes) {
     sleep_seconds_ = r.f64();
     waiting_ = r.u8() != 0;
     waiting_token_ = r.u64();
+    // A frame's locals lie inside the locals that came with it, each frame's
+    // after its caller's.
+    base_ = static_cast<std::size_t>(r.u64());
+    const std::uint32_t depth = r.u32();
+    if (depth > kMaxCallDepth || base_ > locals_.size()) {
+        throw ScriptError("snapshot call frames are not plausible");
+    }
+    frames_.clear();
+    std::size_t outer = 0;
+    for (std::uint32_t i = 0; i < depth; ++i) {
+        Frame frame;
+        frame.return_ip = static_cast<std::size_t>(r.u64());
+        frame.base = static_cast<std::size_t>(r.u64());
+        if (frame.base < outer || frame.base > base_) {
+            throw ScriptError("snapshot call frames are not plausible");
+        }
+        outer = frame.base;
+        frames_.push_back(frame);
+    }
 }
 
 } // namespace homeworldz::script

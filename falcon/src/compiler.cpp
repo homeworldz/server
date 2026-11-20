@@ -183,6 +183,14 @@ public:
             for (const auto& global : script.globals) {
                 declare_global(global);
             }
+            // Every function is known before any body is compiled, so one may
+            // call another written after it, or itself.
+            for (const auto& function : script.functions) {
+                declare_function(function);
+            }
+            for (std::size_t i = 0; i < script.functions.size(); ++i) {
+                compile_function(script.functions[i], i);
+            }
             for (const auto& handler : script.events) {
                 compile_event(handler);
             }
@@ -328,6 +336,91 @@ private:
         }
     }
 
+    struct FunctionSignature {
+        std::int32_t index;
+        std::vector<Type> params;
+        Type result;
+    };
+
+    void declare_function(const ast::Function& function) {
+        const Here position(*this, function);
+        if (functions_.count(function.name) != 0) {
+            throw ScriptError("function '" + function.name + "' already defined");
+        }
+        // Known to the index, whether or not anything answers it yet.
+        for (const auto& known : index_functions) {
+            if (function.name == known.name) {
+                throw ScriptError("'" + function.name + "' is a library function and cannot be defined");
+            }
+        }
+        FunctionSignature signature{static_cast<std::int32_t>(functions_.size()), {}, function.result};
+        for (const ast::Param& param : function.params) signature.params.push_back(param.type);
+        functions_.emplace(function.name, std::move(signature));
+        program_.functions.push_back(FunctionEntry{function.name, 0, 0, 0});
+    }
+
+    void compile_function(const ast::Function& function, std::size_t index) {
+        const Here position(*this, function);
+        locals_.clear();
+        local_count_ = 0;
+        in_function_ = true;
+        result_ = function.result;
+        const std::int32_t entry_ip = here();
+        for (const ast::Param& param : function.params) {
+            if (locals_.count(param.name) != 0) {
+                throw ScriptError("parameter '" + param.name + "' named twice");
+            }
+            locals_.emplace(param.name, Symbol{Scope::Local, local_count_++, param.type});
+        }
+        compile_block(*function.body);
+        if (function.result == Type::Void) {
+            emit(Op::Return);
+        } else if (!always_returns(*function.body)) {
+            throw ScriptError("function '" + function.name + "' does not return a value on every path");
+        }
+        FunctionEntry& entry = program_.functions[index];
+        entry.entry_ip = entry_ip;
+        entry.param_count = static_cast<std::int32_t>(function.params.size());
+        entry.local_count = local_count_;
+        in_function_ = false;
+    }
+
+    // Whether control cannot reach the end of a statement: it returns, or it
+    // is an if whose both branches do, or a block holding such a statement.
+    static bool always_returns(const ast::Stmt& stmt) {
+        if (dynamic_cast<const ast::Return*>(&stmt) != nullptr) return true;
+        if (const auto* block = dynamic_cast<const ast::Block*>(&stmt)) {
+            for (const auto& inner : block->statements) {
+                if (always_returns(*inner)) return true;
+            }
+            return false;
+        }
+        if (const auto* branch = dynamic_cast<const ast::If*>(&stmt)) {
+            return branch->else_branch && always_returns(*branch->then_branch) &&
+                   always_returns(*branch->else_branch);
+        }
+        return false;
+    }
+
+    void compile_return(const ast::Return& ret) {
+        if (!in_function_) {
+            if (ret.value) throw ScriptError("an event handler cannot return a value");
+            emit(Op::Return);
+            return;
+        }
+        if (result_ == Type::Void) {
+            if (ret.value) throw ScriptError("a function with no type cannot return a value");
+        } else {
+            if (!ret.value) throw ScriptError(std::string("this function must return ") + type_name(result_));
+            const Type value_type = compile_expression(*ret.value);
+            if (!convert(result_, value_type)) {
+                throw ScriptError(std::string("cannot return ") + type_name(value_type) + " from a function of type " +
+                                  type_name(result_));
+            }
+        }
+        emit(Op::Return);
+    }
+
     void compile_event(const ast::EventHandler& handler) {
         const Here position(*this, handler);
         const std::vector<Type>* signature = lookup_event(handler.name);
@@ -447,6 +540,8 @@ private:
             compile_while(*loop);
         } else if (const auto* branch = dynamic_cast<const ast::If*>(&stmt)) {
             compile_if(*branch);
+        } else if (const auto* ret = dynamic_cast<const ast::Return*>(&stmt)) {
+            compile_return(*ret);
         } else {
             throw ScriptError("internal: unknown statement");
         }
@@ -615,6 +710,10 @@ private:
             if (operand == Type::Float) emit(Op::CastFloatToStr);
             if (operand == Type::List) emit(Op::CastListToStr);
             if (operand == Type::Key) emit(Op::ToStr);
+            if (operand == Type::Vector || operand == Type::Rotation) {
+                known = true;
+                emit(Op::CastVecToStr);
+            }
             break;
         case Type::Key:
             known = is_textual(operand);
@@ -662,10 +761,18 @@ private:
 
     // An ordering. The integer forms of <= and >= are the opposite test
     // negated; a float needs its own, because nothing orders against NaN.
+    // The operands are on the stack right one first (compile_binary), so each
+    // test is made as its mirror image: a < b is b > a.
     Type compile_ordering(Type lhs, Type rhs, ast::BinaryOp op, const char* spelling) {
         const auto type = numeric_pair(lhs, rhs);
         if (!type) throw ScriptError(std::string("operator '") + spelling + "' requires numbers");
         const bool integer = *type == Type::Integer;
+        switch (op) {
+        case ast::BinaryOp::Less: op = ast::BinaryOp::Greater; break;
+        case ast::BinaryOp::Greater: op = ast::BinaryOp::Less; break;
+        case ast::BinaryOp::LessEqual: op = ast::BinaryOp::GreaterEqual; break;
+        default: op = ast::BinaryOp::LessEqual; break;
+        }
         switch (op) {
         case ast::BinaryOp::Less: emit(integer ? Op::LessInt : Op::LessFloat); break;
         case ast::BinaryOp::Greater: emit(integer ? Op::GreaterInt : Op::GreaterFloat); break;
@@ -681,17 +788,23 @@ private:
         return Type::Integer;
     }
 
+    // LSL evaluates the right operand of a binary operator first, which a
+    // script can see when an operand calls a function. So the right operand
+    // is under the left on the stack, and an operator for which the order
+    // matters swaps them first (or, for an ordering, tests the mirror image).
     Type compile_binary(const ast::Binary& binary) {
-        const Type lhs = compile_expression(*binary.lhs);
         const Type rhs = compile_expression(*binary.rhs);
+        const Type lhs = compile_expression(*binary.lhs);
         switch (binary.op) {
         case ast::BinaryOp::Add:
             // A list takes anything added to either end of it.
             if ((lhs == Type::List && rhs != Type::Void) || (rhs == Type::List && lhs != Type::Void)) {
+                emit(Op::Swap);
                 emit(Op::ConcatList);
                 return Type::List;
             }
             if (is_textual(lhs) && is_textual(rhs)) {
+                emit(Op::Swap);
                 emit(Op::ConcatStr);
                 return Type::String;
             }
@@ -700,13 +813,16 @@ private:
             }
             return compile_arithmetic(lhs, rhs, Op::AddInt, Op::AddFloat, "+");
         case ast::BinaryOp::Sub:
+            emit(Op::Swap);
             return compile_arithmetic(lhs, rhs, Op::SubInt, Op::SubFloat, "-");
         case ast::BinaryOp::Mul:
             return compile_arithmetic(lhs, rhs, Op::MulInt, Op::MulFloat, "*");
         case ast::BinaryOp::Div:
+            emit(Op::Swap);
             return compile_arithmetic(lhs, rhs, Op::DivInt, Op::DivFloat, "/");
         case ast::BinaryOp::Mod:
             require_two_integers(lhs, rhs, "%");
+            emit(Op::Swap);
             emit(Op::ModInt);
             return Type::Integer;
         case ast::BinaryOp::Less: return compile_ordering(lhs, rhs, binary.op, "<");
@@ -717,6 +833,7 @@ private:
         case ast::BinaryOp::NotEqual: {
             const bool equal = binary.op == ast::BinaryOp::Equal;
             if (lhs == Type::List && rhs == Type::List) {
+                if (!equal) emit(Op::Swap); // != is a difference, so the order matters
                 emit(equal ? Op::EqualList : Op::NotEqualList);
                 return Type::Integer;
             }
@@ -754,6 +871,22 @@ private:
     }
 
     Type compile_call(const ast::Call& call) {
+        if (const auto found = functions_.find(call.callee); found != functions_.end()) {
+            const FunctionSignature& function = found->second;
+            if (call.args.size() != function.params.size()) {
+                throw ScriptError("function '" + call.callee + "' expects " +
+                                  std::to_string(function.params.size()) + " argument(s)");
+            }
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                const Type arg_type = compile_expression(*call.args[i]);
+                if (!convert(function.params[i], arg_type)) {
+                    throw ScriptError("argument " + std::to_string(i + 1) + " to '" + call.callee +
+                                      "' must be " + type_name(function.params[i]));
+                }
+            }
+            emit(Op::Call, function.index);
+            return function.result;
+        }
         const HostSignature* signature = lookup_host(call.callee);
         if (signature == nullptr) {
             throw ScriptError("unknown function '" + call.callee + "'");
@@ -801,8 +934,12 @@ private:
 
     Program program_;
     std::unordered_map<std::string, Symbol> globals_;
+    // Functions have a namespace of their own: one may share a global's name.
+    std::unordered_map<std::string, FunctionSignature> functions_;
     std::unordered_map<std::string, Symbol> locals_;
     std::int32_t local_count_ = 0;
+    bool in_function_ = false; // compiling a function's body, not an event's
+    Type result_ = Type::Void; // what that function returns
 };
 
 } // namespace

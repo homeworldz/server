@@ -45,6 +45,7 @@ TokenKind keyword_kind(const std::string& word) {
         {"while", TokenKind::KwWhile},
         {"if", TokenKind::KwIf},
         {"else", TokenKind::KwElse},
+        {"return", TokenKind::KwReturn},
         {"print", TokenKind::KwPrint},
     };
     const auto it = keywords.find(word);

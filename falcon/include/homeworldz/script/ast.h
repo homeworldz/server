@@ -19,8 +19,15 @@ struct Expr {
     // position for a binary expression. Used to place compile errors.
     int line = 0;
     int column = 0;
+    // How many expressions deep this one is, itself included. The parser
+    // refuses a tree past kMaxDepth, because everything that walks one
+    // recurses, and a script must not be able to exhaust the native stack.
+    int depth = 1;
 };
 using ExprPtr = std::unique_ptr<Expr>;
+
+// The deepest an expression may go, and the deepest statements may nest.
+inline constexpr int kMaxDepth = 200;
 
 struct IntLiteral : Expr {
     std::int32_t value = 0;
@@ -122,8 +129,14 @@ struct If : Stmt {
     std::unique_ptr<Block> else_branch; // may be null
 };
 
+// `return;` or `return value;`. In an event handler only the first is allowed,
+// and it ends the event.
+struct Return : Stmt {
+    ExprPtr value; // null for a bare return
+};
+
 // A named, typed parameter of an event handler (e.g. touch_start's detected
-// count). Parameters become the first locals of the handler.
+// count) or of a function. Parameters become the first locals.
 struct Param {
     Type type = Type::Integer;
     std::string name;
@@ -132,6 +145,16 @@ struct Param {
 // One event handler in the default state.
 struct EventHandler {
     std::string name; // "state_entry", "touch_start", ...
+    std::vector<Param> params;
+    std::unique_ptr<Block> body;
+    int line = 0;
+    int column = 0;
+};
+
+// A function the script defines. `result` is Void for one that returns nothing.
+struct Function {
+    Type result = Type::Void;
+    std::string name;
     std::vector<Param> params;
     std::unique_ptr<Block> body;
     int line = 0;
@@ -150,10 +173,11 @@ struct GlobalVar {
     int column = 0;
 };
 
-// The compiled script: globals plus the default state's event handlers. Named
-// states are future work.
+// The compiled script: globals, functions, and the default state's event
+// handlers. Named states are future work.
 struct Script {
     std::vector<GlobalVar> globals;
+    std::vector<Function> functions;
     std::vector<EventHandler> events;
 };
 

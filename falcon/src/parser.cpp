@@ -62,11 +62,20 @@ public:
 
     ast::Script parse_script() {
         ast::Script script;
-        // Global variables precede the state, each starting with a type keyword.
-        while (is_type_keyword(peek().kind)) {
-            script.globals.push_back(parse_global());
+        // Global variables and functions precede the state. A function is a
+        // name followed by '(', with or without a type before it.
+        for (;;) {
+            const bool typed = is_type_keyword(peek().kind);
+            const std::size_t name = typed ? 1 : 0;
+            if (peek(name).kind == TokenKind::Identifier && peek(name + 1).kind == TokenKind::LParen) {
+                script.functions.push_back(parse_function());
+            } else if (typed) {
+                script.globals.push_back(parse_global());
+            } else {
+                break;
+            }
         }
-        expect(TokenKind::KwDefault, "expected global declarations or 'default'");
+        expect(TokenKind::KwDefault, "expected a global, a function or 'default'");
         expect(TokenKind::LBrace, "expected '{' after 'default'");
         while (!check(TokenKind::RBrace) && !check(TokenKind::End)) {
             script.events.push_back(parse_event_handler());
@@ -145,26 +154,55 @@ private:
         return global;
     }
 
+    // The parameters of an event handler or a function, after its '('.
+    std::vector<ast::Param> parse_params() {
+        std::vector<ast::Param> params;
+        if (!check(TokenKind::RParen)) {
+            for (;;) {
+                ast::Param param;
+                param.type = type_keyword();
+                param.name = expect(TokenKind::Identifier, "expected parameter name").text;
+                params.push_back(std::move(param));
+                if (!match(TokenKind::Comma)) {
+                    break;
+                }
+            }
+        }
+        expect(TokenKind::RParen, "expected ')' after parameters");
+        return params;
+    }
+
     ast::EventHandler parse_event_handler() {
         ast::EventHandler handler;
         handler.line = peek().line;
         handler.column = peek().column;
         handler.name = expect(TokenKind::Identifier, "expected an event name").text;
         expect(TokenKind::LParen, "expected '(' after event name");
-        if (!check(TokenKind::RParen)) {
-            for (;;) {
-                ast::Param param;
-                param.type = type_keyword();
-                param.name = expect(TokenKind::Identifier, "expected parameter name").text;
-                handler.params.push_back(std::move(param));
-                if (!match(TokenKind::Comma)) {
-                    break;
-                }
-            }
-        }
-        expect(TokenKind::RParen, "expected ')' after event parameters");
+        handler.params = parse_params();
         handler.body = parse_block();
         return handler;
+    }
+
+    ast::Function parse_function() {
+        ast::Function function;
+        function.line = peek().line;
+        function.column = peek().column;
+        if (is_type_keyword(peek().kind)) function.result = type_keyword();
+        function.name = advance().text;
+        advance(); // (
+        function.params = parse_params();
+        function.body = parse_block();
+        return function;
+    }
+
+    // The body of an `if`, `else` or `while`: a block, or one statement, which
+    // is a block of one. LSL gives a declaration no scope of its own there.
+    std::unique_ptr<ast::Block> parse_body() {
+        if (check(TokenKind::LBrace)) return parse_block();
+        if (is_type_keyword(peek().kind)) fail("a declaration here needs braces around it");
+        auto block = make<ast::Block>(peek());
+        block->statements.push_back(parse_statement());
+        return block;
     }
 
     std::unique_ptr<ast::Block> parse_block() {
@@ -177,7 +215,32 @@ private:
         return block;
     }
 
+    // One level of recursion in the parser, counted so that source nested
+    // past kMaxDepth is refused instead of overflowing the native stack.
+    class Nest {
+    public:
+        explicit Nest(Parser& parser) : parser_(parser) {
+            if (++parser_.nesting_ > ast::kMaxDepth) parser_.fail("nested too deeply");
+        }
+        ~Nest() { --parser_.nesting_; }
+        Nest(const Nest&) = delete;
+        Nest& operator=(const Nest&) = delete;
+
+    private:
+        Parser& parser_;
+    };
+
+    // Records that `node` holds `child`, and refuses a tree grown too deep. A
+    // long chain of operators is as deep as it is long.
+    static void holds(ast::Expr& node, const ast::Expr& child) {
+        if (child.depth + 1 > node.depth) node.depth = child.depth + 1;
+        if (node.depth > ast::kMaxDepth) {
+            throw ScriptError("expression too long or nested too deeply", node.line, node.column);
+        }
+    }
+
     ast::StmtPtr parse_statement() {
+        const Nest nest(*this);
         if (is_type_keyword(peek().kind)) {
             return parse_var_decl();
         }
@@ -189,6 +252,15 @@ private:
         }
         if (check(TokenKind::LBrace)) {
             return parse_block();
+        }
+        if (check(TokenKind::Semicolon)) {
+            return make<ast::Block>(advance()); // an empty statement
+        }
+        if (check(TokenKind::KwReturn)) {
+            auto node = make<ast::Return>(advance());
+            if (!check(TokenKind::Semicolon)) node->value = parse_expression(0);
+            expect(TokenKind::Semicolon, "expected ';' after return");
+            return node;
         }
         // Assignment (ident = expr;) or an expression statement (e.g. a call).
         if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Assign) {
@@ -221,7 +293,7 @@ private:
         expect(TokenKind::LParen, "expected '(' after 'while'");
         node->condition = parse_expression(0);
         expect(TokenKind::RParen, "expected ')' after condition");
-        node->body = parse_block();
+        node->body = parse_body();
         return node;
     }
 
@@ -230,15 +302,9 @@ private:
         expect(TokenKind::LParen, "expected '(' after 'if'");
         node->condition = parse_expression(0);
         expect(TokenKind::RParen, "expected ')' after condition");
-        node->then_branch = parse_block();
+        node->then_branch = parse_body();
         if (match(TokenKind::KwElse)) {
-            if (check(TokenKind::KwIf)) {
-                // `else if` is an `else` whose block is one more `if`.
-                node->else_branch = make<ast::Block>(peek());
-                node->else_branch->statements.push_back(parse_if());
-            } else {
-                node->else_branch = parse_block();
-            }
+            node->else_branch = parse_body(); // `else if` is a body of one `if`
         }
         return node;
     }
@@ -255,12 +321,15 @@ private:
             binary->op = binary_op_of(op.kind);
             binary->lhs = std::move(left);
             binary->rhs = parse_expression(prec + 1); // left-associative
+            holds(*binary, *binary->lhs);
+            holds(*binary, *binary->rhs);
             left = std::move(binary);
         }
         return left;
     }
 
     ast::ExprPtr parse_unary() {
+        const Nest nest(*this);
         // A cast: '(' type ')' operand, distinguished from a parenthesized group.
         if (check(TokenKind::LParen) &&
             (peek(1).kind == TokenKind::KwInteger || peek(1).kind == TokenKind::KwFloat ||
@@ -273,6 +342,7 @@ private:
             auto cast = make<ast::Cast>(open);
             cast->target = target;
             cast->operand = parse_unary();
+            holds(*cast, *cast->operand);
             return cast;
         }
         if (check(TokenKind::Minus) || check(TokenKind::Bang)) {
@@ -280,6 +350,7 @@ private:
             unary->op = advance().kind == TokenKind::Minus ? ast::UnaryOp::Negate
                                                            : ast::UnaryOp::Not;
             unary->operand = parse_unary();
+            holds(*unary, *unary->operand);
             return unary;
         }
         return parse_primary();
@@ -323,6 +394,7 @@ private:
                 }
             }
             expect(TokenKind::RBracket, "expected ']' to close a list");
+            for (const auto& element : node->elements) holds(*node, *element);
             return node;
         }
         if (check(TokenKind::FloatLiteral)) {
@@ -353,6 +425,7 @@ private:
                     }
                 }
                 expect(TokenKind::RParen, "expected ')' to close call arguments");
+                for (const auto& arg : call->args) holds(*call, *arg);
                 return call;
             }
             auto ref = make<ast::VarRef>(identifier);
@@ -368,6 +441,7 @@ private:
     }
 
     std::vector<Token> tokens_;
+    int nesting_ = 0;
     std::size_t pos_ = 0;
 };
 

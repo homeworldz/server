@@ -1,16 +1,21 @@
+Halcyon: an error in a function that shares a global's name names it
 Halcyon: the constants only its compiler defines
+a function with 160 locals (spilled to a table) still runs
 a type error is reported with its LSL line
 comparisons and logic give 1 and 0, && and || without short circuit
 float / 0.0 and integer % 0 raise Math Error (lines 10, 14); the script keeps running
 float casts: six decimals, Infinity, NaN
 float to integer truncates; out of range is INT_MIN
+float32 at stores, function boundaries and list insertion
 implicit string conversion is refused, as in Second Life and InWorldz
 integer * wraps exactly (Python: 123456789*1000 -> -1097262584)
 integer / 0 raises Math Error at its LSL line (5) and ends the event
 integer division truncates toward zero
+key and string convert both ways; key truthiness needs a valid non-null UUID
 list == compares lengths, != gives the length difference
 list to string concatenates each element's cast
 llList2List and llDeleteSubList, with negative and inverted ranges
 llListFindList: types must match, an empty test is found at 0
 llListInsertList, llListReplaceList, llList2ListStrided
+recursion, globals with initializers
 string to integer: decimal, hex, junk, saturation

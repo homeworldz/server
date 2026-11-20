@@ -1,8 +1,8 @@
 #pragma once
 
 // The explicit-stack Falcon bytecode VM. Per ADR 0021 / SCRIPTING.md, script
-// state lives entirely in data (instruction pointer, operand stack, locals, and
-// persistent globals), never on the native C++ call stack, so execution can be
+// state lives entirely in data (instruction pointer, operand stack, locals, call
+// frames, and persistent globals), never on the native C++ call stack, so execution can be
 // suspended after any single instruction and resumed elsewhere. run() executes
 // a bounded instruction slice and yields, which is how an infinite LSL loop is
 // contained rather than hanging the region thread.
@@ -122,7 +122,8 @@ public:
 
     // Compact, versioned binary capture of the full runtime state (this PoC's
     // slice of the crossing snapshot in SCRIPTING.md): ip, operand stack,
-    // locals, globals, the sleep left, and the host call in progress. Bytecode
+    // locals, globals, the sleep left, the host call in progress, and the
+    // call frames. Bytecode
     // is referenced by ABI version, not embedded.
     std::vector<std::uint8_t> snapshot() const;
 
@@ -138,7 +139,16 @@ private:
 
     std::size_t ip_ = 0;
     std::vector<Value> stack_;
+    // The locals of every function being run, the innermost last. A call adds
+    // its function's slots at the end and a return takes them off; `base_` is
+    // where the running function's begin.
     std::vector<Value> locals_;
+    std::size_t base_ = 0;
+    struct Frame {
+        std::size_t return_ip = 0; // where the caller goes on
+        std::size_t base = 0;      // where the caller's locals begin
+    };
+    std::vector<Frame> frames_;
     std::vector<Value> globals_;
     bool finished_ = true;
     std::string error_;

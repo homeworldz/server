@@ -27,8 +27,9 @@ namespace homeworldz::script {
 // vector and rotation values in snapshots.
 // v5 added float arithmetic, comparison and casts, and integer division.
 // v6 added lists, keys as a runtime type, and the built-in library.
-inline constexpr std::uint32_t kBytecodeAbiVersion = 6;
-inline constexpr std::uint32_t kCompilerVersion = 7;
+// v7 added functions and call frames, and evaluates the right operand first.
+inline constexpr std::uint32_t kBytecodeAbiVersion = 7;
+inline constexpr std::uint32_t kCompilerVersion = 8;
 
 // The value types. Void exists only for typing calls used as statements. A key
 // holds the same text a string does and keeps its own type at runtime, because
@@ -141,6 +142,10 @@ enum class Op : std::uint8_t {
     NotEqualList,   // pops b, a (lists); pushes length(a) - length(b)
     CastListToStr,  // pops a list; pushes each element's string, joined
     CallBuiltin,    // a = built-in function index, b = argument count
+    Call,           // a = function index; pops its arguments into a new frame
+    Return,         // leaves the function, its value (if any) on the stack; ends an event
+    Swap,           // exchanges the top two values of the stack
+    CastVecToStr,   // pops a vector or rotation; pushes it with five decimals
 };
 
 struct Instruction {
@@ -160,6 +165,15 @@ struct EventEntry {
     std::int32_t local_count = 0;   // total local slots this handler uses
 };
 
+// One compiled function: where its code begins, how many arguments a call
+// passes (they become its first locals), and how many local slots it uses.
+struct FunctionEntry {
+    std::string name;
+    std::int32_t entry_ip = 0;
+    std::int32_t param_count = 0;
+    std::int32_t local_count = 0;
+};
+
 // A compiled script: the shared instruction stream, the constant pool, the host
 // functions it calls (resolved at the boundary, not baked in), the persistent
 // globals (with their initial values), and the event dispatch table. Cached by
@@ -172,6 +186,7 @@ struct Program {
     std::vector<std::string> host_names;
     std::vector<Value> global_defaults; // initial value per global slot
     std::vector<EventEntry> events;
+    std::vector<FunctionEntry> functions;
     std::uint32_t compiler_version = kCompilerVersion;
     std::uint32_t abi_version = kBytecodeAbiVersion;
 

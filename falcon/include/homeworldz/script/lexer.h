@@ -44,6 +44,7 @@ enum class TokenKind : std::uint8_t {
     KwWhile,
     KwIf,
     KwElse,
+    KwReturn,
     KwPrint, // reserved in LSL's grammar, so it cannot name a variable
     LParen,
     RParen,

@@ -70,16 +70,18 @@ stream; an event dispatch table records where each begins.
 | `global_defaults` | initial value of each persistent global slot (`vector<Value>`) |
 | `events` | the dispatch table (`vector<EventEntry>`) |
 | `compiler_version` | the compiler that produced it |
-| `abi_version` | the bytecode/snapshot ABI (currently `6`) |
+| `abi_version` | the bytecode/snapshot ABI (currently `7`) |
 
 Each `EventEntry` carries the handler's `name` (e.g. `state_entry`,
 `touch_start`), its `entry_ip` (first instruction), the `param_types` the region
 must supply when dispatching it, and the `local_count` it needs (parameters
-occupy the first local slots). `compiler_version` is `7` and `abi_version` `6`
+occupy the first local slots). `compiler_version` is `8` and `abi_version` `7`
 (`kCompilerVersion`, `kBytecodeAbiVersion`); ABI 2 added persistent globals and
 the event-dispatch model, 3 vectors and rotations as values, 4 floats, the
 sleep left, and the host call in progress, 5 float arithmetic and integer
-division, and 6 lists, keys as a runtime type, and the built-in library. `lines` holds the source line of each instruction, which is how a
+division, 6 lists, keys as a runtime type, and the built-in library, and 7
+functions and call frames. `functions` holds one `FunctionEntry` per function
+the script defines: its `entry_ip`, `param_count` and `local_count`. `lines` holds the source line of each instruction, which is how a
 runtime error names the line it was raised on (`VM::error_line()`).
 
 ## Instruction format
@@ -134,10 +136,29 @@ operand and `a` is beneath it (so `a OP b` matches source order).
 | `EqualList`, `NotEqualList` | — | `a b` → `i` | whether the lengths are equal; the difference of the lengths |
 | `CastListToStr` | — | `l` → `s` | each element's string, joined |
 | `CallBuiltin` | `a`=built-in idx, `b`=argc | `arg1..argN` → result | call a function of Falcon's own library by its index |
+| `Call` | `a`=function idx | `arg1..argN` → | open a frame for `functions[a]`; the arguments become its first locals |
+| `Return` | — | — | close the frame and go on after the call, the result (if any) left on the stack; with no frame open, end the event |
+| `Swap` | — | `a b` → `b a` | exchange the top two values |
+| `CastVecToStr` | — | `v` → `str(v)` | `(string)` of a vector or rotation: five decimals |
 
 Integer `<=` and `>=` compile to the opposite test and `NotInt`; float `!=` to
 `EqualFloat` and `NotInt`. The table above leaves out the string, key, bitwise
 and logical operators, which are listed in `bytecode.h`.
+
+LSL evaluates the right operand of a binary operator before the left, and a
+script can tell once an operand calls a function. The compiler therefore emits
+the right operand first. Where the order of the operands matters to the
+operator it emits `Swap` before it, and for an ordering it emits the mirror
+image instead (`a < b` as `b > a`). Arguments and list elements run left to
+right.
+
+A call keeps no state on the native stack. `Call` appends the function's local
+slots to the one `locals` vector and records a frame (where to return, and
+where the caller's locals begin); `Return` takes them off again. Calls nest to
+1024 frames, past which the script stops with `Stack-Heap Collision`, the
+error Second Life gives for recursion without end. The parser refuses source
+nested or chained more than 200 deep (`ast::kMaxDepth`), because the parser
+and compiler do recurse, and a script must not be able to exhaust their stack.
 
 A list value shares its elements and never changes them: copying one is free,
 and every operation on a list makes a new list. A key holds the text a string
@@ -262,26 +283,29 @@ a fresh VM to continue identically. This is what lets a heavily scripted
 attachment or vehicle cross a region border without waiting for a poorly written
 handler to reach an event boundary.
 
-All multi-byte integers are little-endian. Current layout (`abi_version` 6,
-snapshot version 5):
+All multi-byte integers are little-endian. Current layout (`abi_version` 7,
+snapshot version 6):
 
 | Bytes | Field | Notes |
 | --- | --- | --- |
 | 4 | magic | `HWZS` |
-| 2 | snapshot version | `5` |
+| 2 | snapshot version | `6` |
 | 4 | bytecode ABI version | must match the `Program` on restore |
 | 8 | `ip` | instruction pointer |
 | 1 | finished | `0` or `1` |
 | 8 | `total` | instructions executed so far |
 | 4 | stack length `N` | operand-stack depth |
 | … | `N` values | bottom → top |
-| 4 | locals length `M` | the active handler's local slots |
+| 4 | locals length `M` | the local slots of the handler and of every function being run |
 | … | `M` values | slot order |
 | 4 | globals length `G` | must equal the program's global count on restore |
 | … | `G` values | slot order |
 | 8 | sleep left | seconds as an IEEE double; `0` when awake |
 | 1 | waiting | `1` while a host call is in progress |
 | 8 | waiting token | the host's name for that call |
+| 8 | locals base | where the running function's locals begin |
+| 4 | frame count `F` | calls in progress |
+| 16 × `F` | frames | outermost first: the `ip` to return to, and the caller's locals base |
 
 Because the operand stack, locals, and **globals** are all captured, a crossing
 snapshot taken mid-`touch_start` restores with its counter intact. Each
@@ -321,10 +345,11 @@ safe upgrade, incompatibility, and rollback" item builds on this field.
 Falcon today confirms the pipeline end to end on a representative slice and is
 deliberately narrow:
 
-- **Language:** one `default` state; persistent globals; `integer`, `float`,
+- **Language:** one `default` state; persistent globals; functions, with
+  recursion; `integer`, `float`,
   `string`, `key` and `list`, with vector and rotation literals; arithmetic,
   string and list concatenation, comparisons, and casts between them;
-  `while` and `if`.
+  `while`, `if` and `return`.
 - **Events:** `state_entry` and `touch_start(integer)`, dispatched with typed
   parameters. Adding more events is a table entry plus a parameter signature.
 - **Host surface:** `llOwnerSay`, `llSay`.
@@ -333,7 +358,7 @@ deliberately narrow:
   implemented yet — only a default-script *asset-text* generator exists), and
   `llSay` output goes to a test boundary rather than region chat.
 
-Not yet implemented: user-defined functions and call frames, `state`
+Not yet implemented: `state`
 transitions and the broader event set, `vector` / `rotation` arithmetic, the full LSL host-function
 library, memory and other resource limits, and region/crossing integration.
 Each is an additive step behind the same boundary and ABI.
