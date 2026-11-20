@@ -18,6 +18,10 @@ struct IndexInteger {
     const char* name;
     std::int32_t value;
 };
+struct IndexFloat {
+    const char* name;
+    double value;
+};
 struct IndexString {
     const char* name;
     std::string_view value;
@@ -1955,6 +1959,16 @@ constexpr IndexInteger index_integers[] = {
     {"XP_ERROR_STORE_DISABLED", 12},
     {"XP_ERROR_THROTTLED", 1},
     {"XP_ERROR_UNKNOWN_ERROR", 10},
+};
+
+constexpr IndexFloat index_floats[] = {
+    {"DEG_TO_RAD", 0.017453293},
+    {"LEGACY_MASS_FACTOR", 0.01},
+    {"PI", 3.14159265},
+    {"PI_BY_TWO", 1.57079633},
+    {"RAD_TO_DEG", 57.2957795},
+    {"SQRT2", 1.41421356},
+    {"TWO_PI", 6.2831853},
 };
 
 constexpr IndexString index_strings[] = {

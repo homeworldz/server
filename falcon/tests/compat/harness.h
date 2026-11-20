@@ -6,8 +6,8 @@
 //
 // Its shape (Session, drain, post_event, check, expect, says) is that of the
 // semantics test in Ashley's Rookery scripting package, so her checks port
-// with their bodies unchanged. Where Falcon has no answer yet (the LSL line of
-// a runtime error, state changes, a memory limit) the harness reports nothing,
+// with their bodies unchanged. Where Falcon has no answer yet (state changes, a
+// memory limit) the harness reports nothing,
 // so the checks that need it fail rather than pass by default.
 
 #include "homeworldz/script/compiler.h"
@@ -103,7 +103,7 @@ inline bool compiles(const std::string& source) { return compile(source).ok; }
 
 struct RuntimeError {
     std::string message;
-    int lsl_line = 0;  // Falcon does not record the line of a runtime error yet
+    int lsl_line = 0;
     bool fatal = false;
 };
 
@@ -202,7 +202,7 @@ class Script {
         case falcon::RunStatus::Waiting: return {RunStatus::Waiting, 0.0};
         case falcon::RunStatus::Error:
             // The event ends; the next one still runs.
-            host_.errors.push_back({vm_.error(), 0, false});
+            host_.errors.push_back({vm_.error(), vm_.error_line(), false});
             break;
         case falcon::RunStatus::Finished: break;
         }

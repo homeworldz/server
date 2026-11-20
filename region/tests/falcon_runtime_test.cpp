@@ -151,11 +151,10 @@ int main() {
         default { state_entry() { llSitTarget(<0, 0, 0, 1>, <0, 0, 0>); } }
     )LSL", true);
     assert(!swapped.compiled && !swapped.diagnostic.empty());
-    // A float outside a vector literal says so plainly rather than parsing as
-    // something else.
+    // A float where a string is wanted is refused; it takes a cast.
     const auto stray_float = runtime.rez({"f-asset", "f-item", "f-object", "owner"},
         R"LSL(
-        default { state_entry() { llSay(0, (string)1.5); } }
+        default { state_entry() { llSay(0, 1.5); } }
     )LSL", true);
     assert(!stray_float.compiled);
     // A three-component rotation or a five-component vector is a mistake, not

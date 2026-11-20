@@ -100,6 +100,9 @@ public:
 
     bool finished() const { return finished_; }
     const std::string& error() const { return error_; }
+    // The source line the last runtime error was raised on, from 1; 0 when
+    // the program carries no line for it.
+    int error_line() const { return error_line_; }
     std::uint64_t total_instructions() const { return total_; }
 
     // How long the script has left to sleep, in seconds; 0 when it is awake.
@@ -139,6 +142,7 @@ private:
     std::vector<Value> globals_;
     bool finished_ = true;
     std::string error_;
+    int error_line_ = 0;
     std::uint64_t total_ = 0;
     double sleep_seconds_ = 0.0;
     bool waiting_ = false;

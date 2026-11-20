@@ -12,8 +12,6 @@ than compile and do nothing.
 
 Types are one character each: v void, i integer, f float, s string, k key,
 V vector, r rotation, l list.
-
-Float constants are left out until Falcon has a float type.
 """
 import json
 import os
@@ -109,6 +107,10 @@ def main():
         "    const char* name;",
         "    std::int32_t value;",
         "};",
+        "struct IndexFloat {",
+        "    const char* name;",
+        "    double value;",
+        "};",
         "struct IndexString {",
         "    const char* name;",
         "    std::string_view value;",
@@ -129,7 +131,7 @@ def main():
         lines.append('    {"%s", "%s"},' % (entry["name"], codes(entry["params"], entry["name"])))
     lines += ["};", ""]
 
-    integers, strings, vectors, floats = [], [], [], 0
+    integers, strings, vectors, floats = [], [], [], []
     for entry in sorted(constants, key=lambda c: c["name"]):
         name, kind, value = entry["name"], entry["type"], str(entry["value"])
         if kind == "integer":
@@ -142,17 +144,18 @@ def main():
             padded = parts + [0.0] * (4 - len(parts))
             vectors.append('    {"%s", %d, {%s}},' % (name, len(parts), ", ".join(repr(p) for p in padded)))
         elif kind == "float":
-            floats += 1
+            floats.append('    {"%s", %s},' % (name, repr(float(value))))
         else:
             raise ValueError("%s: constant type %r" % (name, kind))
     lines += ["constexpr IndexInteger index_integers[] = {"] + integers + ["};", ""]
+    lines += ["constexpr IndexFloat index_floats[] = {"] + floats + ["};", ""]
     lines += ["constexpr IndexString index_strings[] = {"] + strings + ["};", ""]
     lines += ["constexpr IndexVector index_vectors[] = {"] + vectors + ["};"]
 
     with open(OUT, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("\n".join(lines) + "\n")
     print(json.dumps({"functions": len(functions), "events": len(events), "integers": len(integers),
-                      "strings": len(strings), "vectors": len(vectors), "floats_left_out": floats}))
+                      "strings": len(strings), "vectors": len(vectors), "floats": len(floats)}))
 
 
 if __name__ == "__main__":

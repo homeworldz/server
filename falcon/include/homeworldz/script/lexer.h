@@ -2,13 +2,8 @@
 
 // Handwritten scanner for the LSL PoC subset. No parser-generator dependency,
 // per ADR 0021. It recognizes the identifiers, keywords, integer and string
-// literals, punctuation, and operators the recursive-descent parser needs, and
-// skips line and block comments.
-//
-// Float literals exist for one reason so far: a vector or rotation literal is
-// written with them, and those are what a seat offset is made of. There are no
-// float variables or float arithmetic yet, so a float outside such a literal
-// has nowhere to go and the parser says so.
+// and float literals, punctuation, and operators the recursive-descent parser
+// needs, and skips line and block comments.
 
 #include <cstdint>
 #include <stdexcept>
@@ -40,6 +35,7 @@ enum class TokenKind : std::uint8_t {
     StringLiteral,
     KwDefault,
     KwInteger,
+    KwFloat,
     KwString,
     KwKey,
     KwVector,
@@ -57,8 +53,12 @@ enum class TokenKind : std::uint8_t {
     Plus,
     Minus,
     Star,
+    Slash,
+    Percent,
     Less,
     Greater,
+    LessEqual,    // <=
+    GreaterEqual, // >=
     Assign,     // =
     EqualEqual, // ==
     BangEqual,  // !=

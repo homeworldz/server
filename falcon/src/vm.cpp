@@ -4,7 +4,10 @@
 
 #include <array>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -23,6 +26,95 @@ struct VmFault : std::runtime_error {
 constexpr std::uint16_t kSnapshotVersion = 4;
 constexpr unsigned char kMagic[4] = {'H', 'W', 'Z', 'S'};
 constexpr std::uint32_t kMaxSnapshotValues = 1'000'000; // corrupt-input guard
+
+// (string) of a float: six decimals, as Second Life writes it.
+std::string float_to_string(float value) {
+    if (std::isnan(value)) return "NaN";
+    if (std::isinf(value)) return value < 0 ? "-Infinity" : "Infinity";
+    char buffer[64]; // the largest float has 39 digits before the point
+    const auto end = std::to_chars(buffer, buffer + sizeof buffer, static_cast<double>(value),
+                                   std::chars_format::fixed, 6);
+    return std::string(buffer, end.ptr);
+}
+
+// (integer) of a float: toward zero, and INT_MIN for anything an integer
+// cannot hold, which is what the conversion gives on Second Life's hardware.
+std::int32_t float_to_integer(float value) {
+    if (!(value >= -2147483648.0f && value < 2147483648.0f)) return INT32_MIN; // NaN too
+    return static_cast<std::int32_t>(value);
+}
+
+bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'; }
+bool is_digit(char c) { return c >= '0' && c <= '9'; }
+char lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
+
+// (integer) of a string: the decimal or 0x hexadecimal number it starts with
+// after any spaces, 0 when there is none. A number past 32 bits is all ones.
+std::int32_t string_to_integer(const std::string& text) {
+    std::size_t i = 0;
+    while (i < text.size() && is_space(text[i])) ++i;
+    bool negative = false;
+    if (i < text.size() && (text[i] == '-' || text[i] == '+')) negative = text[i++] == '-';
+    std::uint64_t value = 0;
+    const auto add = [&value](std::uint64_t base, std::uint64_t digit) {
+        value = value * base + digit;
+        if (value > 0xffffffffULL) value = 0xffffffffULL;
+    };
+    if (i + 1 < text.size() && text[i] == '0' && lower(text[i + 1]) == 'x') {
+        for (i += 2; i < text.size(); ++i) {
+            const char c = lower(text[i]);
+            if (is_digit(c)) add(16, static_cast<std::uint64_t>(c - '0'));
+            else if (c >= 'a' && c <= 'f') add(16, static_cast<std::uint64_t>(c - 'a' + 10));
+            else break;
+        }
+    } else {
+        for (; i < text.size() && is_digit(text[i]); ++i) add(10, static_cast<std::uint64_t>(text[i] - '0'));
+    }
+    const auto bits = static_cast<std::uint32_t>(value);
+    return static_cast<std::int32_t>(negative ? 0u - bits : bits);
+}
+
+// (float) of a string: the number it starts with after any spaces, with an
+// optional exponent; "inf" and "nan" in any case; 0.0 when there is none.
+float string_to_float(const std::string& text) {
+    std::size_t i = 0;
+    while (i < text.size() && is_space(text[i])) ++i;
+    bool negative = false;
+    if (i < text.size() && (text[i] == '-' || text[i] == '+')) negative = text[i++] == '-';
+    const auto starts = [&text, i](const char* word) {
+        for (std::size_t k = 0; word[k] != '\0'; ++k) {
+            if (i + k >= text.size() || lower(text[i + k]) != word[k]) return false;
+        }
+        return true;
+    };
+    float value = 0.0f;
+    if (starts("inf")) {
+        value = std::numeric_limits<float>::infinity();
+    } else if (starts("nan")) {
+        value = std::numeric_limits<float>::quiet_NaN();
+    } else {
+        std::size_t end = i;
+        while (end < text.size() && is_digit(text[end])) ++end;
+        if (end < text.size() && text[end] == '.') {
+            ++end;
+            while (end < text.size() && is_digit(text[end])) ++end;
+        }
+        if (end < text.size() && lower(text[end]) == 'e') {
+            std::size_t exponent = end + 1;
+            if (exponent < text.size() && (text[exponent] == '-' || text[exponent] == '+')) ++exponent;
+            if (exponent < text.size() && is_digit(text[exponent])) {
+                end = exponent;
+                while (end < text.size() && is_digit(text[end])) ++end;
+            }
+        }
+        double parsed = 0.0;
+        // from_chars reads no further than a number goes, and reads nothing
+        // from a lone "." — which leaves the 0.0 that is wanted.
+        std::from_chars(text.data() + i, text.data() + end, parsed);
+        value = static_cast<float>(parsed);
+    }
+    return negative ? -value : value;
+}
 
 class ByteWriter {
 public:
@@ -210,6 +302,8 @@ RunStatus VM::run(std::uint64_t instruction_budget) {
         }
     } catch (const VmFault& fault) {
         error_ = fault.what();
+        // step() has moved past the instruction that faulted.
+        error_line_ = ip_ > 0 && ip_ - 1 < program_.lines.size() ? program_.lines[ip_ - 1] : 0;
         finished_ = true;
         return RunStatus::Error;
     }
@@ -247,6 +341,27 @@ void VM::step() {
             throw VmFault("expected an integer on the stack");
         }
         return v.integer;
+    };
+    // An operand of a float operator: a float, or an integer to widen.
+    const auto pop_number = [&pop]() -> float {
+        Value v = pop();
+        if (v.type == Type::Float) return v.real();
+        if (v.type == Type::Integer) return static_cast<float>(v.integer);
+        throw VmFault("expected a number on the stack");
+    };
+    const auto pop_float = [&pop]() -> float {
+        Value v = pop();
+        if (v.type != Type::Float) {
+            throw VmFault("expected a float on the stack");
+        }
+        return v.real();
+    };
+    const auto pop_string = [&pop]() -> std::string {
+        Value v = pop();
+        if (v.type != Type::String) {
+            throw VmFault("expected a string on the stack");
+        }
+        return std::move(v.str);
     };
     const auto slot_ref = [](std::vector<Value>& bank, std::int32_t slot,
                              const char* which) -> Value& {
@@ -371,6 +486,64 @@ void VM::step() {
     }
     case Op::IntToFloat:
         stack_.push_back(Value::make_float(static_cast<double>(pop_int())));
+        break;
+    case Op::DivInt:
+    case Op::ModInt: {
+        const std::int32_t b = pop_int();
+        const std::int32_t a = pop_int();
+        if (b == 0) throw VmFault("Math Error");
+        // INT_MIN / -1 does not fit; LSL gives INT_MIN, and 0 for the remainder.
+        if (b == -1) {
+            stack_.push_back(Value::make_integer(
+                instr.op == Op::DivInt ? static_cast<std::int32_t>(0u - static_cast<std::uint32_t>(a)) : 0));
+            break;
+        }
+        stack_.push_back(Value::make_integer(instr.op == Op::DivInt ? a / b : a % b));
+        break;
+    }
+    case Op::AddFloat:
+    case Op::SubFloat:
+    case Op::MulFloat:
+    case Op::DivFloat: {
+        const float b = pop_number();
+        const float a = pop_number();
+        if (instr.op == Op::DivFloat && b == 0.0f) throw VmFault("Math Error");
+        const float result = instr.op == Op::AddFloat   ? a + b
+                             : instr.op == Op::SubFloat ? a - b
+                             : instr.op == Op::MulFloat ? a * b
+                                                        : a / b;
+        stack_.push_back(Value::make_float(result));
+        break;
+    }
+    case Op::NegFloat:
+        stack_.push_back(Value::make_float(-pop_float()));
+        break;
+    case Op::LessFloat:
+    case Op::GreaterFloat:
+    case Op::LessEqFloat:
+    case Op::GreaterEqFloat:
+    case Op::EqualFloat: {
+        const float b = pop_number();
+        const float a = pop_number();
+        const bool result = instr.op == Op::LessFloat        ? a < b
+                            : instr.op == Op::GreaterFloat   ? a > b
+                            : instr.op == Op::LessEqFloat    ? a <= b
+                            : instr.op == Op::GreaterEqFloat ? a >= b
+                                                             : a == b;
+        stack_.push_back(Value::make_integer(result ? 1 : 0));
+        break;
+    }
+    case Op::CastFloatToStr:
+        stack_.push_back(Value::make_string(float_to_string(pop_float())));
+        break;
+    case Op::CastFloatToInt:
+        stack_.push_back(Value::make_integer(float_to_integer(pop_float())));
+        break;
+    case Op::CastStrToInt:
+        stack_.push_back(Value::make_integer(string_to_integer(pop_string())));
+        break;
+    case Op::CastStrToFloat:
+        stack_.push_back(Value::make_float(string_to_float(pop_string())));
         break;
     case Op::Pop:
         (void)pop();

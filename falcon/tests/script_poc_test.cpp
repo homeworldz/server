@@ -565,6 +565,141 @@ int main() {
                 "a failed host call is a runtime error");
     }
 
+    // (floats) A float is a 32-bit value with its own arithmetic, an integer
+    // widens to one where a float is wanted, and nothing narrows without a cast.
+    {
+        std::vector<std::string> out;
+        const auto run = [&out](const std::string& globals, const std::string& body) {
+            out.clear();
+            const Program program =
+                compile_source(globals + "\ndefault { state_entry() {\n" + body + "\n} }");
+            VM vm(program);
+            vm.set_host(make_host(out));
+            vm.dispatch("state_entry", {});
+            return vm.run(10000);
+        };
+        const auto refused = [](const std::string& body) {
+            try {
+                compile_source("default { state_entry() { " + body + " } }");
+            } catch (const ScriptError&) {
+                return true;
+            }
+            return false;
+        };
+
+        run("float g = 2; float h = -1.5; float tiny = 1e-3;",
+            "float f = 0.1; f = f + 1;\n"
+            "llOwnerSay((string)f + \" \" + (string)g + \" \" + (string)h + \" \" + (string)tiny);\n"
+            "llOwnerSay((string)(7 / 2) + \" \" + (string)(7 / 2.0) + \" \" + (string)(1 - .5) + \" \" + (string)(3 * 1.5f));\n"
+            "llOwnerSay((string)(-7 / 2) + \" \" + (string)(-7 % 2) + \" \" + (string)(7 % -2));\n"
+            "llOwnerSay((string)(-f));");
+        require(out == std::vector<std::string>{"1.100000 2.000000 -1.500000 0.001000",
+                                                "3 3.500000 0.500000 4.500000", "-3 -1 1",
+                                                "-1.100000"},
+                "floats print six decimals, integers widen beside them, and integer division truncates");
+
+        run("", "float f = 16777217; integer i = 16777217;\n"
+                "llOwnerSay((string)f + \" \" + (string)i + \" \" + (string)(16777216.0 + 1));\n"
+                "llOwnerSay((string)(0.1 + 0.2 == 0.3) + (string)(0.5 + 0.25 == 0.75));");
+        // In 32 bits 0.1 + 0.2 is exactly 0.3; in 64 it is not.
+        require(out == std::vector<std::string>{"16777216.000000 16777217 16777216.000000", "11"},
+                "a float holds 32 bits, at a store and at every result");
+
+        run("", "float a = 1.5; integer two = 2;\n"
+                "llOwnerSay((string)(a < two) + (string)(a > two) + (string)(a <= 1.5) + (string)(a >= two)"
+                " + (string)(a == 1.5) + (string)(a != 1.5) + (string)(two == 2.0) + (string)(a == two));\n"
+                "integer n = 3;\n"
+                "llOwnerSay((string)(n <= 3) + (string)(n >= 4) + (string)(n <= 2) + (string)(n >= 3));\n"
+                "float nan = (float)\"nan\";\n"
+                "llOwnerSay((string)(nan < 1) + (string)(nan >= 1) + (string)(nan <= 1) + (string)(nan == nan)"
+                " + (string)(nan != nan));\n"
+                "float zero; if (zero) { llOwnerSay(\"zero is true\"); } if (a) { llOwnerSay(\"a is true\"); }");
+        require(out == std::vector<std::string>{"10101010", "1001", "00001", "a is true"},
+                "floats and integers compare with each other, and nothing orders against NaN");
+
+        run("", "llOwnerSay((string)((integer)1.9) + \" \" + (string)((integer)-1.9) + \" \" + (string)((integer)1e20)"
+                " + \" \" + (string)((integer)(float)\"nan\"));\n"
+                "llOwnerSay((string)((float)\"1.5e2\") + \" \" + (string)((float)\"  -3.25xyz\") + \" \" + (string)((float)\"x\")"
+                " + \" \" + (string)((float)\".\") + \" \" + (string)((float)\"-INF\") + \" \" + (string)((float)7));\n"
+                "llOwnerSay((string)((integer)\"0x1A\") + \" \" + (string)((integer)\"  42abc\") + \" \" + (string)((integer)\"abc\")"
+                " + \" \" + (string)((integer)\"-17\") + \" \" + (string)((integer)\"4294967296\"));\n"
+                "llOwnerSay((string)1e30 + \" \" + (string)PI + \" \" + (string)(TWO_PI / 2 == PI));");
+        require(out == std::vector<std::string>{"1 -1 -2147483648 -2147483648",
+                                                "150.000000 -3.250000 0.000000 0.000000 -Infinity 7.000000",
+                                                "26 42 0 -17 -1",
+                                                "1000000015047466219876688855040.000000 3.141593 1"},
+                "casts between float, integer and string follow Second Life");
+
+        require(refused("integer i = 1.5;") && refused("integer i; i = 1.0;") &&
+                    refused("llOwnerSay(\"x\" + 1.5);") && refused("float f = \"1.5\";") &&
+                    refused("float f = 1.5 % 2;") && refused("key k = (key)1.5;") &&
+                    !refused("float f = 1; f = 2; llSleep(1); llOwnerSay(\"x\" + (string)1.5);"),
+                "a float never narrows or turns into a string without a cast");
+
+        // A division by zero stops the event with LSL's message and the line
+        // it was written on; the script takes the next event.
+        const Program dividing = compile_source(
+            "default {\n"
+            " state_entry() {\n"
+            "  integer zero = 0;\n"
+            "  llOwnerSay(\"before\");\n"
+            "  llOwnerSay((string)(5 /\n"
+            "      zero));\n"
+            " }\n"
+            " touch_start(integer n) {\n"
+            "  float z;\n"
+            "  llOwnerSay((string)(n / z));\n"
+            " }\n"
+            " timer() { llOwnerSay((string)(5 % 0)); }\n"
+            " changed(integer c) { integer lo = -2147483647 - 1;\n"
+            "  llOwnerSay((string)(lo / c) + \" \" + (string)(lo % c)); }\n"
+            "}\n");
+        VM divider(dividing);
+        out.clear();
+        divider.set_host(make_host(out));
+        divider.dispatch("state_entry", {});
+        require(divider.run(1000) == RunStatus::Error && divider.error() == "Math Error" &&
+                    divider.error_line() == 5 && out == std::vector<std::string>{"before"},
+                "integer / 0 is a Math Error at the operator's line");
+        divider.dispatch("touch_start", {Value::make_integer(1)});
+        const bool float_fault = divider.run(1000) == RunStatus::Error && divider.error_line() == 10;
+        divider.dispatch("timer", {});
+        require(float_fault && divider.run(1000) == RunStatus::Error && divider.error() == "Math Error" &&
+                    divider.error_line() == 12,
+                "float / 0.0 and integer % 0 are Math Errors, and the script takes the next event");
+        out.clear();
+        divider.dispatch("changed", {Value::make_integer(-1)});
+        require(divider.run(1000) == RunStatus::Finished &&
+                    out == std::vector<std::string>{"-2147483648 0"},
+                "the least integer divided by -1 is itself, with no remainder");
+
+        // A float on the stack and in a local crosses a snapshot.
+        const Program crossing = compile_source(
+            "float total;\n"
+            "default { state_entry() { float step = 0.25; integer i = 0;\n"
+            " while (i < 4) { total = total + step; i = i + 1; }\n"
+            " llOwnerSay((string)total + \" \" + (string)(total * (step + 1))); } }");
+        VM whole(crossing);
+        std::vector<std::string> whole_out;
+        whole.set_host(make_host(whole_out));
+        whole.dispatch("state_entry", {});
+        whole.run(100000);
+        bool every_point = whole_out == std::vector<std::string>{"1.000000 1.250000"};
+        for (std::uint64_t cut = 1; cut < whole.total_instructions(); ++cut) {
+            VM first(crossing);
+            std::vector<std::string> cut_out;
+            first.set_host(make_host(cut_out));
+            first.dispatch("state_entry", {});
+            first.run(cut);
+            VM second(crossing);
+            second.set_host(make_host(cut_out));
+            second.restore(first.snapshot());
+            second.run(100000);
+            every_point = every_point && cut_out == whole_out;
+        }
+        require(every_point, "a script doing float arithmetic can be snapshotted after any instruction");
+    }
+
     if (g_failures == 0) {
         std::cout << "ALL PoC CHECKS PASSED\n";
         return EXIT_SUCCESS;

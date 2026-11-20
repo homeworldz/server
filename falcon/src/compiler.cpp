@@ -29,11 +29,13 @@ const char* type_name(Type type) {
 }
 
 // LSL converts between string and key implicitly wherever one is given for the
-// other; every other pair of types must match exactly.
+// other, and widens an integer given where a float is wanted; every other pair
+// of types must match exactly. The widening needs code (Compiler::convert).
 bool assignable(Type to, Type from) {
     if (to == from) return true;
     return (to == Type::Key && from == Type::String) ||
-           (to == Type::String && from == Type::Key);
+           (to == Type::String && from == Type::Key) ||
+           (to == Type::Float && from == Type::Integer);
 }
 
 // The whole compatibility surface, generated from falcon/index: every
@@ -141,6 +143,8 @@ const Value* lookup_constant(const std::string& name) {
         std::unordered_map<std::string, Value> built;
         for (const auto& constant : index_integers)
             built.emplace(constant.name, Value::make_integer(constant.value));
+        for (const auto& constant : index_floats)
+            built.emplace(constant.name, Value::make_float(constant.value));
         for (const auto& constant : index_strings)
             built.emplace(constant.name, Value::make_string(std::string(constant.value)));
         for (const auto& constant : index_vectors) {
@@ -243,6 +247,9 @@ private:
                 throw ScriptError("cannot initialize " + std::string(type_name(global.type)) +
                                   " global '" + global.name + "' with " + type_name(folded_type));
             }
+            if (global.type == Type::Float && folded_type == Type::Integer) {
+                initial = Value::make_float(static_cast<double>(initial.integer));
+            }
         }
         program_.global_defaults.push_back(std::move(initial));
         globals_.emplace(global.name, Symbol{Scope::Global, slot, global.type});
@@ -258,6 +265,10 @@ private:
         if (const auto* lit = dynamic_cast<const ast::StringLiteral*>(&expr)) {
             type = Type::String;
             return Value::make_string(lit->value);
+        }
+        if (const auto* lit = dynamic_cast<const ast::FloatLiteral*>(&expr)) {
+            type = Type::Float;
+            return Value::make_float(lit->value);
         }
         if (const auto* lit = dynamic_cast<const ast::VectorLiteral*>(&expr)) {
             const auto& p = lit->components;
@@ -281,6 +292,7 @@ private:
                     inner.integer = -inner.integer;
                     return inner;
                 }
+                if (type == Type::Float) return Value::make_float(-inner.number());
             }
         }
         throw ScriptError("a global initializer must be a constant");
@@ -292,6 +304,7 @@ private:
         case Type::Key: return Value::make_string("00000000-0000-0000-0000-000000000000");
         case Type::Vector: return Value::make_vector(0.0, 0.0, 0.0);
         case Type::Rotation: return Value::make_rotation(0.0, 0.0, 0.0, 1.0);
+        case Type::Float: return Value::make_float(0.0);
         default: return Value::make_integer(0);
         }
     }
@@ -332,7 +345,17 @@ private:
 
     std::int32_t emit(Op op, std::int32_t a = 0, std::int32_t b = 0) {
         program_.code.push_back(Instruction{op, a, b});
+        program_.lines.push_back(line_);
         return static_cast<std::int32_t>(program_.code.size()) - 1;
+    }
+
+    // Makes the value on top of the stack, of type `from`, one of type `to`.
+    // Only the widening of an integer needs code. False when LSL does not
+    // convert between the two without a cast.
+    bool convert(Type to, Type from) {
+        if (!assignable(to, from)) return false;
+        if (to == Type::Float && from == Type::Integer) emit(Op::IntToFloat);
+        return true;
     }
 
     void patch_target(std::int32_t at, std::int32_t target) {
@@ -416,7 +439,7 @@ private:
         const std::int32_t slot = local_count_++;
         if (decl.init) {
             const Type init_type = compile_expression(*decl.init);
-            if (!assignable(decl.type, init_type)) {
+            if (!convert(decl.type, init_type)) {
                 throw ScriptError("cannot initialize " + std::string(type_name(decl.type)) +
                                   " '" + decl.name + "' with " + type_name(init_type));
             }
@@ -430,7 +453,7 @@ private:
     void compile_assign(const ast::Assign& assign) {
         const Symbol symbol = resolve(assign.name);
         const Type value_type = compile_expression(*assign.value);
-        if (!assignable(symbol.type, value_type)) {
+        if (!convert(symbol.type, value_type)) {
             throw ScriptError("cannot assign " + std::string(type_name(value_type)) + " to " +
                               type_name(symbol.type) + " '" + assign.name + "'");
         }
@@ -447,14 +470,19 @@ private:
     }
 
     // A condition leaves one integer for JumpIfZero. LSL takes a string as true
-    // when it is not empty and a key as true when it names something — which
-    // is how a sit script asks `if (llAvatarOnSitTarget())`.
+    // when it is not empty, a key as true when it names something — which is
+    // how a sit script asks `if (llAvatarOnSitTarget())` — and a float as true
+    // when it is not zero.
     void compile_condition(const ast::Expr& expr, const char* context) {
         const Type type = compile_expression(expr);
         if (type == Type::String) {
             emit(Op::StrTruth);
         } else if (type == Type::Key) {
             emit(Op::KeyTruth);
+        } else if (type == Type::Float) {
+            emit(Op::PushConst, add_constant(Value::make_float(0.0)));
+            emit(Op::EqualFloat);
+            emit(Op::NotInt);
         } else {
             require_integer(type, context);
         }
@@ -520,7 +548,12 @@ private:
                 emit(Op::NotInt);
                 return Type::Integer;
             }
-            require_integer(compile_expression(*unary->operand), "operand of unary '-'");
+            const Type operand = compile_expression(*unary->operand);
+            if (operand == Type::Float) {
+                emit(Op::NegFloat);
+                return Type::Float;
+            }
+            require_integer(operand, "operand of unary '-'");
             emit(Op::NegInt);
             return Type::Integer;
         }
@@ -538,23 +571,68 @@ private:
 
     Type compile_cast(const ast::Cast& cast) {
         const Type operand = compile_expression(*cast.operand);
-        if (cast.target == Type::String) {
-            if (operand == Type::Integer) {
-                emit(Op::CastIntToStr);
-            } else if (operand != Type::String && operand != Type::Key) {
-                throw ScriptError(std::string("cannot cast ") + type_name(operand) + " to string");
-            }
-            return Type::String;
+        bool known = false;
+        switch (cast.target) {
+        case Type::String:
+            known = is_textual(operand) || operand == Type::Integer || operand == Type::Float;
+            if (operand == Type::Integer) emit(Op::CastIntToStr);
+            if (operand == Type::Float) emit(Op::CastFloatToStr);
+            break;
+        case Type::Key:
+            known = is_textual(operand);
+            break;
+        case Type::Integer:
+            known = operand == Type::Integer || operand == Type::Float || operand == Type::String;
+            if (operand == Type::Float) emit(Op::CastFloatToInt);
+            if (operand == Type::String) emit(Op::CastStrToInt);
+            break;
+        case Type::Float:
+            known = operand == Type::Integer || operand == Type::Float || operand == Type::String;
+            if (operand == Type::Integer) emit(Op::IntToFloat);
+            if (operand == Type::String) emit(Op::CastStrToFloat);
+            break;
+        default:
+            break;
         }
-        if (cast.target == Type::Key) {
-            if (operand != Type::String && operand != Type::Key) {
-                throw ScriptError(std::string("cannot cast ") + type_name(operand) + " to key");
-            }
-            return Type::Key;
+        if (!known) {
+            throw ScriptError(std::string("cannot cast ") + type_name(operand) + " to " +
+                              type_name(cast.target));
         }
-        if (operand != Type::Integer) {
-            throw ScriptError(std::string("(integer) cast from ") + type_name(operand) +
-                              " is not supported yet");
+        return cast.target;
+    }
+
+    // An arithmetic or ordering operator on two numbers: the integer form when
+    // both are integers, the float form when either is a float.
+    std::optional<Type> numeric_pair(Type lhs, Type rhs) {
+        if (lhs == Type::Integer && rhs == Type::Integer) return Type::Integer;
+        if (is_numeric(lhs) && is_numeric(rhs)) return Type::Float;
+        return std::nullopt;
+    }
+
+    Type compile_arithmetic(Type lhs, Type rhs, Op integer_op, Op float_op, const char* op) {
+        const auto type = numeric_pair(lhs, rhs);
+        if (!type) throw ScriptError(std::string("operator '") + op + "' requires numbers");
+        emit(*type == Type::Integer ? integer_op : float_op);
+        return *type;
+    }
+
+    // An ordering. The integer forms of <= and >= are the opposite test
+    // negated; a float needs its own, because nothing orders against NaN.
+    Type compile_ordering(Type lhs, Type rhs, ast::BinaryOp op, const char* spelling) {
+        const auto type = numeric_pair(lhs, rhs);
+        if (!type) throw ScriptError(std::string("operator '") + spelling + "' requires numbers");
+        const bool integer = *type == Type::Integer;
+        switch (op) {
+        case ast::BinaryOp::Less: emit(integer ? Op::LessInt : Op::LessFloat); break;
+        case ast::BinaryOp::Greater: emit(integer ? Op::GreaterInt : Op::GreaterFloat); break;
+        case ast::BinaryOp::LessEqual:
+            emit(integer ? Op::GreaterInt : Op::LessEqFloat);
+            if (integer) emit(Op::NotInt);
+            break;
+        default:
+            emit(integer ? Op::LessInt : Op::GreaterEqFloat);
+            if (integer) emit(Op::NotInt);
+            break;
         }
         return Type::Integer;
     }
@@ -564,36 +642,38 @@ private:
         const Type rhs = compile_expression(*binary.rhs);
         switch (binary.op) {
         case ast::BinaryOp::Add:
-            if (lhs == Type::Integer && rhs == Type::Integer) {
-                emit(Op::AddInt);
-                return Type::Integer;
-            }
             if (is_textual(lhs) && is_textual(rhs)) {
                 emit(Op::ConcatStr);
                 return Type::String;
             }
-            throw ScriptError("operator '+' requires two integers or two strings");
+            if (!numeric_pair(lhs, rhs)) {
+                throw ScriptError("operator '+' requires two numbers or two strings");
+            }
+            return compile_arithmetic(lhs, rhs, Op::AddInt, Op::AddFloat, "+");
         case ast::BinaryOp::Sub:
-            require_two_integers(lhs, rhs, "-");
-            emit(Op::SubInt);
-            return Type::Integer;
+            return compile_arithmetic(lhs, rhs, Op::SubInt, Op::SubFloat, "-");
         case ast::BinaryOp::Mul:
-            require_two_integers(lhs, rhs, "*");
-            emit(Op::MulInt);
+            return compile_arithmetic(lhs, rhs, Op::MulInt, Op::MulFloat, "*");
+        case ast::BinaryOp::Div:
+            return compile_arithmetic(lhs, rhs, Op::DivInt, Op::DivFloat, "/");
+        case ast::BinaryOp::Mod:
+            require_two_integers(lhs, rhs, "%");
+            emit(Op::ModInt);
             return Type::Integer;
-        case ast::BinaryOp::Less:
-            require_two_integers(lhs, rhs, "<");
-            emit(Op::LessInt);
-            return Type::Integer;
-        case ast::BinaryOp::Greater:
-            require_two_integers(lhs, rhs, ">");
-            emit(Op::GreaterInt);
-            return Type::Integer;
+        case ast::BinaryOp::Less: return compile_ordering(lhs, rhs, binary.op, "<");
+        case ast::BinaryOp::Greater: return compile_ordering(lhs, rhs, binary.op, ">");
+        case ast::BinaryOp::LessEqual: return compile_ordering(lhs, rhs, binary.op, "<=");
+        case ast::BinaryOp::GreaterEqual: return compile_ordering(lhs, rhs, binary.op, ">=");
         case ast::BinaryOp::Equal:
         case ast::BinaryOp::NotEqual: {
             const bool equal = binary.op == ast::BinaryOp::Equal;
             if (is_textual(lhs) && is_textual(rhs)) {
                 emit(equal ? Op::EqualStr : Op::NotEqualStr);
+                return Type::Integer;
+            }
+            if (numeric_pair(lhs, rhs) == Type::Float) {
+                emit(Op::EqualFloat);
+                if (!equal) emit(Op::NotInt);
                 return Type::Integer;
             }
             require_two_integers(lhs, rhs, equal ? "==" : "!=");
@@ -631,12 +711,7 @@ private:
         }
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             const Type arg_type = compile_expression(*call.args[i]);
-            // LSL widens an integer given where a float is wanted.
-            if (signature->params[i] == Type::Float && arg_type == Type::Integer) {
-                emit(Op::IntToFloat);
-                continue;
-            }
-            if (!assignable(signature->params[i], arg_type)) {
+            if (!convert(signature->params[i], arg_type)) {
                 throw ScriptError("argument " + std::to_string(i + 1) + " to '" + call.callee +
                                   "' must be " + type_name(signature->params[i]));
             }
@@ -651,6 +726,7 @@ private:
     }
 
     static bool is_textual(Type type) { return type == Type::String || type == Type::Key; }
+    static bool is_numeric(Type type) { return type == Type::Integer || type == Type::Float; }
 
     static void require_integer(Type type, const char* context) {
         if (type != Type::Integer) {

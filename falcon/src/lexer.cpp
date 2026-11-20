@@ -17,10 +17,25 @@ bool is_ident_char(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
 }
 
+bool is_digit(char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; }
+
+// Where a float's exponent ends when one starts at `at` (e3, E-3, e+10), or
+// `at` itself when what is there is not an exponent.
+std::size_t exponent_end(const std::string& source, std::size_t at) {
+    const std::size_t n = source.size();
+    if (at >= n || (source[at] != 'e' && source[at] != 'E')) return at;
+    std::size_t i = at + 1;
+    if (i < n && (source[i] == '+' || source[i] == '-')) ++i;
+    if (i >= n || !is_digit(source[i])) return at;
+    while (i < n && is_digit(source[i])) ++i;
+    return i;
+}
+
 TokenKind keyword_kind(const std::string& word) {
     static const std::unordered_map<std::string, TokenKind> keywords = {
         {"default", TokenKind::KwDefault},
         {"integer", TokenKind::KwInteger},
+        {"float", TokenKind::KwFloat},
         {"string", TokenKind::KwString},
         {"key", TokenKind::KwKey},
         {"vector", TokenKind::KwVector},
@@ -104,25 +119,34 @@ std::vector<Token> tokenize(const std::string& source) {
         }
         if (std::isdigit(static_cast<unsigned char>(c)) != 0) {
             const auto literal_column = i - line_start + 1;
+            const auto start = i;
+            while (i < n && is_digit(source[i])) ++i;
+            // A dot, with or without digits after it, or an exponent makes
+            // this a float: LSL writes 1.0, 1., 1e3 and 1.5e-3.
+            bool is_float = false;
+            if (i < n && source[i] == '.') {
+                is_float = true;
+                ++i;
+                while (i < n && is_digit(source[i])) ++i;
+            }
+            if (const auto end = exponent_end(source, i); end != i) {
+                is_float = true;
+                i = end;
+            }
+            if (is_float) {
+                token.kind = TokenKind::FloatLiteral;
+                token.number = std::strtod(source.substr(start, i - start).c_str(), nullptr);
+                if (i < n && (source[i] == 'f' || source[i] == 'F')) ++i; // 1.0f
+                tokens.push_back(std::move(token));
+                continue;
+            }
             std::int64_t value = 0;
-            while (i < n && std::isdigit(static_cast<unsigned char>(source[i])) != 0) {
-                value = value * 10 + (source[i] - '0');
+            for (auto digit = start; digit < i; ++digit) {
+                value = value * 10 + (source[digit] - '0');
                 if (value > 0x7fffffffLL) {
                     throw located(
                         "integer literal out of range", line, literal_column);
                 }
-                ++i;
-            }
-            // A dot with digits after it, or a trailing dot, makes this a
-            // float: LSL writes 1.0, 0.5 and 1. and means the same by all three.
-            if (i < n && source[i] == '.') {
-                const auto start = i - std::to_string(value).size();
-                ++i;
-                while (i < n && std::isdigit(static_cast<unsigned char>(source[i])) != 0) ++i;
-                token.kind = TokenKind::FloatLiteral;
-                token.number = std::strtod(source.substr(start, i - start).c_str(), nullptr);
-                tokens.push_back(std::move(token));
-                continue;
             }
             token.kind = TokenKind::IntLiteral;
             token.integer = static_cast<std::int32_t>(value);
@@ -130,12 +154,14 @@ std::vector<Token> tokenize(const std::string& source) {
             continue;
         }
         // A leading dot, as in .5, which LSL also accepts.
-        if (c == '.' && i + 1 < n && std::isdigit(static_cast<unsigned char>(source[i + 1])) != 0) {
+        if (c == '.' && i + 1 < n && is_digit(source[i + 1])) {
             const auto start = i;
             ++i;
-            while (i < n && std::isdigit(static_cast<unsigned char>(source[i])) != 0) ++i;
+            while (i < n && is_digit(source[i])) ++i;
+            i = exponent_end(source, i);
             token.kind = TokenKind::FloatLiteral;
             token.number = std::strtod(source.substr(start, i - start).c_str(), nullptr);
+            if (i < n && (source[i] == 'f' || source[i] == 'F')) ++i;
             tokens.push_back(std::move(token));
             continue;
         }
@@ -188,8 +214,24 @@ std::vector<Token> tokenize(const std::string& source) {
         case '+': token.kind = TokenKind::Plus; break;
         case '-': token.kind = TokenKind::Minus; break;
         case '*': token.kind = TokenKind::Star; break;
-        case '<': token.kind = TokenKind::Less; break;
-        case '>': token.kind = TokenKind::Greater; break;
+        case '/': token.kind = TokenKind::Slash; break;
+        case '%': token.kind = TokenKind::Percent; break;
+        case '<':
+            if (i + 1 < n && source[i + 1] == '=') {
+                token.kind = TokenKind::LessEqual;
+                ++i;
+            } else {
+                token.kind = TokenKind::Less;
+            }
+            break;
+        case '>':
+            if (i + 1 < n && source[i + 1] == '=') {
+                token.kind = TokenKind::GreaterEqual;
+                ++i;
+            } else {
+                token.kind = TokenKind::Greater;
+            }
+            break;
         case '=':
             if (i + 1 < n && source[i + 1] == '=') {
                 token.kind = TokenKind::EqualEqual;

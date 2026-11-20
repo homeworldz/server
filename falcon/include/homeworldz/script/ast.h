@@ -30,8 +30,7 @@ struct StringLiteral : Expr {
     std::string value;
 };
 
-// A float written out: 1.0, .5, 2. — so far only as a value to hand to a
-// function. There are no float variables and no float arithmetic yet.
+// A float written out: 1.0, .5, 2., 1e3.
 struct FloatLiteral : Expr {
     double value = 0.0;
 };
@@ -50,7 +49,10 @@ struct VarRef : Expr {
     std::string name;
 };
 
-enum class BinaryOp { Add, Sub, Mul, Less, Greater, Equal, NotEqual, BitAnd, BitOr, And, Or };
+enum class BinaryOp {
+    Add, Sub, Mul, Div, Mod, Less, Greater, LessEqual, GreaterEqual,
+    Equal, NotEqual, BitAnd, BitOr, And, Or,
+};
 
 enum class UnaryOp { Negate, Not };
 
@@ -65,8 +67,8 @@ struct Binary : Expr {
     ExprPtr rhs;
 };
 
-// A C-style cast such as (string)i. Supported: (string), (integer), and (key)
-// between strings and keys.
+// A C-style cast such as (string)i. Supported: (string), (integer), (float),
+// and (key) between strings and keys.
 struct Cast : Expr {
     Type target = Type::String;
     ExprPtr operand;

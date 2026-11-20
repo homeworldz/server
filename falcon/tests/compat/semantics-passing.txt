@@ -1,3 +1,11 @@
 Halcyon: the constants only its compiler defines
 a type error is reported with its LSL line
+comparisons and logic give 1 and 0, && and || without short circuit
+float / 0.0 and integer % 0 raise Math Error (lines 10, 14); the script keeps running
+float casts: six decimals, Infinity, NaN
+float to integer truncates; out of range is INT_MIN
+implicit string conversion is refused, as in Second Life and InWorldz
 integer * wraps exactly (Python: 123456789*1000 -> -1097262584)
+integer / 0 raises Math Error at its LSL line (5) and ends the event
+integer division truncates toward zero
+string to integer: decimal, hex, junk, saturation

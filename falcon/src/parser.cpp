@@ -16,10 +16,14 @@ int binary_precedence(TokenKind kind) {
     case TokenKind::EqualEqual:
     case TokenKind::BangEqual: return 5;
     case TokenKind::Less:
-    case TokenKind::Greater: return 6;
+    case TokenKind::Greater:
+    case TokenKind::LessEqual:
+    case TokenKind::GreaterEqual: return 6;
     case TokenKind::Plus:
     case TokenKind::Minus: return 7;
-    case TokenKind::Star: return 8;
+    case TokenKind::Star:
+    case TokenKind::Slash:
+    case TokenKind::Percent: return 8;
     default: return -1;
     }
 }
@@ -29,8 +33,12 @@ ast::BinaryOp binary_op_of(TokenKind kind) {
     case TokenKind::Plus: return ast::BinaryOp::Add;
     case TokenKind::Minus: return ast::BinaryOp::Sub;
     case TokenKind::Star: return ast::BinaryOp::Mul;
+    case TokenKind::Slash: return ast::BinaryOp::Div;
+    case TokenKind::Percent: return ast::BinaryOp::Mod;
     case TokenKind::Less: return ast::BinaryOp::Less;
     case TokenKind::Greater: return ast::BinaryOp::Greater;
+    case TokenKind::LessEqual: return ast::BinaryOp::LessEqual;
+    case TokenKind::GreaterEqual: return ast::BinaryOp::GreaterEqual;
     case TokenKind::EqualEqual: return ast::BinaryOp::Equal;
     case TokenKind::BangEqual: return ast::BinaryOp::NotEqual;
     case TokenKind::Amp: return ast::BinaryOp::BitAnd;
@@ -42,7 +50,8 @@ ast::BinaryOp binary_op_of(TokenKind kind) {
 }
 
 bool is_type_keyword(TokenKind kind) {
-    return kind == TokenKind::KwInteger || kind == TokenKind::KwString ||
+    return kind == TokenKind::KwInteger || kind == TokenKind::KwFloat ||
+           kind == TokenKind::KwString ||
            kind == TokenKind::KwKey || kind == TokenKind::KwVector ||
            kind == TokenKind::KwRotation;
 }
@@ -114,6 +123,7 @@ private:
 
     Type type_keyword() {
         if (match(TokenKind::KwInteger)) return Type::Integer;
+        if (match(TokenKind::KwFloat)) return Type::Float;
         if (match(TokenKind::KwString)) return Type::String;
         if (match(TokenKind::KwKey)) return Type::Key;
         if (match(TokenKind::KwVector)) return Type::Vector;
@@ -252,14 +262,11 @@ private:
     ast::ExprPtr parse_unary() {
         // A cast: '(' type ')' operand, distinguished from a parenthesized group.
         if (check(TokenKind::LParen) &&
-            (peek(1).kind == TokenKind::KwInteger || peek(1).kind == TokenKind::KwString ||
-             peek(1).kind == TokenKind::KwKey) &&
+            (peek(1).kind == TokenKind::KwInteger || peek(1).kind == TokenKind::KwFloat ||
+             peek(1).kind == TokenKind::KwString || peek(1).kind == TokenKind::KwKey) &&
             peek(2).kind == TokenKind::RParen) {
             const Token& open = advance(); // (
-            const Type target = check(TokenKind::KwString) ? Type::String
-                              : check(TokenKind::KwKey)    ? Type::Key
-                                                           : Type::Integer;
-            advance(); // type
+            const Type target = type_keyword();
             advance(); // )
             auto cast = make<ast::Cast>(open);
             cast->target = target;

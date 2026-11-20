@@ -24,8 +24,9 @@ namespace homeworldz::script {
 // globals and the event-dispatch model.
 // v3 added the logical, bitwise and string-comparison operators, keys, and
 // vector and rotation values in snapshots.
-inline constexpr std::uint32_t kBytecodeAbiVersion = 4;
-inline constexpr std::uint32_t kCompilerVersion = 5;
+// v5 added float arithmetic, comparison and casts, and integer division.
+inline constexpr std::uint32_t kBytecodeAbiVersion = 5;
+inline constexpr std::uint32_t kCompilerVersion = 6;
 
 // Compile-time value types. Void exists only for typing host calls used as
 // statements. Key is a static type only: a key is a string at runtime, and the
@@ -36,11 +37,10 @@ enum class Type : std::uint8_t { Void, Integer, String, Vector, Rotation, Key, F
 // A tagged LSL value. LSL integers are 32-bit; strings are UTF-8 bytes.
 //
 // Vector and Rotation are literal-only for now: they can be written and handed
-// to a host call, and that is all. There are no float variables and no
-// arithmetic on them yet, so `components` is never the result of a computation
-// — which is why three doubles and a fourth for the rotation's w is enough
-// shape to be going on with. Full float, vector and rotation types are their
-// own roadmap item, and this will grow into them rather than be replaced.
+// to a host call, and that is all. There is no arithmetic on them yet, so
+// their `components` are never the result of a computation. Full vector and
+// rotation types are part of a roadmap item, and this will grow into them
+// rather than be replaced.
 struct Value {
     Type type = Type::Integer;
     std::int32_t integer = 0;
@@ -57,13 +57,14 @@ struct Value {
     static Value make_rotation(double x, double y, double z, double w) {
         return Value{Type::Rotation, 0, {}, {x, y, z, w}};
     }
-    // A float, like a vector, is literal-only for now: it can be written and
-    // handed to a host call. It is held in the first component, rounded to the
-    // 32 bits an LSL float has.
+    // A float is held in the first component, rounded to the 32 bits an LSL
+    // float has. Every float a script holds is made here, so the rounding
+    // happens at each result, as it does in Second Life.
     static Value make_float(double v) {
         return Value{Type::Float, 0, {}, {static_cast<double>(static_cast<float>(v)), 0.0, 0.0, 0.0}};
     }
     double number() const { return components[0]; }
+    float real() const { return static_cast<float>(components[0]); }
 };
 
 enum class Op : std::uint8_t {
@@ -97,6 +98,24 @@ enum class Op : std::uint8_t {
     StrTruth,      // pops a string; pushes 1 when it is non-empty
     KeyTruth,      // pops a key; pushes 1 when it is a non-null uuid
     IntToFloat,    // pops an integer; pushes it as a float
+    DivInt,        // pops b, a; pushes a / b, truncated; b == 0 is a Math Error
+    ModInt,        // pops b, a; pushes a % b; b == 0 is a Math Error
+    // The float operators take a float or an integer for either operand and
+    // widen the integer, so `i + 1.5` needs no conversion beneath the stack top.
+    AddFloat,       // pops b, a; pushes a + b
+    SubFloat,       // pops b, a; pushes a - b
+    MulFloat,       // pops b, a; pushes a * b
+    DivFloat,       // pops b, a; pushes a / b; b == 0 is a Math Error
+    NegFloat,       // pops a; pushes -a
+    LessFloat,      // pops b, a; pushes (a < b) ? 1 : 0
+    GreaterFloat,   // pops b, a; pushes (a > b) ? 1 : 0
+    LessEqFloat,    // pops b, a; pushes (a <= b) ? 1 : 0
+    GreaterEqFloat, // pops b, a; pushes (a >= b) ? 1 : 0
+    EqualFloat,     // pops b, a; pushes (a == b) ? 1 : 0
+    CastFloatToStr, // pops a float; pushes it with six decimals
+    CastFloatToInt, // pops a float; pushes it truncated, or INT_MIN out of range
+    CastStrToInt,   // pops a string; pushes the integer it starts with, or 0
+    CastStrToFloat, // pops a string; pushes the float it starts with, or 0.0
 };
 
 struct Instruction {
@@ -123,6 +142,7 @@ struct EventEntry {
 // state; states are future work.
 struct Program {
     std::vector<Instruction> code;
+    std::vector<std::int32_t> lines; // the source line of each instruction, from 1
     std::vector<Value> constants;
     std::vector<std::string> host_names;
     std::vector<Value> global_defaults; // initial value per global slot

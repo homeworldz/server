@@ -75,10 +75,12 @@ stream; an event dispatch table records where each begins.
 Each `EventEntry` carries the handler's `name` (e.g. `state_entry`,
 `touch_start`), its `entry_ip` (first instruction), the `param_types` the region
 must supply when dispatching it, and the `local_count` it needs (parameters
-occupy the first local slots). `compiler_version` is `5` and `abi_version` `4`
+occupy the first local slots). `compiler_version` is `6` and `abi_version` `5`
 (`kCompilerVersion`, `kBytecodeAbiVersion`); ABI 2 added persistent globals and
-the event-dispatch model, 3 vectors and rotations as values, and 4 floats, the
-sleep left, and the host call in progress.
+the event-dispatch model, 3 vectors and rotations as values, 4 floats, the
+sleep left, and the host call in progress, and 5 float arithmetic and integer
+division. `lines` holds the source line of each instruction, which is how a
+runtime error names the line it was raised on (`VM::error_line()`).
 
 ## Instruction format
 
@@ -118,6 +120,18 @@ operand and `a` is beneath it (so `a OP b` matches source order).
 | `CallHost` | `a`=host idx, `b`=argc | `arg1..argN` → `[result]` | call `host_names[a]`; push a result only if the host returns one |
 | `Pop` | — | `v` → | discard the top of stack |
 | `Halt` | — | — | end the handler (VM reports `Finished`) |
+| `DivInt`, `ModInt` | — | `a b` → `a/b`, `a%b` | integer divide and remainder, toward zero; a zero divisor is a `Math Error` |
+| `AddFloat`, `SubFloat`, `MulFloat`, `DivFloat` | — | `a b` → result | float arithmetic in 32 bits; either operand may be an integer, which widens; dividing by zero is a `Math Error` |
+| `NegFloat` | — | `a` → `-a` | float negation |
+| `LessFloat`, `GreaterFloat`, `LessEqFloat`, `GreaterEqFloat`, `EqualFloat` | — | `a b` → 0/1 | float comparison, with the same widening; every one is 0 against NaN |
+| `IntToFloat` | — | `i` → `f` | widen an integer |
+| `CastFloatToStr` | — | `f` → `str(f)` | `(string)` of a float: six decimals, `Infinity`, `NaN` |
+| `CastFloatToInt` | — | `f` → `i` | `(integer)` of a float: toward zero, `INT_MIN` out of range |
+| `CastStrToInt`, `CastStrToFloat` | — | `s` → number | the number a string starts with, or zero |
+
+Integer `<=` and `>=` compile to the opposite test and `NotInt`; float `!=` to
+`EqualFloat` and `NotInt`. The table above leaves out the string, key, bitwise
+and logical operators, which are listed in `bytecode.h`.
 
 Control flow is lowered by the compiler with forward-patched jump targets. For
 example a `while` loop becomes: `<cond>`, `JumpIfZero end`, `<body>`,
@@ -291,8 +305,9 @@ safe upgrade, incompatibility, and rollback" item builds on this field.
 Falcon today confirms the pipeline end to end on a representative slice and is
 deliberately narrow:
 
-- **Language:** one `default` state; persistent globals; `integer` and
-  `string`; arithmetic, string concatenation, comparisons, a `(string)` cast;
+- **Language:** one `default` state; persistent globals; `integer`, `float`,
+  `string` and `key`, with vector and rotation literals; arithmetic, string
+  concatenation, comparisons, and casts between integer, float and string;
   `while` and `if`.
 - **Events:** `state_entry` and `touch_start(integer)`, dispatched with typed
   parameters. Adding more events is a table entry plus a parameter signature.
@@ -303,8 +318,8 @@ deliberately narrow:
   `llSay` output goes to a test boundary rather than region chat.
 
 Not yet implemented: user-defined functions and call frames, `state`
-transitions and the broader event set, `list` / `vector` / `rotation` / `key` /
-`float` types, timers and a real event queue, the full LSL host-function
+transitions and the broader event set, `list` values and `vector` / `rotation`
+arithmetic, the full LSL host-function
 library, memory and other resource limits, and region/crossing integration.
 Each is an additive step behind the same boundary and ABI.
 
