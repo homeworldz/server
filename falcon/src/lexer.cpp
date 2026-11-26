@@ -46,6 +46,8 @@ TokenKind keyword_kind(const std::string& word) {
         {"if", TokenKind::KwIf},
         {"else", TokenKind::KwElse},
         {"return", TokenKind::KwReturn},
+        {"for", TokenKind::KwFor},
+        {"do", TokenKind::KwDo},
         {"print", TokenKind::KwPrint},
     };
     const auto it = keywords.find(word);
@@ -205,7 +207,15 @@ std::vector<Token> tokenize(const std::string& source) {
             continue;
         }
 
-        // Punctuation and operators.
+        // Punctuation and operators. `next` takes the second character of a
+        // two-character operator when it is the one asked for.
+        const auto next = [&](char second) {
+            if (i + 1 < n && source[i + 1] == second) {
+                ++i;
+                return true;
+            }
+            return false;
+        };
         switch (c) {
         case '(': token.kind = TokenKind::LParen; break;
         case ')': token.kind = TokenKind::RParen; break;
@@ -215,11 +225,15 @@ std::vector<Token> tokenize(const std::string& source) {
         case ']': token.kind = TokenKind::RBracket; break;
         case ';': token.kind = TokenKind::Semicolon; break;
         case ',': token.kind = TokenKind::Comma; break;
-        case '+': token.kind = TokenKind::Plus; break;
-        case '-': token.kind = TokenKind::Minus; break;
-        case '*': token.kind = TokenKind::Star; break;
-        case '/': token.kind = TokenKind::Slash; break;
-        case '%': token.kind = TokenKind::Percent; break;
+        case '+':
+            token.kind = next('+') ? TokenKind::PlusPlus : next('=') ? TokenKind::PlusAssign : TokenKind::Plus;
+            break;
+        case '-':
+            token.kind = next('-') ? TokenKind::MinusMinus : next('=') ? TokenKind::MinusAssign : TokenKind::Minus;
+            break;
+        case '*': token.kind = next('=') ? TokenKind::StarAssign : TokenKind::Star; break;
+        case '/': token.kind = next('=') ? TokenKind::SlashAssign : TokenKind::Slash; break;
+        case '%': token.kind = next('=') ? TokenKind::PercentAssign : TokenKind::Percent; break;
         case '<':
             if (i + 1 < n && source[i + 1] == '=') {
                 token.kind = TokenKind::LessEqual;

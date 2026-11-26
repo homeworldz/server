@@ -45,6 +45,8 @@ enum class TokenKind : std::uint8_t {
     KwIf,
     KwElse,
     KwReturn,
+    KwFor,
+    KwDo,
     KwPrint, // reserved in LSL's grammar, so it cannot name a variable
     LParen,
     RParen,
@@ -64,6 +66,13 @@ enum class TokenKind : std::uint8_t {
     LessEqual,    // <=
     GreaterEqual, // >=
     Assign,     // =
+    PlusAssign,    // +=
+    MinusAssign,   // -=
+    StarAssign,    // *=
+    SlashAssign,   // /=
+    PercentAssign, // %=
+    PlusPlus,      // ++
+    MinusMinus,    // --
     EqualEqual, // ==
     BangEqual,  // !=
     Bang,       // !

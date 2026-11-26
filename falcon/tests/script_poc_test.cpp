@@ -918,6 +918,18 @@ int main() {
         require(out == std::vector<std::string>{"error: Stack-Heap Collision at line 1"},
                 "recursion with no end stops the event with a Stack-Heap Collision");
 
+        // A list or a string grown without end stops the same way, and what
+        // the script held before the value too large to build is kept.
+        run("default {\n state_entry() {\n  list l;\n  integer n;\n"
+            "  while (1) {\n   n = llGetListLength(l);\n   llOwnerSay((string)n);\n"
+            "   l = l + [\"0123456789abcdef\", \"0123456789abcdef\", \"0123456789abcdef\", \"0123456789abcdef\"] + l;\n"
+            "  }\n }\n}");
+        require(out.size() > 2 && out.size() < 20 && out.back() == "error: Stack-Heap Collision at line 8",
+                "a list grown without end stops the event with a Stack-Heap Collision");
+        run("default {\n state_entry() {\n  string s = \"0123456789abcdef\";\n  while (1) s = s + s;\n }\n}");
+        require(out == std::vector<std::string>{"error: Stack-Heap Collision at line 4"},
+                "a string grown without end stops the event with a Stack-Heap Collision");
+
         run("integer zero;\n"
             "integer divide(integer n) {\n"
             "  return n /\n"
@@ -978,7 +990,7 @@ int main() {
                 return "compiled";
             };
             require(message("integer n = " + repeat("(", 10000) + "1" + repeat(")", 10000) + ";") == "nested too deeply" &&
-                        message("integer n = " + repeat("-", 10000) + "1;") == "nested too deeply" &&
+                        message("integer n = " + repeat("- ", 10000) + "1;") == "nested too deeply" &&
                         message("integer n = 1" + repeat(" + 1", 10000) + ";") ==
                             "expression too long or nested too deeply" &&
                         message("list l = " + repeat("(list)", 150) + repeat("[", 1) + "1" + repeat(" + 1", 150) + "];") ==
@@ -1018,6 +1030,85 @@ int main() {
         }
         require(every_point && whole.total_instructions() > 100,
                 "a script inside nested calls can be snapshotted after any instruction");
+    }
+
+    // (assignment and loops) An assignment is an expression with the variable's
+    // new value; ++ and -- come before or after; for and do ... while loop.
+    {
+        std::vector<std::string> out;
+        const auto run = [&out](const std::string& globals, const std::string& body) {
+            out.clear();
+            const Program program =
+                compile_source(globals + "\ndefault { state_entry() {\n" + body + "\n} }");
+            VM vm(program);
+            vm.set_host(make_host(out));
+            vm.dispatch("state_entry", {});
+            const RunStatus status = vm.run(100000);
+            if (status == RunStatus::Error) out.push_back("error: " + vm.error());
+            if (status == RunStatus::Yielded) out.push_back("still running");
+            return status;
+        };
+        const auto refused = [](const std::string& body) {
+            try {
+                compile_source("default { state_entry() { " + body + " } }");
+            } catch (const ScriptError&) {
+                return true;
+            }
+            return false;
+        };
+
+        run("integer g = 10;",
+            "integer i = 10; float f = 1.5; string s = \"a\"; list l;\n"
+            "i += 5; i -= 3; i *= 2; i /= 5; i %= 3; g += i; g -= 1;\n"
+            "llOwnerSay((string)i + \" \" + (string)g);\n"
+            "i = 5; i *= 1.5; f += 1; f *= 2; f -= 0.5; f /= 2;\n"
+            "llOwnerSay((string)i + \" \" + (string)f);\n"
+            "s += \"b\"; s += s; l += 1; l += [2.5, \"x\"]; l += l;\n"
+            "llOwnerSay(s + \" \" + (string)l);");
+        // ((10 + 5 - 3) * 2 / 5) % 3 = 1; 5 * 1.5 = 7.5 kept as 7; ((1.5 + 1) * 2 - 0.5) / 2 = 2.25
+        require(out == std::vector<std::string>{"1 10", "7 2.250000", "abab 12.500000x12.500000x"},
+                "compound assignment applies its operator, and integer *= float keeps the whole part");
+
+        run("", "integer i = 5; integer j; integer k; float f = 1.5;\n"
+                "j = i++; k = ++i; llOwnerSay((string)i + \" \" + (string)j + \" \" + (string)k);\n"
+                "j = i--; k = --i; llOwnerSay((string)i + \" \" + (string)j + \" \" + (string)k);\n"
+                "i++; ++i; i--; f++; --f; ++f;\n"
+                "llOwnerSay((string)i + \" \" + (string)f + \" \" + (string)(f++) + \" \" + (string)(--f) + \" \" + (string)f);\n"
+                "integer lo = -2147483647; lo--; lo--; llOwnerSay((string)lo);");
+        // The third line is read from its right end: f, then --f, then f++.
+        require(out == std::vector<std::string>{"7 5 7", "5 7 5", "6 2.500000 1.500000 1.500000 2.500000", "2147483647"},
+                "++ and -- give the new value before the name and the old one after it");
+
+        run("", "integer a; integer b; integer c; integer x = 1;\n"
+                "a = b = c = 4; a += b -= 1;\n"
+                "llOwnerSay((string)a + (string)b + (string)c + \" \" + (string)(x + (x = 5)) + \" \" + (string)((x = 2) + x)"
+                " + \" \" + (string)(a = 9) + (string)a);\n"
+                "if ((a = 0)) { llOwnerSay(\"zero is true\"); } string s; if ((s = \"t\") == \"t\") { llOwnerSay(s); }");
+        // Read from the right end: a is still 7 when it is printed last, and 9
+        // when it is printed first. (x = 2) + x reads x (1) and then sets it,
+        // giving 3; then x + (x = 5) sets x before reading it, giving 10.
+        require(out == std::vector<std::string>{"934 10 3 97", "t"},
+                "an assignment is an expression, takes the right operand first, and chains to the right");
+
+        run("", "integer i; string s;\n"
+                "for (i = 0; i < 5; ++i) s += (string)i;\n"
+                "integer j; for (i = 0, j = 10; i < j; i += 3, j--) { s += \".\"; }\n"
+                "for (; i < 12; ) i++;\n"
+                "llOwnerSay(s + \" \" + (string)i + \" \" + (string)j);\n"
+                "s = \"\"; i = 0; do { i++; s += (string)i; } while (i < 4);\n"
+                "do s += \"!\"; while (0);\n"
+                "for (i = 0; i < 3; i++) { integer k; for (k = 0; k < i; k++) s += \"*\"; }\n"
+                "llOwnerSay(s);");
+        require(out == std::vector<std::string>{"01234... 12 7", "1234!***"},
+                "for runs its first part once and its last part after each pass; do runs its body first");
+
+        require(refused("integer i; i + 1 = 2;") && refused("integer i; 5 = i;") &&
+                    refused("string s; s++;") && refused("list l; --l;") && refused("integer i; i += 1.5;") &&
+                    refused("integer i; i -= \"a\";") && refused("string s; s *= 2;") && refused("++5;") &&
+                    refused("integer i; for (i = 0; ; i++) { }") && refused("integer i; do i++; while (i < 3)") &&
+                    refused("for (integer i = 0; i < 3; i++) { }") && refused("integer i; i =+ ;") &&
+                    !refused("integer i; float f; f = i = 3; f += i; i *= f; for (;i;) i--; do ; while (i);"),
+                "only a variable is assigned to, and a compound assignment still checks its types");
     }
 
     if (g_failures == 0) {

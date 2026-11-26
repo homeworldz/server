@@ -49,6 +49,22 @@ ast::BinaryOp binary_op_of(TokenKind kind) {
     }
 }
 
+// The operator an assignment token applies, for the compound ones.
+bool is_assignment(TokenKind kind) {
+    return kind == TokenKind::Assign || kind == TokenKind::PlusAssign || kind == TokenKind::MinusAssign ||
+           kind == TokenKind::StarAssign || kind == TokenKind::SlashAssign || kind == TokenKind::PercentAssign;
+}
+
+ast::BinaryOp assignment_op(TokenKind kind) {
+    switch (kind) {
+    case TokenKind::MinusAssign: return ast::BinaryOp::Sub;
+    case TokenKind::StarAssign: return ast::BinaryOp::Mul;
+    case TokenKind::SlashAssign: return ast::BinaryOp::Div;
+    case TokenKind::PercentAssign: return ast::BinaryOp::Mod;
+    default: return ast::BinaryOp::Add;
+    }
+}
+
 bool is_type_keyword(TokenKind kind) {
     return kind == TokenKind::KwInteger || kind == TokenKind::KwFloat ||
            kind == TokenKind::KwString ||
@@ -262,15 +278,20 @@ private:
             expect(TokenKind::Semicolon, "expected ';' after return");
             return node;
         }
-        // Assignment (ident = expr;) or an expression statement (e.g. a call).
-        if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Assign) {
-            auto assign = make<ast::Assign>(peek());
-            assign->name = advance().text;
-            expect(TokenKind::Assign, "expected '='");
-            assign->value = parse_expression(0);
-            expect(TokenKind::Semicolon, "expected ';' after assignment");
-            return assign;
+        if (check(TokenKind::KwFor)) {
+            return parse_for();
         }
+        if (check(TokenKind::KwDo)) {
+            auto node = make<ast::DoWhile>(advance()); // do
+            node->body = parse_body();
+            expect(TokenKind::KwWhile, "expected 'while' after the body of 'do'");
+            expect(TokenKind::LParen, "expected '(' after 'while'");
+            node->condition = parse_expression(0);
+            expect(TokenKind::RParen, "expected ')' after condition");
+            expect(TokenKind::Semicolon, "expected ';' after do ... while");
+            return node;
+        }
+        // An expression statement: an assignment, a call, an increment.
         auto stmt = make<ast::ExprStmt>(peek());
         stmt->expr = parse_expression(0);
         expect(TokenKind::Semicolon, "expected ';' after expression");
@@ -286,6 +307,29 @@ private:
         }
         expect(TokenKind::Semicolon, "expected ';' after declaration");
         return decl;
+    }
+
+    // The expressions of a for loop's first or last part, up to `end`.
+    std::vector<ast::ExprPtr> parse_for_list(TokenKind end) {
+        std::vector<ast::ExprPtr> list;
+        if (!check(end)) {
+            list.push_back(parse_expression(0));
+            while (match(TokenKind::Comma)) list.push_back(parse_expression(0));
+        }
+        return list;
+    }
+
+    ast::StmtPtr parse_for() {
+        auto node = make<ast::For>(advance()); // for
+        expect(TokenKind::LParen, "expected '(' after 'for'");
+        node->init = parse_for_list(TokenKind::Semicolon);
+        expect(TokenKind::Semicolon, "expected ';' after the first part of 'for'");
+        node->condition = parse_expression(0);
+        expect(TokenKind::Semicolon, "expected ';' after the condition of 'for'");
+        node->step = parse_for_list(TokenKind::RParen);
+        expect(TokenKind::RParen, "expected ')' to close 'for'");
+        node->body = parse_body();
+        return node;
     }
 
     ast::StmtPtr parse_while() {
@@ -311,6 +355,23 @@ private:
 
     ast::ExprPtr parse_expression(int min_precedence) {
         ast::ExprPtr left = parse_unary();
+        // An assignment binds loosest and to the right: a = b = c. It is taken
+        // only where a whole expression is being read, so a + b = c is refused.
+        if (min_precedence == 0 && is_assignment(peek().kind)) {
+            const auto* target = dynamic_cast<const ast::VarRef*>(left.get());
+            if (target == nullptr) fail("only a variable can be assigned to");
+            const Nest nest(*this);
+            auto assign = std::make_unique<ast::Assign>();
+            assign->line = target->line;
+            assign->column = target->column;
+            assign->name = target->name;
+            const TokenKind op = advance().kind;
+            assign->compound = op != TokenKind::Assign;
+            assign->op = assignment_op(op);
+            assign->value = parse_expression(0);
+            holds(*assign, *assign->value);
+            return assign;
+        }
         for (;;) {
             const int prec = binary_precedence(peek().kind);
             if (prec < 0 || prec < min_precedence) {
@@ -344,6 +405,12 @@ private:
             cast->operand = parse_unary();
             holds(*cast, *cast->operand);
             return cast;
+        }
+        if (check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) {
+            auto node = make<ast::IncDec>(peek());
+            node->increment = advance().kind == TokenKind::PlusPlus;
+            node->name = expect(TokenKind::Identifier, "expected a variable after ++ or --").text;
+            return node;
         }
         if (check(TokenKind::Minus) || check(TokenKind::Bang)) {
             auto unary = make<ast::Unary>(peek());
@@ -427,6 +494,13 @@ private:
                 expect(TokenKind::RParen, "expected ')' to close call arguments");
                 for (const auto& arg : call->args) holds(*call, *arg);
                 return call;
+            }
+            if (check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) {
+                auto node = make<ast::IncDec>(identifier);
+                node->name = std::move(name);
+                node->increment = advance().kind == TokenKind::PlusPlus;
+                node->prefix = false;
+                return node;
             }
             auto ref = make<ast::VarRef>(identifier);
             ref->name = std::move(name);

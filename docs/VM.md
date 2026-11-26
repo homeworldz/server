@@ -70,17 +70,17 @@ stream; an event dispatch table records where each begins.
 | `global_defaults` | initial value of each persistent global slot (`vector<Value>`) |
 | `events` | the dispatch table (`vector<EventEntry>`) |
 | `compiler_version` | the compiler that produced it |
-| `abi_version` | the bytecode/snapshot ABI (currently `7`) |
+| `abi_version` | the bytecode/snapshot ABI (currently `8`) |
 
 Each `EventEntry` carries the handler's `name` (e.g. `state_entry`,
 `touch_start`), its `entry_ip` (first instruction), the `param_types` the region
 must supply when dispatching it, and the `local_count` it needs (parameters
-occupy the first local slots). `compiler_version` is `8` and `abi_version` `7`
+occupy the first local slots). `compiler_version` is `9` and `abi_version` `8`
 (`kCompilerVersion`, `kBytecodeAbiVersion`); ABI 2 added persistent globals and
 the event-dispatch model, 3 vectors and rotations as values, 4 floats, the
 sleep left, and the host call in progress, 5 float arithmetic and integer
-division, 6 lists, keys as a runtime type, and the built-in library, and 7
-functions and call frames. `functions` holds one `FunctionEntry` per function
+division, 6 lists, keys as a runtime type, and the built-in library, 7
+functions and call frames, and 8 `Dup`. `functions` holds one `FunctionEntry` per function
 the script defines: its `entry_ip`, `param_count` and `local_count`. `lines` holds the source line of each instruction, which is how a
 runtime error names the line it was raised on (`VM::error_line()`).
 
@@ -139,6 +139,7 @@ operand and `a` is beneath it (so `a OP b` matches source order).
 | `Call` | `a`=function idx | `arg1..argN` → | open a frame for `functions[a]`; the arguments become its first locals |
 | `Return` | — | — | close the frame and go on after the call, the result (if any) left on the stack; with no frame open, end the event |
 | `Swap` | — | `a b` → `b a` | exchange the top two values |
+| `Dup` | — | `a` → `a a` | push a copy of the top value |
 | `CastVecToStr` | — | `v` → `str(v)` | `(string)` of a vector or rotation: five decimals |
 
 Integer `<=` and `>=` compile to the opposite test and `NotInt`; float `!=` to
@@ -152,6 +153,15 @@ operator it emits `Swap` before it, and for an ordering it emits the mirror
 image instead (`a < b` as `b > a`). Arguments and list elements run left to
 right.
 
+An assignment is an expression whose value is the variable's new value, so
+`a = b = c` and `llOwnerSay((string)(x += 2))` compile. Its value is compiled
+before the variable is read, which is the same right-to-left order. Where
+the value is wanted the compiler emits `Dup` before the store, and where it
+is not (a statement, the parts of a `for`) it emits neither `Dup` nor `Pop`.
+`++` and `--` are a load, an add or subtract of one, and a store, with `Dup`
+placed before the arithmetic for the postfix form and after it for the
+prefix one. Integer arithmetic wraps at 32 bits.
+
 A call keeps no state on the native stack. `Call` appends the function's local
 slots to the one `locals` vector and records a frame (where to return, and
 where the caller's locals begin); `Return` takes them off again. Calls nest to
@@ -159,6 +169,11 @@ where the caller's locals begin); `Return` takes them off again. Calls nest to
 error Second Life gives for recursion without end. The parser refuses source
 nested or chained more than 200 deep (`ast::kMaxDepth`), because the parser
 and compiler do recurse, and a script must not be able to exhaust their stack.
+
+A string or a list a script builds may weigh at most 64 KiB (its text, plus
+16 bytes for each element of a list); one larger stops the event with the
+same `Stack-Heap Collision`. This bounds a single value and not the sum of
+what a script holds, which is not yet counted.
 
 A list value shares its elements and never changes them: copying one is free,
 and every operation on a list makes a new list. A key holds the text a string
@@ -171,7 +186,8 @@ therefore part of the bytecode ABI, and new functions are added at its end.
 
 Control flow is lowered by the compiler with forward-patched jump targets. For
 example a `while` loop becomes: `<cond>`, `JumpIfZero end`, `<body>`,
-`Jump start`, `end:`.
+`Jump start`, `end:`. A `for` loop runs its first part once and then is that
+loop with its last part after the body; `do` puts the test after the body.
 
 ## Execution model
 
@@ -349,7 +365,8 @@ deliberately narrow:
   recursion; `integer`, `float`,
   `string`, `key` and `list`, with vector and rotation literals; arithmetic,
   string and list concatenation, comparisons, and casts between them;
-  `while`, `if` and `return`.
+  assignment and compound assignment as expressions, `++` and `--`;
+  `while`, `for`, `do`, `if` and `return`.
 - **Events:** `state_entry` and `touch_start(integer)`, dispatched with typed
   parameters. Adding more events is a table entry plus a parameter signature.
 - **Host surface:** `llOwnerSay`, `llSay`.
@@ -360,7 +377,7 @@ deliberately narrow:
 
 Not yet implemented: `state`
 transitions and the broader event set, `vector` / `rotation` arithmetic, the full LSL host-function
-library, memory and other resource limits, and region/crossing integration.
+library, a limit on a script's whole memory and other resource limits, and region/crossing integration.
 Each is an additive step behind the same boundary and ABI.
 
 ## Implementation map

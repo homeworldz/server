@@ -87,6 +87,23 @@ struct Cast : Expr {
     ExprPtr operand;
 };
 
+// An assignment, which in LSL is an expression with the variable's new value:
+// `x = v`, or `x += v` and its kin, for which `op` is the operator applied.
+struct Assign : Expr {
+    std::string name;
+    bool compound = false;
+    BinaryOp op = BinaryOp::Add;
+    ExprPtr value;
+};
+
+// ++x, x++, --x, x--. A prefix form has the new value and a postfix form the
+// old one.
+struct IncDec : Expr {
+    std::string name;
+    bool increment = true;
+    bool prefix = true;
+};
+
 struct Call : Expr {
     std::string callee;
     std::vector<ExprPtr> args;
@@ -109,11 +126,6 @@ struct VarDecl : Stmt {
     ExprPtr init; // may be null (default-initialized)
 };
 
-struct Assign : Stmt {
-    std::string name;
-    ExprPtr value;
-};
-
 struct ExprStmt : Stmt {
     ExprPtr expr;
 };
@@ -121,6 +133,21 @@ struct ExprStmt : Stmt {
 struct While : Stmt {
     ExprPtr condition;
     std::unique_ptr<Block> body;
+};
+
+// for (init; condition; step) body. `init` and `step` are lists of expressions
+// run for their effects; either may be empty.
+struct For : Stmt {
+    std::vector<ExprPtr> init;
+    ExprPtr condition;
+    std::vector<ExprPtr> step;
+    std::unique_ptr<Block> body;
+};
+
+// do body while (condition);
+struct DoWhile : Stmt {
+    std::unique_ptr<Block> body;
+    ExprPtr condition;
 };
 
 struct If : Stmt {

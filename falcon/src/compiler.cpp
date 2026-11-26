@@ -529,15 +529,14 @@ private:
             compile_block(*block);
         } else if (const auto* decl = dynamic_cast<const ast::VarDecl*>(&stmt)) {
             compile_var_decl(*decl);
-        } else if (const auto* assign = dynamic_cast<const ast::Assign*>(&stmt)) {
-            compile_assign(*assign);
         } else if (const auto* expr = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
-            const Type result = compile_expression(*expr->expr);
-            if (result != Type::Void) {
-                emit(Op::Pop); // discard an unused value
-            }
+            compile_for_effect(*expr->expr);
         } else if (const auto* loop = dynamic_cast<const ast::While*>(&stmt)) {
             compile_while(*loop);
+        } else if (const auto* count = dynamic_cast<const ast::For*>(&stmt)) {
+            compile_for(*count);
+        } else if (const auto* repeat = dynamic_cast<const ast::DoWhile*>(&stmt)) {
+            compile_do_while(*repeat);
         } else if (const auto* branch = dynamic_cast<const ast::If*>(&stmt)) {
             compile_if(*branch);
         } else if (const auto* ret = dynamic_cast<const ast::Return*>(&stmt)) {
@@ -565,14 +564,83 @@ private:
         locals_.emplace(decl.name, Symbol{Scope::Local, slot, decl.type});
     }
 
-    void compile_assign(const ast::Assign& assign) {
+    // An expression run for what it does, its value unwanted. An assignment
+    // or an increment then leaves nothing on the stack to discard.
+    void compile_for_effect(const ast::Expr& expr) {
+        if (const auto* assign = dynamic_cast<const ast::Assign*>(&expr)) {
+            const Here position(*this, expr);
+            compile_assign(*assign, false);
+        } else if (const auto* step = dynamic_cast<const ast::IncDec*>(&expr)) {
+            const Here position(*this, expr);
+            compile_inc_dec(*step, false);
+        } else if (compile_expression(expr) != Type::Void) {
+            emit(Op::Pop);
+        }
+    }
+
+    // `x = v`, `x += v` and the rest. The value is compiled before the
+    // variable is read, which is LSL's order. With `keep`, the variable's new
+    // value stays on the stack as the value of the expression.
+    Type compile_assign(const ast::Assign& assign, bool keep) {
         const Symbol symbol = resolve(assign.name);
-        const Type value_type = compile_expression(*assign.value);
+        Type value_type = compile_expression(*assign.value);
+        if (assign.compound) {
+            emit_load(symbol);
+            value_type = emit_binary(assign.op, symbol.type, value_type);
+            // The one narrowing LSL allows: integer *= float keeps the whole part.
+            if (assign.op == ast::BinaryOp::Mul && symbol.type == Type::Integer && value_type == Type::Float) {
+                emit(Op::CastFloatToInt);
+                value_type = Type::Integer;
+            }
+        }
         if (!convert(symbol.type, value_type)) {
             throw ScriptError("cannot assign " + std::string(type_name(value_type)) + " to " +
                               type_name(symbol.type) + " '" + assign.name + "'");
         }
+        if (keep) emit(Op::Dup);
         emit_store(symbol);
+        return symbol.type;
+    }
+
+    // ++x and x++ and their opposites, on an integer or a float.
+    Type compile_inc_dec(const ast::IncDec& step, bool keep) {
+        const Symbol symbol = resolve(step.name);
+        if (!is_numeric(symbol.type)) {
+            throw ScriptError(std::string(step.increment ? "++" : "--") + " needs an integer or a float, and '" +
+                              step.name + "' is a " + type_name(symbol.type));
+        }
+        const bool integer = symbol.type == Type::Integer;
+        emit_load(symbol);
+        if (keep && !step.prefix) emit(Op::Dup); // the old value is the expression's
+        emit(Op::PushConst, add_constant(Value::make_integer(1)));
+        if (step.increment) {
+            emit(integer ? Op::AddInt : Op::AddFloat);
+        } else {
+            emit(integer ? Op::SubInt : Op::SubFloat);
+        }
+        if (keep && step.prefix) emit(Op::Dup);
+        emit_store(symbol);
+        return symbol.type;
+    }
+
+    void compile_for(const ast::For& loop) {
+        for (const auto& expr : loop.init) compile_for_effect(*expr);
+        const std::int32_t start = here();
+        compile_condition(*loop.condition, "for condition");
+        const std::int32_t exit_jump = emit(Op::JumpIfZero, 0);
+        compile_block(*loop.body);
+        for (const auto& expr : loop.step) compile_for_effect(*expr);
+        emit(Op::Jump, start);
+        patch_target(exit_jump, here());
+    }
+
+    void compile_do_while(const ast::DoWhile& loop) {
+        const std::int32_t start = here();
+        compile_block(*loop.body);
+        compile_condition(*loop.condition, "do ... while condition");
+        const std::int32_t exit_jump = emit(Op::JumpIfZero, 0);
+        emit(Op::Jump, start);
+        patch_target(exit_jump, here());
     }
 
     void compile_while(const ast::While& loop) {
@@ -696,6 +764,12 @@ private:
         if (const auto* call = dynamic_cast<const ast::Call*>(&expr)) {
             return compile_call(*call);
         }
+        if (const auto* assign = dynamic_cast<const ast::Assign*>(&expr)) {
+            return compile_assign(*assign, true);
+        }
+        if (const auto* step = dynamic_cast<const ast::IncDec*>(&expr)) {
+            return compile_inc_dec(*step, true);
+        }
         throw ScriptError("internal: unknown expression");
     }
 
@@ -795,7 +869,13 @@ private:
     Type compile_binary(const ast::Binary& binary) {
         const Type rhs = compile_expression(*binary.rhs);
         const Type lhs = compile_expression(*binary.lhs);
-        switch (binary.op) {
+        return emit_binary(binary.op, lhs, rhs);
+    }
+
+    // The operator itself, for operands already on the stack, the right one
+    // under the left. A compound assignment arrives here too.
+    Type emit_binary(ast::BinaryOp op, Type lhs, Type rhs) {
+        switch (op) {
         case ast::BinaryOp::Add:
             // A list takes anything added to either end of it.
             if ((lhs == Type::List && rhs != Type::Void) || (rhs == Type::List && lhs != Type::Void)) {
@@ -825,13 +905,13 @@ private:
             emit(Op::Swap);
             emit(Op::ModInt);
             return Type::Integer;
-        case ast::BinaryOp::Less: return compile_ordering(lhs, rhs, binary.op, "<");
-        case ast::BinaryOp::Greater: return compile_ordering(lhs, rhs, binary.op, ">");
-        case ast::BinaryOp::LessEqual: return compile_ordering(lhs, rhs, binary.op, "<=");
-        case ast::BinaryOp::GreaterEqual: return compile_ordering(lhs, rhs, binary.op, ">=");
+        case ast::BinaryOp::Less: return compile_ordering(lhs, rhs, op, "<");
+        case ast::BinaryOp::Greater: return compile_ordering(lhs, rhs, op, ">");
+        case ast::BinaryOp::LessEqual: return compile_ordering(lhs, rhs, op, "<=");
+        case ast::BinaryOp::GreaterEqual: return compile_ordering(lhs, rhs, op, ">=");
         case ast::BinaryOp::Equal:
         case ast::BinaryOp::NotEqual: {
-            const bool equal = binary.op == ast::BinaryOp::Equal;
+            const bool equal = op == ast::BinaryOp::Equal;
             if (lhs == Type::List && rhs == Type::List) {
                 if (!equal) emit(Op::Swap); // != is a difference, so the order matters
                 emit(equal ? Op::EqualList : Op::NotEqualList);

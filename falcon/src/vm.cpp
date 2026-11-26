@@ -27,6 +27,23 @@ constexpr std::uint16_t kSnapshotVersion = 6;
 // How deep calls may nest. Recursion with no end stops here, with the error
 // Second Life gives a script that runs out of memory that way.
 constexpr std::size_t kMaxCallDepth = 1024;
+// The largest string or list a script may build, which is the whole of the
+// memory Second Life gives a Mono script. It bounds one value and not their
+// sum: a loop that grows a list without end stops here.
+constexpr std::size_t kMaxValueBytes = 64 * 1024;
+
+// What a value built at run time weighs against kMaxValueBytes.
+std::size_t value_bytes(const Value& value) {
+    std::size_t bytes = value.str.size();
+    for (const Value& item : value.items()) bytes += 16 + item.str.size();
+    return bytes;
+}
+
+// A value a script has just built, refused when it is too large to keep.
+Value sized(Value value) {
+    if (value_bytes(value) > kMaxValueBytes) throw VmFault("Stack-Heap Collision");
+    return value;
+}
 constexpr unsigned char kMagic[4] = {'H', 'W', 'Z', 'S'};
 constexpr std::uint32_t kMaxSnapshotValues = 1'000'000; // corrupt-input guard
 
@@ -268,6 +285,9 @@ void VM::step() {
         }
         return v.integer;
     };
+    // Integer arithmetic wraps at 32 bits in LSL. Done unsigned it wraps in
+    // C++ too; signed overflow would be undefined.
+    const auto wrap = [](std::int32_t v) { return static_cast<std::uint32_t>(v); };
     // An operand of a float operator: a float, or an integer to widen.
     const auto pop_number = [&pop]() -> float {
         Value v = pop();
@@ -329,24 +349,24 @@ void VM::step() {
     case Op::AddInt: {
         std::int32_t b = pop_int();
         std::int32_t a = pop_int();
-        stack_.push_back(Value::make_integer(a + b));
+        stack_.push_back(Value::make_integer(wrap(a) + wrap(b)));
         break;
     }
     case Op::SubInt: {
         std::int32_t b = pop_int();
         std::int32_t a = pop_int();
-        stack_.push_back(Value::make_integer(a - b));
+        stack_.push_back(Value::make_integer(wrap(a) - wrap(b)));
         break;
     }
     case Op::MulInt: {
         std::int32_t b = pop_int();
         std::int32_t a = pop_int();
-        stack_.push_back(Value::make_integer(a * b));
+        stack_.push_back(Value::make_integer(wrap(a) * wrap(b)));
         break;
     }
     case Op::ConcatStr: {
         const std::string b = pop_string();
-        stack_.push_back(Value::make_string(pop_string() + b));
+        stack_.push_back(sized(Value::make_string(pop_string() + b)));
         break;
     }
     case Op::LessInt: {
@@ -492,7 +512,7 @@ void VM::step() {
         for (const Value& item : items) {
             if (item.type == Type::List) throw VmFault("a list cannot hold a list");
         }
-        stack_.push_back(Value::make_list(std::move(items)));
+        stack_.push_back(sized(Value::make_list(std::move(items))));
         break;
     }
     case Op::ConcatList: {
@@ -507,7 +527,7 @@ void VM::step() {
                 items.push_back(*side);
             }
         }
-        stack_.push_back(Value::make_list(std::move(items)));
+        stack_.push_back(sized(Value::make_list(std::move(items))));
         break;
     }
     case Op::EqualList:
@@ -522,7 +542,7 @@ void VM::step() {
         std::string joined;
         const Value list = pop_list(); // held: a list off the stack may have no other owner
         for (const Value& item : list.items()) joined += element_string(item);
-        stack_.push_back(Value::make_string(std::move(joined)));
+        stack_.push_back(sized(Value::make_string(std::move(joined))));
         break;
     }
     case Op::CallBuiltin: {
@@ -536,11 +556,15 @@ void VM::step() {
         }
         const std::vector<Value> args(stack_.end() - argc, stack_.end());
         stack_.resize(stack_.size() - static_cast<std::size_t>(argc));
-        stack_.push_back(function->call(args));
+        stack_.push_back(sized(function->call(args)));
         break;
     }
     case Op::Pop:
         (void)pop();
+        break;
+    case Op::Dup:
+        if (stack_.empty()) throw VmFault("operand stack underflow");
+        stack_.push_back(stack_.back());
         break;
     case Op::Swap: {
         if (stack_.size() < 2) throw VmFault("operand stack underflow");

@@ -28,8 +28,9 @@ namespace homeworldz::script {
 // v5 added float arithmetic, comparison and casts, and integer division.
 // v6 added lists, keys as a runtime type, and the built-in library.
 // v7 added functions and call frames, and evaluates the right operand first.
-inline constexpr std::uint32_t kBytecodeAbiVersion = 7;
-inline constexpr std::uint32_t kCompilerVersion = 8;
+// v8 added Dup, for assignment as an expression.
+inline constexpr std::uint32_t kBytecodeAbiVersion = 8;
+inline constexpr std::uint32_t kCompilerVersion = 9;
 
 // The value types. Void exists only for typing calls used as statements. A key
 // holds the same text a string does and keeps its own type at runtime, because
@@ -146,6 +147,7 @@ enum class Op : std::uint8_t {
     Return,         // leaves the function, its value (if any) on the stack; ends an event
     Swap,           // exchanges the top two values of the stack
     CastVecToStr,   // pops a vector or rotation; pushes it with five decimals
+    Dup,            // pushes a copy of the top of the stack
 };
 
 struct Instruction {
