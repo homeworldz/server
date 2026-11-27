@@ -4301,13 +4301,26 @@ int main(int argc, char* argv[]) {
     const auto remove_attachment_linkset = [&](homeworldz::scene::EntityId root_id,
                                                std::chrono::steady_clock::time_point when,
                                                std::string_view spare = {},
-                                               std::vector<std::uint32_t>* defer_into = nullptr) {
-        // Deferred is a wearer gone to another region.
-        save_worn_object(root_id, defer_into == nullptr);
+                                               std::vector<std::uint32_t>* defer_into = nullptr,
+                                               bool detached = false) {
         std::vector<homeworldz::scene::EntityId> part_ids;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.parent_id == root_id) part_ids.push_back(candidate_id);
         part_ids.push_back(root_id);
+        // `detached` is the wearer taking it off, as against leaving with it
+        // on: its scripts are told attach(NULL_KEY), and the handler runs
+        // before the object is saved, so what it did is saved with it.
+        if (detached) {
+            if (const auto* worn = scene.find(root_id)) release_worn_scripts(worn->owner_id);
+            for (const auto part : part_ids)
+                if (const auto* leaving = scene.find(part))
+                    static_cast<void>(falcon.raise_now(
+                        leaving->object_id, "attach",
+                        {homeworldz::script::Value::make_key(
+                            "00000000-0000-0000-0000-000000000000")}));
+        }
+        // Deferred is a wearer gone to another region.
+        save_worn_object(root_id, defer_into == nullptr);
         std::vector<std::uint32_t> killed;
         for (const auto part : part_ids) {
             // Its scripts stop with it.
@@ -4349,14 +4362,16 @@ int main(int argc, char* argv[]) {
     const auto remove_avatar_attachments = [&](homeworldz::scene::EntityId wearer_id,
                                                std::chrono::steady_clock::time_point when,
                                                std::string_view spare = {},
-                                               std::vector<std::uint32_t>* defer_into = nullptr) {
+                                               std::vector<std::uint32_t>* defer_into = nullptr,
+                                               bool detached = false) {
         std::vector<homeworldz::scene::EntityId> roots;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.attachment_point != 0 && candidate.parent_id == wearer_id)
                 roots.push_back(candidate_id);
         std::size_t removed = 0;
         for (const auto root_id : roots)
-            if (!remove_attachment_linkset(root_id, when, spare, defer_into).empty()) ++removed;
+            if (!remove_attachment_linkset(root_id, when, spare, defer_into, detached).empty())
+                ++removed;
         return removed;
     };
     // Persist where an avatar now is, so a later start=last returns there.
@@ -5131,7 +5146,8 @@ int main(int argc, char* argv[]) {
                         displaced.emplace_back(candidate_id, candidate.attachment_item_id);
                 }
                 for (const auto& [displaced_id, displaced_item] : displaced) {
-                    static_cast<void>(remove_attachment_linkset(displaced_id, when));
+                    static_cast<void>(remove_attachment_linkset(
+                        displaced_id, when, {}, nullptr, true));
                     // Displaced means taken off, and the grid has to agree or
                     // the next login rezzes back something the wearer replaced.
                     if (viewer_grid && !displaced_item.empty() && displaced_item != item_id)
@@ -5268,10 +5284,14 @@ int main(int argc, char* argv[]) {
                                 {homeworldz::script::Value::make_integer(
                                     arrival->kind == "teleport"
                                         ? changed_region | changed_teleport : changed_region)}));
-                        else
+                        else {
+                            static_cast<void>(falcon.dispatch_event(
+                                part->object_id, "on_rez",
+                                {homeworldz::script::Value::make_integer(0)}));
                             static_cast<void>(falcon.dispatch_event(
                                 part->object_id, "attach",
                                 {homeworldz::script::Value::make_key(user_id)}));
+                        }
                     }
                 }
                 // Net of the closure, so the two are addable rather than
@@ -17212,10 +17232,16 @@ int main(int argc, char* argv[]) {
                                             materialize_asset_closure(
                                                 {{item->asset_id, 6}}, "rez");
                                             // Its scripts go on from the state
-                                            // the object was taken with.
-                                            for (const auto rezzed_id : entity_ids)
-                                                static_cast<void>(
-                                                    start_object_scripts(rezzed_id, "rez"));
+                                            // the object was taken with, and are
+                                            // told they were rezzed.
+                                            for (const auto rezzed_id : entity_ids) {
+                                                if (!start_object_scripts(rezzed_id, "rez"))
+                                                    continue;
+                                                if (const auto* rezzed = scene.find(rezzed_id))
+                                                    static_cast<void>(falcon.dispatch_event(
+                                                        rezzed->object_id, "on_rez",
+                                                        {homeworldz::script::Value::make_integer(0)}));
+                                            }
                                         }
                                     }
                                 }
@@ -17321,7 +17347,7 @@ int main(int argc, char* argv[]) {
                                             !candidate.attachment_item_id.empty())
                                             removed_items.push_back(candidate.attachment_item_id);
                                     const auto cleared = remove_avatar_attachments(
-                                        wearer->second.entity_id, now);
+                                        wearer->second.entity_id, now, {}, nullptr, true);
                                     if (viewer_grid)
                                         for (const auto& removed_item : removed_items)
                                             static_cast<void>(viewer_grid->set_attachment_worn(
@@ -17395,7 +17421,8 @@ int main(int argc, char* argv[]) {
                                     roots.push_back(candidate_id);
                             std::size_t detached = 0;
                             for (const auto root_id : roots)
-                                if (!remove_attachment_linkset(root_id, now).empty()) ++detached;
+                                if (!remove_attachment_linkset(root_id, now, {}, nullptr, true).empty())
+                                    ++detached;
                             const bool forgotten = detached == 0 || !viewer_grid ||
                                 viewer_grid->set_attachment_worn(user_id, item_id, 0, false);
                             if (detached > 0) worn_set_changed.insert(homeworldz::viewer::format_uuid(identity->session_id));
@@ -17446,7 +17473,8 @@ int main(int argc, char* argv[]) {
                                 if (!root || root->attachment_point == 0 || root->owner_id != user_id)
                                     continue;
                                 const auto detached_item = root->attachment_item_id;
-                                if (remove_attachment_linkset(root_id, now).empty()) continue;
+                                if (remove_attachment_linkset(root_id, now, {}, nullptr, true).empty())
+                                    continue;
                                 ++detached;
                                 // Taking off has to reach the grid, or the item comes
                                 // back at the next login and taking it off looks like

@@ -513,5 +513,58 @@ int main() {
         here.run_tick();
         assert(said.size() == 4 && said.back() == "touch 2");
     }
+    // An event for an object about to go runs at once, so what the handler
+    // did leaves with the object; a script busy with something else gets
+    // it after that instead.
+    {
+        using Texts = std::vector<std::string>;
+        Texts said;
+        const auto sink = [&](FalconHostMessage message) { said.push_back(message.text); };
+        const std::string source = R"LSL(
+            integer taken_off;
+            default {
+                on_rez(integer start) { llOwnerSay("rezzed " + (string)start); }
+                attach(key wearer) {
+                    if (wearer == NULL_KEY) ++taken_off;
+                    llOwnerSay("off " + (string)taken_off);
+                }
+                touch_start(integer n) { llSleep(5.0); llOwnerSay("touched"); }
+            }
+        )LSL";
+        const std::vector<homeworldz::script::Value> nobody{
+            homeworldz::script::Value::make_key("00000000-0000-0000-0000-000000000000")};
+        double now = 10.0;
+        FalconRuntime here(sink);
+        here.set_clock([&] { return now; });
+        assert(here.rez({"asset", "idle", "object", "owner"}, source, true).running);
+        assert(here.rez({"asset", "busy", "object", "owner"}, source, true).running);
+        assert(here.dispatch_event("object", "on_rez",
+                                   {homeworldz::script::Value::make_integer(0)}) == 2);
+        here.run_tick();
+        assert((said == Texts{"rezzed 0", "rezzed 0"}));
+        assert(here.dispatch_to_script("object", "busy", "touch_start",
+                                       {homeworldz::script::Value::make_integer(1)}));
+        here.run_tick();
+        said.clear();
+        // No tick: the idle one has run its handler by the time this returns.
+        assert(here.raise_now("object", "attach", nobody) == 2);
+        assert(said == Texts{"off 1"});
+        assert(here.raise_now("no-such-object", "attach", nobody) == 0);
+        const std::string idle = here.capture("object", "idle");
+        const std::string busy = here.capture("object", "busy");
+        // Worn again elsewhere: the idle one remembers it was taken off, and
+        // the busy one finishes its sleep and then hears of it.
+        double there_now = 100.0;
+        FalconRuntime there(sink);
+        there.set_clock([&] { return there_now; });
+        said.clear();
+        assert(there.rez({"asset", "idle", "object", "owner"}, source, true, idle).restored);
+        assert(there.rez({"asset", "busy", "object", "owner"}, source, true, busy).restored);
+        assert(there.raise_now("object", "attach", nobody) == 2);
+        assert(said == Texts{"off 2"});
+        there_now = 106.0;
+        for (int tick = 0; tick < 4; ++tick) there.run_tick();
+        assert((said == Texts{"off 2", "touched", "off 1", "off 2"}));
+    }
     return 0;
 }

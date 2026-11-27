@@ -752,7 +752,7 @@ implemented it); **Falcon** marks what Falcon compiles and the region answers to
 | `object_rez(key id)` |  |
 | `on_damage(integer num_detected)` |  |
 | `on_death()` |  |
-| `on_rez(integer start_param)` |  |
+| `on_rez(integer start_param)` | yes |
 | `path_update(integer type, list reserved)` |  |
 | `remote_data(integer event_type, key channel, key message_id, string sender, integer idata, string sdata)` |  |
 | `run_time_permissions(integer perm)` | yes |

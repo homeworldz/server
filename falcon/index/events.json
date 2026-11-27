@@ -672,7 +672,7 @@
    "rez",
    "script"
   ],
-  "falcon": false
+  "falcon": true
  },
  {
   "name": "path_update",

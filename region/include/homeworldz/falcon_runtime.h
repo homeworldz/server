@@ -123,6 +123,15 @@ public:
     // changed(CHANGED_LINK) reaches a seat's scripts. Returns how many accepted.
     std::size_t dispatch_event(std::string_view object_id, const std::string& event,
                                const std::vector<Value>& args);
+    // Raises an event in an object that is about to go, as attach(NULL_KEY)
+    // in one being taken off: each idle script that declares it runs the
+    // handler now, for at most `budget` instructions, so what it did is in
+    // the state the object leaves with. A script still busy with something
+    // else has the event queued behind that instead, and a handler that
+    // outlasts the budget goes on from where it stopped the next time the
+    // script runs. Returns how many scripts took the event.
+    std::size_t raise_now(std::string_view object_id, const std::string& event,
+                          const std::vector<Value>& args, std::uint64_t budget = 0x4000);
     // Queues an event for one script, as run_time_permissions answers only the
     // script that asked.
     bool dispatch_to_script(std::string_view object_id, std::string_view inventory_item_id,

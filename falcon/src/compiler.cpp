@@ -81,6 +81,7 @@ const std::unordered_set<std::string_view> implemented_events = {
     "run_time_permissions",
     "timer",
     "attach",
+    "on_rez",
 };
 
 // An index type as a Falcon type.

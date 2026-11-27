@@ -566,6 +566,33 @@ std::size_t FalconRuntime::dispatch_event(std::string_view object_id, const std:
     return accepted;
 }
 
+std::size_t FalconRuntime::raise_now(std::string_view object_id, const std::string& event,
+                                     const std::vector<Value>& args, std::uint64_t budget) {
+    std::size_t accepted = 0;
+    const auto object = impl_->by_object.find(std::string(object_id));
+    if (object == impl_->by_object.end()) return accepted;
+    const double now = impl_->clock();
+    for (auto* script : object->second) {
+        if (!script->enabled || script->trapped || !script->program->find_event(event)) continue;
+        if (script->has_work() || script->blocked()) {
+            if (impl_->queue_event(*script, event, args)) ++accepted;
+            continue;
+        }
+        ++accepted;
+        script->vm.dispatch(event, args);
+        const auto status = script->vm.run(budget);
+        if (status == RunStatus::Error) {
+            script->trapped = true;
+        } else if (status == RunStatus::Sleeping) {
+            script->asleep = true;
+            script->wake_at = now + script->vm.sleep_remaining();
+            impl_->sleepers.emplace(script->wake_at, script);
+        }
+        impl_->mark_ready(*script);
+    }
+    return accepted;
+}
+
 bool FalconRuntime::dispatch_to_script(std::string_view object_id,
                                        std::string_view inventory_item_id,
                                        const std::string& event, const std::vector<Value>& args) {
