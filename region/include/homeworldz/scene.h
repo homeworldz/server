@@ -60,6 +60,16 @@ struct TaskInventoryItem {
     std::string script_state;
 };
 
+// One script's captured state, and the script it belongs to: the object it is
+// in and its item in that object's contents. How state is kept across a region
+// restart, and how it travels with a wearer.
+struct ScriptState {
+    std::string object_id;
+    std::string item_id;
+    std::string state;
+    bool operator==(const ScriptState&) const = default;
+};
+
 struct EffectivePermissions {
     std::uint32_t owner{};
     std::uint32_t next_owner{};

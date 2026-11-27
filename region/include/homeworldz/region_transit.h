@@ -1,6 +1,7 @@
 #pragma once
 
 #include "homeworldz/grid_client.h"
+#include "homeworldz/scene.h"
 
 #include <chrono>
 #include <array>
@@ -88,6 +89,21 @@ struct FacetOccupant {
 std::vector<std::uint32_t> child_circuit_farewell_ids(
     std::span<const FacetOccupant> occupants, int facet,
     std::string_view recipient_session);
+
+// What the scripts in a wearer's attachments were doing as it left, sent with
+// the arrival preparation so they go on from there at the destination. A worn
+// object has the same object id wherever it is worn, so that and the script's
+// item name the script on both sides.
+struct ArrivalScripts {
+    // "crossing" or "teleport": what the scripts are told has changed.
+    std::string kind;
+    std::vector<scene::ScriptState> scripts;
+    bool operator==(const ArrivalScripts&) const = default;
+};
+std::string encode_arrival_scripts(const ArrivalScripts& arrival);
+// Nothing for a document that is not one, which includes the empty body a
+// source that carries no scripts sends. Never a partial set.
+std::optional<ArrivalScripts> parse_arrival_scripts(std::string_view document);
 
 class InboundTransitRegistry {
 public:

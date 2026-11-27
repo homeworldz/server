@@ -722,7 +722,7 @@ implemented it); **Falcon** marks what Falcon compiles and the region answers to
 |---|---|
 | `at_rot_target(integer handle, rotation targetrot, rotation ourrot)` |  |
 | `at_target(integer tnum, vector targetpos, vector ourpos)` |  |
-| `attach(key avatar)` |  |
+| `attach(key avatar)` | yes |
 | `bot_update(key botID, integer flag, list parameters)` |  |
 | `changed(integer changes)` | yes |
 | `collision(integer num_detected)` |  |

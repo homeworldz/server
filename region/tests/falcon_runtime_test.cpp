@@ -471,5 +471,47 @@ int main() {
         for (int tick = 0; tick < 200; ++tick) first.run_tick();
         assert((said == Texts{"2001000", "2001000"}));
     }
+    // A hand-off that may be called off: the scripts of an object are caught
+    // as they are and stopped there, and go on if it is.
+    {
+        using Texts = std::vector<std::string>;
+        Texts said;
+        const auto sink = [&](FalconHostMessage message) { said.push_back(message.text); };
+        const std::string source = R"LSL(
+            integer count;
+            default {
+                touch_start(integer n) { llOwnerSay("touch " + (string)(++count)); }
+                attach(key wearer) { llOwnerSay("worn by " + (string)wearer); }
+            }
+        )LSL";
+        FalconRuntime here(sink);
+        assert(here.rez({"asset", "running", "object", "owner"}, source, true).running);
+        assert(here.rez({"asset", "stopped", "object", "owner"}, source, false).compiled);
+        assert(here.dispatch_event("object", "attach", {homeworldz::script::Value::make_key("wearer-id")}) == 1);
+        here.run_tick();
+        assert(said == Texts{"worn by wearer-id"});
+        assert(here.dispatch_touch_start("object", 1) == 1);
+        here.run_tick();
+        const std::string state = here.capture("object", "running");
+        // Only the one that was running is stopped, so only it is started again.
+        assert(here.suspend_object("object") == Texts{"running"});
+        assert(here.suspend_object("object").empty());
+        assert(here.suspend_object("no-such-object").empty());
+        assert(here.dispatch_touch_start("object", 1) == 0);
+        here.run_tick();
+        assert((said == Texts{"worn by wearer-id", "touch 1"}));
+        // What was caught before the stop starts running elsewhere.
+        FalconRuntime there(sink);
+        const auto arrived = there.rez({"asset", "running", "object", "owner"}, source, true, state);
+        assert(arrived.restored && arrived.running);
+        assert(there.dispatch_touch_start("object", 1) == 1);
+        there.run_tick();
+        assert(said.back() == "touch 2");
+        // Called off: it goes on here from where it stopped.
+        assert(here.set_enabled("object", "running", true));
+        assert(here.dispatch_touch_start("object", 1) == 1);
+        here.run_tick();
+        assert(said.size() == 4 && said.back() == "touch 2");
+    }
     return 0;
 }

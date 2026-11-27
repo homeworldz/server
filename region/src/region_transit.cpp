@@ -570,6 +570,65 @@ void InboundTransitRegistry::purge(std::chrono::steady_clock::time_point now) {
     std::erase_if(entries_, [&](const auto& entry) { return entry.second.expires_at <= now; });
 }
 
+std::string encode_arrival_scripts(const ArrivalScripts& arrival) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string document = "{\"kind\":" + quoted_string(arrival.kind) + ",\"scripts\":[";
+    for (std::size_t index = 0; index < arrival.scripts.size(); ++index) {
+        const auto& script = arrival.scripts[index];
+        if (index != 0) document.push_back(',');
+        document += "{\"objectId\":" + quoted_string(script.object_id) +
+                    ",\"itemId\":" + quoted_string(script.item_id) + ",\"state\":\"";
+        for (const auto character : script.state) {
+            const auto byte = static_cast<unsigned char>(character);
+            document.push_back(digits[byte >> 4]);
+            document.push_back(digits[byte & 0x0f]);
+        }
+        document += "\"}";
+    }
+    return document + "]}";
+}
+
+std::optional<ArrivalScripts> parse_arrival_scripts(std::string_view document) {
+    ArrivalScripts arrival;
+    arrival.kind = std::string(json_string_field(document, "kind"));
+    if (arrival.kind != "crossing" && arrival.kind != "teleport") return std::nullopt;
+    constexpr std::string_view marker = "\"scripts\":[";
+    const auto start = document.find(marker);
+    if (start == std::string_view::npos) return std::nullopt;
+    auto rest = document.substr(start + marker.size());
+    const auto nibble = [](char character) {
+        if (character >= '0' && character <= '9') return character - '0';
+        if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+        return -1;
+    };
+    while (!rest.empty() && rest.front() != ']') {
+        if (rest.front() != '{') {
+            rest.remove_prefix(1);
+            continue;
+        }
+        const auto close = rest.find('}');
+        if (close == std::string_view::npos) return std::nullopt;
+        const auto element = rest.substr(0, close);
+        const auto object_id = json_string_field(element, "objectId");
+        const auto item_id = json_string_field(element, "itemId");
+        const auto hex = json_string_field(element, "state");
+        if (object_id.empty() || item_id.empty() || hex.empty() || hex.size() % 2 != 0)
+            return std::nullopt;
+        std::string state(hex.size() / 2, '\0');
+        for (std::size_t index = 0; index < state.size(); ++index) {
+            const auto high = nibble(hex[index * 2]);
+            const auto low = nibble(hex[index * 2 + 1]);
+            if (high < 0 || low < 0) return std::nullopt;
+            state[index] = static_cast<char>(high * 16 + low);
+        }
+        arrival.scripts.push_back({std::string(object_id), std::string(item_id), std::move(state)});
+        rest.remove_prefix(close + 1);
+    }
+    // The array has to have closed: one cut short is a set with scripts missing.
+    if (rest.empty()) return std::nullopt;
+    return arrival;
+}
+
 std::string encode_child_agent_request(const ChildAgent& agent) {
     const std::array<double, 3> position{
         static_cast<double>(agent.position[0]),

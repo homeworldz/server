@@ -527,7 +527,10 @@ private:
 
 HttpResponse fetch_asset_from(std::string endpoint, std::string service_token,
                               std::string_view asset_id);
-bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id);
+// `scripts` is what the scripts in the avatar's attachments are doing
+// (region::encode_arrival_scripts), for the destination to start them from.
+bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id,
+                            std::string_view scripts = {});
 
 // The two halves of an object crossing, sent region to region rather than
 // through the grid: what the destination has to trust is the *source region*,

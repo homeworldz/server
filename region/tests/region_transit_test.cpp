@@ -811,5 +811,32 @@ int main() {
             candidates, {}, {0.0, 0.0, 0.0}, 0.0);
         if (unfiltered.entering != std::vector<std::uint32_t>{1, 2, 3, 4, 5}) return 82;
     }
+    // A wearer's scripts, as the arrival preparation carries them: every
+    // byte of every state, or nothing.
+    {
+        std::string binary;
+        for (int byte = 0; byte < 256; ++byte) binary.push_back(static_cast<char>(byte));
+        const homeworldz::region::ArrivalScripts leaving{
+            "teleport",
+            {{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", binary},
+             {"11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", "x"}}};
+        const auto document = homeworldz::region::encode_arrival_scripts(leaving);
+        if (homeworldz::region::parse_arrival_scripts(document) != leaving) return 90;
+        // Wearing nothing scripted is still an arrival that says what it is.
+        const homeworldz::region::ArrivalScripts bare{"crossing", {}};
+        if (homeworldz::region::parse_arrival_scripts(
+                homeworldz::region::encode_arrival_scripts(bare)) != bare) return 91;
+        // The empty body of a source that sends none, another kind, a state
+        // that is not hex, and every document cut short are not arrivals.
+        if (homeworldz::region::parse_arrival_scripts("")) return 92;
+        if (homeworldz::region::parse_arrival_scripts(
+                "{\"kind\":\"login\",\"scripts\":[]}")) return 93;
+        if (homeworldz::region::parse_arrival_scripts(
+                "{\"kind\":\"crossing\",\"scripts\":[{\"objectId\":\"o\","
+                "\"itemId\":\"i\",\"state\":\"0g\"}]}")) return 94;
+        for (std::size_t length = 0; length + 1 < document.size(); ++length)
+            if (homeworldz::region::parse_arrival_scripts(document.substr(0, length)))
+                return 95;
+    }
     return 0;
 }

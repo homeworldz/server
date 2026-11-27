@@ -4160,29 +4160,105 @@ int main(int argc, char* argv[]) {
         return digest.substr(0, 8) + "-" + digest.substr(8, 4) + "-" + digest.substr(12, 4) +
                "-" + digest.substr(16, 4) + "-" + digest.substr(20, 12);
     };
+    // What a wearer's scripts were doing when it set off for here, by wearer,
+    // from the arrival preparation until the arrival dresses it.
+    struct StagedArrivalScripts {
+        homeworldz::region::ArrivalScripts arrival;
+        std::chrono::steady_clock::time_point expires_at;
+    };
+    std::unordered_map<std::string, StagedArrivalScripts> staged_arrival_scripts;
+    // Scripts stopped where they were because their wearer is being handed to
+    // another region, by wearer, as object and item. What the destination
+    // starts them from was caught at that moment, so anything they did here
+    // afterwards would be done twice. They leave with the worn objects when
+    // the wearer does; a hand-off that never completes starts them again.
+    struct HeldWornScripts {
+        std::vector<std::pair<std::string, std::string>> scripts;
+        std::chrono::steady_clock::time_point release_at;
+    };
+    std::unordered_map<std::string, HeldWornScripts> held_worn_scripts;
+    const auto release_worn_scripts = [&](const std::string& user_id) {
+        const auto held = held_worn_scripts.find(user_id);
+        if (held == held_worn_scripts.end()) return;
+        for (const auto& [object_id, item_id] : held->second.scripts)
+            static_cast<void>(falcon.set_enabled(object_id, item_id, true));
+        held_worn_scripts.erase(held);
+    };
+    // Catches what the scripts in everything `user_id` wears are doing, stops
+    // them there, and gives the document that takes it to the destination.
+    const auto carry_worn_scripts = [&](const std::string& user_id, std::string_view kind,
+                                        std::chrono::steady_clock::time_point when) {
+        // The preparation is one request under the general body limit, and a
+        // state travels as hex. A script past the limit is not carried, and
+        // starts at the destination as the object's item has it.
+        constexpr std::size_t carried_limit = 384 * 1024;
+        release_worn_scripts(user_id);
+        homeworldz::region::ArrivalScripts arrival;
+        arrival.kind = std::string(kind);
+        HeldWornScripts held;
+        std::size_t carried = 0;
+        for (const auto& [entity_id, entity] : scene.entities()) {
+            static_cast<void>(entity_id);
+            if (entity.owner_id != user_id) continue;
+            const auto* parent = entity.parent_id == 0 ? nullptr : scene.find(entity.parent_id);
+            if (entity.attachment_point == 0 && !(parent && parent->attachment_point != 0))
+                continue;
+            for (const auto& item : entity.task_inventory) {
+                if (item.asset_type != 10) continue; // LSL script asset type
+                auto state = falcon.capture(entity.object_id, item.item_id);
+                if (state.empty() || carried + state.size() > carried_limit) continue;
+                carried += state.size();
+                arrival.scripts.push_back({entity.object_id, item.item_id, std::move(state)});
+            }
+            for (auto& item_id : falcon.suspend_object(entity.object_id))
+                held.scripts.emplace_back(entity.object_id, std::move(item_id));
+        }
+        if (!held.scripts.empty()) {
+            held.release_at = when + std::chrono::seconds(30);
+            held_worn_scripts.insert_or_assign(user_id, std::move(held));
+        }
+        return homeworldz::region::encode_arrival_scripts(arrival);
+    };
     // A worn object as it was when it went on, by root entity: what tells a
     // detach whether anything changed while it was worn.
     std::unordered_map<homeworldz::scene::EntityId, std::string> worn_baselines;
-    const auto serialize_worn_object = [&](const homeworldz::scene::Entity& root) {
+    const auto serialize_worn_object = [&](const homeworldz::scene::Entity& root,
+                                           const homeworldz::asset::ScriptStateSource&
+                                               script_state = {}) {
         std::vector<const homeworldz::scene::Entity*> children;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.parent_id == root.id) children.push_back(&candidate);
-        return homeworldz::asset::serialize_linkset_asset(root, children);
+        return homeworldz::asset::serialize_linkset_asset(root, children, script_state);
     };
     // A worn object goes back to its inventory item as it is now when it comes
     // off, as a viewer expects: where it sat on its joint, and every edit made
     // while it was worn. Wearing never wrote the item, so without this the
     // next wear came from the object as it was before, at the joint itself.
     // Unchanged since it went on, nothing is written.
-    const auto save_worn_object = [&](homeworldz::scene::EntityId root_id) {
+    //
+    // `with_script_state` writes what its scripts are doing too, so the next
+    // wear goes on from there; a scripted object is then always written. Not
+    // for a wearer leaving for another region: its scripts' state went ahead
+    // of it with the arrival preparation, and writing an asset per scripted
+    // attachment would put grid calls on every crossing.
+    const auto save_worn_object = [&](homeworldz::scene::EntityId root_id,
+                                      bool with_script_state) {
         const auto* root = scene.find(root_id);
         if (!root || root->attachment_point == 0 || root->attachment_item_id.empty() ||
             root->owner_id.empty() || !viewer_grid || !storage)
             return;
-        const auto content_text = serialize_worn_object(*root);
+        auto content_text = serialize_worn_object(*root);
         const auto baseline = worn_baselines.find(root_id);
-        const bool unchanged = baseline != worn_baselines.end() && baseline->second == content_text;
+        bool unchanged = baseline != worn_baselines.end() && baseline->second == content_text;
         if (baseline != worn_baselines.end()) worn_baselines.erase(baseline);
+        if (with_script_state) {
+            // Scripts stopped for a hand-off that did not happen are caught
+            // running, not stopped: the state says which, and would keep it.
+            release_worn_scripts(root->owner_id);
+            auto with_state = serialize_worn_object(*root, running_script_state);
+            if (with_state != content_text) unchanged = false;
+            content_text = std::move(with_state);
+        }
         if (unchanged) return;
         const auto owner_id = root->owner_id;
         const auto item_id = root->attachment_item_id;
@@ -4226,14 +4302,19 @@ int main(int argc, char* argv[]) {
                                                std::chrono::steady_clock::time_point when,
                                                std::string_view spare = {},
                                                std::vector<std::uint32_t>* defer_into = nullptr) {
-        save_worn_object(root_id);
+        // Deferred is a wearer gone to another region.
+        save_worn_object(root_id, defer_into == nullptr);
         std::vector<homeworldz::scene::EntityId> part_ids;
         for (const auto& [candidate_id, candidate] : scene.entities())
             if (candidate.parent_id == root_id) part_ids.push_back(candidate_id);
         part_ids.push_back(root_id);
         std::vector<std::uint32_t> killed;
-        for (const auto part : part_ids)
+        for (const auto part : part_ids) {
+            // Its scripts stop with it.
+            if (const auto* leaving = scene.find(part))
+                static_cast<void>(falcon.erase_object(leaving->object_id));
             if (scene.remove(part)) killed.push_back(static_cast<std::uint32_t>(part));
+        }
         if (killed.empty()) return killed;
         if (defer_into) {
             defer_into->insert(defer_into->end(), killed.begin(), killed.end());
@@ -4941,7 +5022,11 @@ int main(int argc, char* argv[]) {
                                      bool keep_others, bool record,
                                      std::chrono::steady_clock::time_point when,
                                      const std::optional<homeworldz::grid::WornPlacement>&
-                                         placement = std::nullopt) -> WearOutcome {
+                                         placement = std::nullopt,
+                                     // What the wearer's scripts were doing in
+                                     // the region it has just come from.
+                                     const homeworldz::region::ArrivalScripts*
+                                         arrival = nullptr) -> WearOutcome {
         // indra's ATTACHMENT_RIGHT_HAND: where an item with no remembered point
         // goes, matching what a viewer expects from a plain Wear.
         //
@@ -5155,6 +5240,39 @@ int main(int argc, char* argv[]) {
                     materialize_asset_closure({{item->asset_id, 6}}, "attach");
                     outcome.closure_time =
                         std::chrono::steady_clock::now() - closure_started;
+                    // Its scripts start: from what they were doing in the
+                    // region the wearer left, when it came with that, and
+                    // otherwise from the state the object was last taken
+                    // off with, or at state_entry. Before the updates
+                    // below: whether a prim is scripted and takes touches
+                    // is on its object update.
+                    for (const auto part_id : entity_ids) {
+                        auto* part = scene.find(part_id);
+                        if (!part) continue;
+                        if (arrival)
+                            for (auto& script : part->task_inventory)
+                                for (const auto& carried : arrival->scripts)
+                                    if (carried.object_id == part->object_id &&
+                                        carried.item_id == script.item_id)
+                                        script.script_state = carried.state;
+                        if (!start_object_scripts(part_id, arrival
+                                ? std::string_view(arrival->kind) : std::string_view("attach")))
+                            continue;
+                        // A wearer here from another region is told what
+                        // changed; one putting the object on, who wears it.
+                        constexpr std::int32_t changed_region = 0x100;
+                        constexpr std::int32_t changed_teleport = 0x200;
+                        if (arrival)
+                            static_cast<void>(falcon.dispatch_event(
+                                part->object_id, "changed",
+                                {homeworldz::script::Value::make_integer(
+                                    arrival->kind == "teleport"
+                                        ? changed_region | changed_teleport : changed_region)}));
+                        else
+                            static_cast<void>(falcon.dispatch_event(
+                                part->object_id, "attach",
+                                {homeworldz::script::Value::make_key(user_id)}));
+                    }
                 }
                 // Net of the closure, so the two are addable rather than
                 // nested: buildMs is the scene work this region does alone.
@@ -5223,6 +5341,8 @@ int main(int argc, char* argv[]) {
         std::chrono::steady_clock::duration closure_time{};
         std::chrono::steady_clock::duration broadcast_time{};
         std::chrono::steady_clock::time_point started{};
+        // Here from another region: what its scripts were doing there.
+        std::optional<homeworldz::region::ArrivalScripts> arrival;
     };
     std::deque<PendingAttachmentRestore> pending_attachment_restores;
     // One inventory lookup per tick for a child agent's worn set, so the
@@ -5259,6 +5379,17 @@ int main(int argc, char* argv[]) {
                                          homeworldz::scene::EntityId wearer_id,
                                          std::chrono::steady_clock::time_point when) {
         static_cast<void>(when);
+        // Taken whatever follows, so it is never left for a later arrival.
+        std::optional<homeworldz::region::ArrivalScripts> arrival;
+        if (const auto staged = staged_arrival_scripts.find(user_id);
+            staged != staged_arrival_scripts.end()) {
+            if (std::chrono::steady_clock::now() < staged->second.expires_at)
+                arrival = std::move(staged->second.arrival);
+            staged_arrival_scripts.erase(staged);
+        }
+        // Back within the hold of a hand-off from here: those scripts left
+        // with the objects they were in.
+        held_worn_scripts.erase(user_id);
         if (!viewer_grid) return;
         const auto worn = viewer_grid->worn_attachments(user_id);
         if (!worn) {
@@ -5277,6 +5408,7 @@ int main(int argc, char* argv[]) {
         job.remaining.assign(worn->begin(), worn->end());
         job.total = worn->size();
         job.started = std::chrono::steady_clock::now();
+        job.arrival = std::move(arrival);
         pending_attachment_restores.push_back(std::move(job));
     };
     // One attachment per tick, so the cost is spread across frames instead of
@@ -5338,7 +5470,8 @@ int main(int argc, char* argv[]) {
             // record=false: this list is the record.
             const auto outcome = wear_attachment(user_id, wearer_id, item.item_id,
                                                  item.attachment_point, true, false, when,
-                                                 item.placement);
+                                                 item.placement,
+                                                 job.arrival ? &*job.arrival : nullptr);
             job.lookup_time += outcome.lookup_time;
             job.asset_time += outcome.asset_time;
             job.build_time += outcome.build_time;
@@ -5394,20 +5527,34 @@ int main(int argc, char* argv[]) {
         pending_attachment_restores.pop_front();
         return true;
     };
-    // Restore enabled task scripts after a Region restart. VM state is not yet
-    // persisted, so each restored script starts fresh and re-runs state_entry;
-    // this is enough to re-establish SCRIPTED / HANDLE_TOUCH advertising and live
-    // event handling so touch works after a restart. Persisting and resuming VM
-    // state across restarts is separate future work.
+    // Restore enabled task scripts after a Region restart. Each goes on from
+    // what it was doing when the region stopped, which a clean stop keeps;
+    // after a crash, and for a script whose state does not fit, it starts at
+    // state_entry.
     {
+        std::unordered_map<std::string, std::string> kept_states;
+        try {
+            for (auto& kept : storage->take_script_states())
+                kept_states.insert_or_assign(
+                    kept.object_id + '|' + kept.item_id, std::move(kept.state));
+        } catch (const std::exception& error) {
+            std::cerr << "{\"level\":\"error\",\"message\":\"kept script states not read\",\"error\":"
+                      << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+        }
+        std::size_t resumed_scripts = 0;
         std::size_t restored_scripts = 0;
         for (const auto& [entity_id, entity] : scene.entities()) {
             static_cast<void>(entity_id);
             for (const auto& item : entity.task_inventory) {
                 if (item.asset_type != 10) continue; // LSL script asset type
-                const auto result = rez_task_script(entity, item, true);
+                const auto kept = kept_states.find(entity.object_id + '|' + item.item_id);
+                const auto result = rez_task_script(
+                    entity, item, true,
+                    kept == kept_states.end() ? std::string_view{}
+                                              : std::string_view(kept->second));
                 if (result.compiled) {
                     ++restored_scripts;
+                    if (result.restored) ++resumed_scripts;
                 } else {
                     std::cerr << "{\"level\":\"warning\",\"message\":\"task script restore failed\",\"objectId\":"
                               << homeworldz::api::json_string(entity.object_id)
@@ -5420,7 +5567,8 @@ int main(int argc, char* argv[]) {
         }
         if (restored_scripts != 0)
             std::cout << "{\"level\":\"info\",\"message\":\"task scripts restored\",\"count\":"
-                      << restored_scripts << "}" << std::endl;
+                      << restored_scripts << ",\"resumed\":" << resumed_scripts
+                      << ",\"statesKept\":" << kept_states.size() << "}" << std::endl;
     }
     // --- Sitting (ADR 0040).
     constexpr std::int32_t changed_link = 0x20;
@@ -8987,6 +9135,27 @@ int main(int argc, char* argv[]) {
                                     homeworldz::api::to_json(homeworldz::api::Error{
                                         "transit_not_preparable", "avatar transit could not be prepared"}));
                             } else {
+                                // What the scripts it wears were doing came
+                                // with the request, from a source that sends
+                                // it; kept until the arrival dresses it.
+                                if (auto carried = homeworldz::region::parse_arrival_scripts(
+                                        http_request_body(request))) {
+                                    const auto staged_at = std::chrono::steady_clock::now();
+                                    std::erase_if(staged_arrival_scripts, [&](const auto& entry) {
+                                        return entry.second.expires_at <= staged_at;
+                                    });
+                                    std::cout << "{\"level\":\"info\",\"message\":\"arrival scripts staged\","
+                                                 "\"agent\":"
+                                              << homeworldz::api::json_string(transit->agent_id)
+                                              << ",\"kind\":"
+                                              << homeworldz::api::json_string(carried->kind)
+                                              << ",\"scripts\":" << carried->scripts.size() << "}"
+                                              << std::endl;
+                                    staged_arrival_scripts.insert_or_assign(
+                                        transit->agent_id,
+                                        StagedArrivalScripts{std::move(*carried),
+                                                             staged_at + std::chrono::seconds(60)});
+                                }
                                 response = homeworldz::http::response_for_content(
                                     request, 200, "application/json",
                                     homeworldz::api::to_json(homeworldz::api::Status{"accepted"}));
@@ -12467,7 +12636,12 @@ int main(int argc, char* argv[]) {
                                     if (!prepared) throw std::runtime_error("grid rejected transit preparation");
                                     auto destination = homeworldz::grid::socket_transport(
                                         target->public_endpoint, service_token);
-                                    if (!homeworldz::grid::prepare_avatar_arrival(*destination, transit_id))
+                                    // What the scripts it wears are doing
+                                    // goes ahead of it, and they stop here
+                                    // until it is known whether it went.
+                                    if (!homeworldz::grid::prepare_avatar_arrival(
+                                            *destination, transit_id,
+                                            carry_worn_scripts(agent_id, "teleport", now)))
                                         throw std::runtime_error("destination rejected transit preparation");
                                     const auto target_handle =
                                         (static_cast<std::uint64_t>(target->grid_x * 256) << 32) |
@@ -12498,6 +12672,7 @@ int main(int argc, char* argv[]) {
                                 } catch (const std::exception& error) {
                                     if (prepared) static_cast<void>(viewer_grid->rollback_avatar_transit(
                                         transit_id, registration->region_id(), error.what()));
+                                    release_worn_scripts(agent_id);
                                     fail_teleport("Destination region could not prepare the arrival");
                                     std::cout << "{\"level\":\"error\",\"message\":\"avatar teleport preparation failed\",\"error\":"
                                               << homeworldz::api::json_string(error.what()) << "}" << std::endl;
@@ -18095,6 +18270,7 @@ int main(int argc, char* argv[]) {
                           << ",\"maxOvershoot\":" << avatar.crossing_max_overshoot << "}" << std::endl;
                 avatar.outbound_transit_id.clear();
                 avatar.handing_off = false;
+                release_worn_scripts(avatar.user_id);
                 // Its object went ahead and it could not follow. It stands
                 // here rather than sit on nothing.
                 if (avatar.seat && avatar.seat->riding)
@@ -18504,7 +18680,12 @@ int main(int argc, char* argv[]) {
                         // An edit not yet told to the neighbour goes first, so
                         // the promotion dresses the avatar as it stands.
                         refresh_neighbor_worn(avatar);
-                        if (!homeworldz::grid::prepare_avatar_arrival(*destination, transit_id))
+                        // What the scripts it wears are doing goes ahead of
+                        // it, and they stop here until it is known whether
+                        // it went.
+                        if (!homeworldz::grid::prepare_avatar_arrival(
+                                *destination, transit_id,
+                                carry_worn_scripts(avatar.user_id, "crossing", now)))
                             throw std::runtime_error("destination rejected border crossing preparation");
                         const auto target_handle =
                             (static_cast<std::uint64_t>(crossing->destination.grid_x * 256) << 32) |
@@ -18573,6 +18754,7 @@ int main(int argc, char* argv[]) {
                         if (prepared && viewer_grid && registration)
                             static_cast<void>(viewer_grid->rollback_avatar_transit(
                                 transit_id, registration->region_id(), error.what()));
+                        release_worn_scripts(avatar.user_id);
                         std::cout << "{\"level\":\"error\",\"message\":\"avatar border crossing preparation failed\","
                                      "\"error\":"
                                   << homeworldz::api::json_string(error.what()) << "}" << std::endl;
@@ -19559,6 +19741,14 @@ int main(int argc, char* argv[]) {
         // avatar that has arrived is owed to someone standing here, and a
         // lookup for a child that may never cross is not.
         if (pending_attachment_restores.empty()) static_cast<void>(advance_item_prefetches());
+        // A hand-off that never completed, as a teleport the viewer gave up
+        // on: the scripts stopped for it start again.
+        for (auto held = held_worn_scripts.begin(); held != held_worn_scripts.end();) {
+            const auto current = held++;
+            if (now < current->second.release_at) continue;
+            const auto user_id = current->first;
+            release_worn_scripts(user_id);
+        }
         // A session that has gone stops being owed offers, or the set grows for
         // the life of the process and a returning session is never re-offered.
         if (now >= next_child_agent_sweep) {
@@ -19681,6 +19871,38 @@ int main(int argc, char* argv[]) {
             std::cout.flush();
             std::cerr.flush();
         }
+    }
+    // What every script is doing, kept for the next start to go on from.
+    try {
+        std::vector<homeworldz::scene::ScriptState> script_states;
+        for (const auto& [entity_id, entity] : scene.entities()) {
+            static_cast<void>(entity_id);
+            // A worn object's scripts go to its inventory item, below.
+            const auto* parent = entity.parent_id == 0 ? nullptr : scene.find(entity.parent_id);
+            if (entity.attachment_point != 0 || (parent && parent->attachment_point != 0))
+                continue;
+            for (const auto& item : entity.task_inventory) {
+                if (item.asset_type != 10) continue; // LSL script asset type
+                auto state = falcon.capture(entity.object_id, item.item_id);
+                if (!state.empty())
+                    script_states.push_back({entity.object_id, item.item_id, std::move(state)});
+            }
+        }
+        storage->save_script_states(script_states);
+        std::cout << "{\"level\":\"info\",\"message\":\"script states kept\",\"count\":"
+                  << script_states.size() << "}" << std::endl;
+    } catch (const std::exception& error) {
+        std::cerr << "{\"level\":\"error\",\"message\":\"script states not kept\",\"error\":"
+                  << homeworldz::api::json_string(error.what()) << "}" << std::endl;
+    }
+    // Worn objects go back to their inventory items as they are, scripts and
+    // all: their wearers have just been sent away, and nothing else will
+    // take these off.
+    {
+        std::vector<homeworldz::scene::EntityId> worn_roots;
+        for (const auto& [entity_id, entity] : scene.entities())
+            if (entity.attachment_point != 0) worn_roots.push_back(entity_id);
+        for (const auto root_id : worn_roots) save_worn_object(root_id, true);
     }
     try {
         storage->save_snapshot(scene);

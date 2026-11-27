@@ -475,6 +475,29 @@ int main() {
                 layer_low[0] != 30.0F || layer_high[3] != 63.25F) return 1;
         }
         {
+            // Script states are kept across a stop, bytes and all, and
+            // handed to exactly one start.
+            std::string binary;
+            for (int byte = 0; byte < 256; ++byte) binary.push_back(static_cast<char>(byte));
+            const std::vector<homeworldz::scene::ScriptState> kept{
+                {"object-a", "item-1", binary}, {"object-a", "item-2", "second"},
+                {"object-b", "item-1", "third"}};
+            {
+                homeworldz::storage::RegionStorage stopping(path);
+                stopping.save_script_states({{"gone", "gone", "replaced by the next save"}});
+                stopping.save_script_states(kept);
+            }
+            homeworldz::storage::RegionStorage starting(path);
+            auto taken = starting.take_script_states();
+            std::sort(taken.begin(), taken.end(), [](const auto& left, const auto& right) {
+                return left.object_id + left.item_id < right.object_id + right.item_id;
+            });
+            if (taken != kept) return 60;
+            if (!starting.take_script_states().empty()) return 61;
+            homeworldz::storage::RegionStorage after_a_crash(path);
+            if (!after_a_crash.take_script_states().empty()) return 62;
+        }
+        {
             // The read-only view that serves asset bytes off the region's
             // thread. It has to answer exactly what the region's own read
             // answers, refuse what it cannot verify, and never write.

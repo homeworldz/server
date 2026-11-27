@@ -65,7 +65,7 @@
   "categories": [
    "attachments"
   ],
-  "falcon": false
+  "falcon": true
  },
  {
   "name": "bot_update",

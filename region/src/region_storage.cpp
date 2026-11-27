@@ -737,6 +737,9 @@ RegionStorage::RegionStorage(std::filesystem::path data_path) : data_path_(std::
                        "use_estate_sun INTEGER NOT NULL, fixed_sun INTEGER NOT NULL,"
                        "sun_hour REAL NOT NULL,"
                        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);"
+                       "CREATE TABLE IF NOT EXISTS script_states ("
+                       "object_id TEXT NOT NULL, item_id TEXT NOT NULL,"
+                       "state BLOB NOT NULL, PRIMARY KEY (object_id, item_id));"
                        "CREATE TABLE IF NOT EXISTS terrain_settings ("
                        "id INTEGER PRIMARY KEY CHECK (id = 1),"
                        "asset0 TEXT NOT NULL, asset1 TEXT NOT NULL,"
@@ -1260,6 +1263,53 @@ void bind_text(sqlite3_stmt* statement, int column, std::string_view value) {
 }
 
 } // namespace
+
+void RegionStorage::save_script_states(const std::vector<scene::ScriptState>& states) {
+    execute(database_, "BEGIN IMMEDIATE;");
+    sqlite3_stmt* statement = nullptr;
+    try {
+        execute(database_, "DELETE FROM script_states;");
+        const char* sql = "INSERT OR REPLACE INTO script_states (object_id, item_id, state)"
+                          " VALUES (?,?,?)";
+        if (sqlite3_prepare_v2(database_, sql, -1, &statement, nullptr) != SQLITE_OK)
+            throw std::runtime_error(sqlite3_errmsg(database_));
+        for (const auto& entry : states) {
+            sqlite3_reset(statement);
+            sqlite3_bind_text(statement, 1, entry.object_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(statement, 2, entry.item_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(statement, 3, entry.state.data(),
+                              static_cast<int>(entry.state.size()), SQLITE_TRANSIENT);
+            if (sqlite3_step(statement) != SQLITE_DONE)
+                throw std::runtime_error(sqlite3_errmsg(database_));
+        }
+        sqlite3_finalize(statement);
+        statement = nullptr;
+        execute(database_, "COMMIT;");
+    } catch (...) {
+        if (statement != nullptr) sqlite3_finalize(statement);
+        sqlite3_exec(database_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        throw;
+    }
+}
+
+std::vector<scene::ScriptState> RegionStorage::take_script_states() {
+    std::vector<scene::ScriptState> states;
+    sqlite3_stmt* statement = nullptr;
+    const char* sql = "SELECT object_id, item_id, state FROM script_states";
+    if (sqlite3_prepare_v2(database_, sql, -1, &statement, nullptr) != SQLITE_OK)
+        throw std::runtime_error(sqlite3_errmsg(database_));
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        const auto* object_id = reinterpret_cast<const char*>(sqlite3_column_text(statement, 0));
+        const auto* item_id = reinterpret_cast<const char*>(sqlite3_column_text(statement, 1));
+        const auto* blob = static_cast<const char*>(sqlite3_column_blob(statement, 2));
+        const auto size = static_cast<std::size_t>(sqlite3_column_bytes(statement, 2));
+        if (object_id == nullptr || item_id == nullptr || blob == nullptr) continue;
+        states.push_back({object_id, item_id, std::string(blob, size)});
+    }
+    sqlite3_finalize(statement);
+    execute(database_, "DELETE FROM script_states;");
+    return states;
+}
 
 void RegionStorage::save_parcels(const std::vector<parcel::Parcel>& parcels) {
     execute(database_, "BEGIN IMMEDIATE;");

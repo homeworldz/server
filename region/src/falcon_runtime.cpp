@@ -517,6 +517,18 @@ std::size_t FalconRuntime::erase_object(std::string_view object_id) {
     return keys.size();
 }
 
+std::vector<std::string> FalconRuntime::suspend_object(std::string_view object_id) {
+    std::vector<std::string> stopped;
+    const auto object = impl_->by_object.find(std::string(object_id));
+    if (object == impl_->by_object.end()) return stopped;
+    for (auto* script : object->second) {
+        if (!script->enabled) continue;
+        script->enabled = false;
+        stopped.push_back(script->identity.inventory_item_id);
+    }
+    return stopped;
+}
+
 std::string FalconRuntime::capture(std::string_view object_id, std::string_view inventory_item_id) {
     const auto found = impl_->scripts.find(instance_key(object_id, inventory_item_id));
     if (found == impl_->scripts.end()) return {};

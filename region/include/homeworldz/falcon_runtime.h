@@ -99,6 +99,10 @@ public:
     // Stops every script in an object that has left the scene. Returns how
     // many there were.
     std::size_t erase_object(std::string_view object_id);
+    // Stops an object's running scripts where they are, for a hand-off that
+    // may yet be called off, and returns the inventory items of the ones it
+    // stopped. set_enabled starts each again from where it was.
+    std::vector<std::string> suspend_object(std::string_view object_id);
     // Whether an object carries scripts and whether any enabled script declares a
     // touch handler. The region advertises these to Firestorm as the SCRIPTED and
     // HANDLE_TOUCH object-update flags so the viewer enables the Touch action and

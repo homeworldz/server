@@ -33,7 +33,7 @@ client.
 | 3. Interactive Physical World | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 3 progress: 50%">50%</progress> | 50% |
 | 4. Mesh and Creator Platform | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="50" aria-label="Phase 4 progress: 50%">50%</progress> | 50% |
 | 5. Social Communications | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="6" aria-label="Phase 5 progress: 6%">6%</progress> | 6% |
-| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="25" aria-label="Phase 6 progress: 25%">25%</progress> | 25% |
+| 6. LSL Scripting | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="27" aria-label="Phase 6 progress: 27%">27%</progress> | 27% |
 | 7. Reliable Operations and Distribution | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="25" aria-label="Phase 7 progress: 25%">25%</progress> | 25% |
 | 8. Scale, Compatibility, and Ecosystem | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="4" aria-label="Phase 8 progress: 4%">4%</progress> | 4% |
 | 9. Modernized Communications Transport | <progress class="roadmap-phase-progress" data-color="primary" max="100" value="70" aria-label="Phase 9 progress: 70%">70%</progress> | 70% |
@@ -287,10 +287,10 @@ glTF (GLB) is the stored format, and each client is served a derived rendition.
 ### Script persistence and crossings
 
 - [x] Snapshot a running script after any instruction and restore it in a fresh VM.
-- [ ] Restore running scripts across region restarts.
+- [x] Restore running scripts across region restarts.
 - [ ] Serialize complete script state in a compact versioned format.
 - [ ] Stop and restore live scripts at any instruction.
-- [ ] Snapshot scripts together with their attachment, object, or vehicle.
+- [x] Snapshot scripts together with their attachment, object, or vehicle.
 - [ ] Cross heavily scripted attachments and vehicles.
 - [ ] Version the runtime ABI with safe upgrade and rollback of stored script state.
 

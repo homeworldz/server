@@ -1283,9 +1283,10 @@ HttpResponse fetch_asset_from(std::string endpoint, std::string service_token,
         "GET", "/api/v1/assets/" + std::string(asset_id), {});
 }
 
-bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id) {
+bool prepare_avatar_arrival(Transport& destination, std::string_view transit_id,
+                            std::string_view scripts) {
     return destination.send("POST", "/api/v1/transits/" + std::string(transit_id) +
-        "/prepare-arrival", {}).status_code == 200;
+        "/prepare-arrival", std::string(scripts)).status_code == 200;
 }
 
 std::string establish_child_agent(Transport& destination, std::string_view document,

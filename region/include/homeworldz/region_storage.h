@@ -67,6 +67,13 @@ public:
 
     void save_snapshot(const scene::Scene& scene);
     bool load_snapshot(scene::Scene& scene) const;
+    // What each script was doing when the region stopped, for the next start
+    // to go on from. Saving replaces whatever was kept.
+    void save_script_states(const std::vector<scene::ScriptState>& states);
+    // Reads them and forgets them. They describe one stop: a start that did
+    // not follow it, after a crash, has nothing to go on from and must not
+    // take its scripts back to an earlier one.
+    std::vector<scene::ScriptState> take_script_states();
     SnapshotMetadata snapshot_metadata() const;
     AssetMetadata store_asset(std::string viewer_id, std::string creator_id,
                               std::span<const std::byte> content);
