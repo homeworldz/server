@@ -1,5 +1,8 @@
 #include "homeworldz/falcon_runtime.h"
 
+// Every check here is an assert, and a release build would compile them all
+// away, calls and all, leaving a test that passes having run nothing.
+#undef NDEBUG
 #include <cassert>
 #include <string>
 #include <vector>
@@ -358,6 +361,115 @@ int main() {
         )LSL", true).running);
         assert(timed.run_tick().trapped == 1);
         assert(texts() == Texts{"a notecard"});
+    }
+    // A script's state, captured in one runtime and carried to another: what
+    // a take and a rez, a copy, and a region crossing all do.
+    {
+        using Texts = std::vector<std::string>;
+        Texts said;
+        const auto sink = [&](FalconHostMessage message) { said.push_back(message.text); };
+        double now = 50.0;
+        FalconRuntime here(sink);
+        here.set_clock([&] { return now; });
+        const std::string source = R"LSL(
+            integer count;
+            default {
+                state_entry() {
+                    count = 5;
+                    llSetTimerEvent(10.0);
+                    llOwnerSay("start");
+                    llSleep(4.0);
+                    llOwnerSay("woke " + (string)count);
+                }
+                touch_start(integer n) { count += n; llOwnerSay("touch " + (string)count); }
+                timer() { llOwnerSay("timer " + (string)(++count)); }
+            }
+        )LSL";
+        assert(here.rez({"asset-1", "item", "object", "owner"}, source, true).running);
+        here.run_tick();
+        assert(said == Texts{"start"});
+        // Asleep inside state_entry, a second into a four-second sleep and a
+        // ten-second timer, with a touch waiting.
+        assert(here.dispatch_touch_start("object", 2) == 1);
+        now = 51.0;
+        const std::string state = here.capture("object", "item");
+        assert(!state.empty());
+        assert(here.capture("object", "no-such-item").empty());
+        // The object leaves: its scripts stop here, and say nothing more.
+        assert(here.erase_object("object") == 1 && here.size() == 0);
+        assert(here.erase_object("object") == 0);
+        now = 500.0;
+        here.run_tick();
+        assert(said == Texts{"start"});
+
+        // Elsewhere, under other ids and on another clock, it goes on: no
+        // second state_entry, the three seconds of sleep that were left, the
+        // touch that was waiting, and the timer nine seconds on.
+        double there_now = 9000.0;
+        FalconRuntime there(sink);
+        there.set_clock([&] { return there_now; });
+        said.clear();
+        const auto resumed =
+            there.rez({"asset-1", "new-item", "new-object", "owner"}, source, true, state);
+        assert(resumed.compiled && resumed.running && resumed.restored);
+        there.run_tick();
+        there_now = 9002.9;
+        there.run_tick();
+        assert(said.empty());
+        there_now = 9003.1;
+        there.run_tick();
+        assert(said == Texts{"woke 5"});
+        there.run_tick();
+        assert((said == Texts{"woke 5", "touch 7"}));
+        there_now = 9008.9;
+        there.run_tick();
+        assert(said.size() == 2);
+        there_now = 9009.1;
+        there.run_tick();
+        there.run_tick();
+        assert((said == Texts{"woke 5", "touch 7", "timer 8"}));
+        there_now = 9019.2;
+        there.run_tick();
+        there.run_tick();
+        assert(said.size() == 4 && said.back() == "timer 9");
+
+        // A state for other source, a damaged one, and every state cut
+        // short are set aside, and the script starts at state_entry.
+        said.clear();
+        const auto other = there.rez({"asset-2", "i2", "o2", "owner"}, source, true, state);
+        assert(other.running && !other.restored);
+        there.run_tick();
+        assert(said == Texts{"start"});
+        auto damaged = state;
+        damaged[0] = 'X';
+        assert(!there.rez({"asset-1", "i3", "o3", "owner"}, source, true, damaged).restored);
+        for (std::size_t length = 0; length < state.size(); ++length) {
+            const auto cut = there.rez({"asset-1", "i4", "o4", "owner"}, source, true,
+                                       state.substr(0, length));
+            assert(cut.running && !cut.restored);
+        }
+        assert(there.rez({"asset-1", "i4", "o4", "owner"}, source, true, state + "x").restored == false);
+
+        // Captured part-way through a loop, the script finishes it with the
+        // same answer, and the one it was captured from is undisturbed.
+        const std::string loop = R"LSL(
+            default { state_entry() {
+                integer i; integer sum;
+                for (i = 1; i <= 2000; ++i) sum += i;
+                llOwnerSay((string)sum);
+            } }
+        )LSL";
+        said.clear();
+        FalconRuntime first(sink);
+        assert(first.rez({"loop", "item", "object", "owner"}, loop, true).running);
+        first.run_tick(0x200, 0x200);
+        const std::string midway = first.capture("object", "item");
+        FalconRuntime second(sink);
+        assert(second.rez({"loop", "item", "copy", "owner"}, loop, true, midway).restored);
+        for (int tick = 0; tick < 200; ++tick) second.run_tick();
+        assert(said == Texts{"2001000"});
+        for (int tick = 0; tick < 200; ++tick) first.run_tick();
+        assert((said == Texts{"2001000", "2001000"}));
     }
     return 0;
 }

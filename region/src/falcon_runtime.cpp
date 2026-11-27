@@ -8,7 +8,9 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <cstring>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
@@ -37,6 +39,112 @@ std::optional<Value> default_result(const std::string& name) {
 double seconds_of(const Value& value) {
     return value.type == Type::Float ? value.number() : 0.0;
 }
+
+// A captured script: the VM's own snapshot, wrapped with what the runtime
+// keeps around the VM. Times are written as what is left of them, because
+// the clock they were counted on stays behind.
+constexpr char state_magic[4] = {'H', 'W', 'Z', 'R'};
+constexpr std::uint8_t state_version = 1;
+constexpr std::size_t max_state_bytes = 256 * 1024;
+constexpr std::uint8_t state_enabled = 1;
+constexpr std::uint8_t state_trapped = 2;
+
+class StateWriter {
+public:
+    void u8(std::uint8_t value) { bytes_.push_back(static_cast<char>(value)); }
+    void u32(std::uint32_t value) {
+        for (int shift = 0; shift < 32; shift += 8) u8(static_cast<std::uint8_t>(value >> shift));
+    }
+    void f64(double value) {
+        char raw[sizeof value];
+        std::memcpy(raw, &value, sizeof value);
+        bytes_.append(raw, sizeof raw);
+    }
+    void text(std::string_view value) {
+        u32(static_cast<std::uint32_t>(value.size()));
+        bytes_.append(value);
+    }
+    void value(const Value& item) {
+        u8(static_cast<std::uint8_t>(item.type));
+        switch (item.type) {
+        case Type::Integer: u32(static_cast<std::uint32_t>(item.integer)); break;
+        case Type::String:
+        case Type::Key: text(item.str); break;
+        case Type::Float: f64(item.components[0]); break;
+        case Type::Vector:
+        case Type::Rotation:
+            for (const auto component : item.components) f64(component);
+            break;
+        case Type::List:
+            u32(static_cast<std::uint32_t>(item.items().size()));
+            for (const auto& element : item.items()) value(element);
+            break;
+        case Type::Void: break;
+        }
+    }
+    std::string take() { return std::move(bytes_); }
+
+private:
+    std::string bytes_;
+};
+
+// Reads what StateWriter wrote. Anything that does not fit throws, and the
+// caller starts the script afresh.
+class StateReader {
+public:
+    explicit StateReader(std::string_view bytes) : bytes_(bytes) {}
+    std::uint8_t u8() { return static_cast<std::uint8_t>(take(1)[0]); }
+    std::uint32_t u32() {
+        const auto raw = take(4);
+        std::uint32_t value = 0;
+        for (int index = 3; index >= 0; --index)
+            value = (value << 8) | static_cast<std::uint8_t>(raw[static_cast<std::size_t>(index)]);
+        return value;
+    }
+    double f64() {
+        double value{};
+        std::memcpy(&value, take(sizeof value).data(), sizeof value);
+        return value;
+    }
+    std::string text() { return std::string(take(u32())); }
+    Value value(int depth = 0) {
+        const auto type = static_cast<Type>(u8());
+        switch (type) {
+        case Type::Integer: return Value::make_integer(static_cast<std::int32_t>(u32()));
+        case Type::String: return Value::make_string(text());
+        case Type::Key: return Value::make_key(text());
+        case Type::Float: return Value::make_float(f64());
+        case Type::Vector:
+        case Type::Rotation: {
+            const double x = f64(), y = f64(), z = f64(), w = f64();
+            return type == Type::Vector ? Value::make_vector(x, y, z)
+                                        : Value::make_rotation(x, y, z, w);
+        }
+        case Type::List: {
+            if (depth != 0) break; // a list never holds a list
+            const auto count = u32();
+            if (count > bytes_.size()) break;
+            std::vector<Value> items;
+            items.reserve(count);
+            for (std::uint32_t index = 0; index < count; ++index) items.push_back(value(1));
+            return Value::make_list(std::move(items));
+        }
+        case Type::Void: break;
+        }
+        throw std::runtime_error("script state holds a value of no known type");
+    }
+    bool done() const { return bytes_.empty(); }
+
+    std::string_view take(std::size_t count) {
+        if (count > bytes_.size()) throw std::runtime_error("script state is cut short");
+        const auto piece = bytes_.substr(0, count);
+        bytes_.remove_prefix(count);
+        return piece;
+    }
+
+private:
+    std::string_view bytes_;
+};
 
 } // namespace
 
@@ -87,8 +195,10 @@ struct FalconRuntime::Impl {
         // The script and the runtime both outlive the host function: the VM
         // that holds it is a member of the script, and the runtime owns the
         // script.
+        // `fresh` starts the script at state_entry; without it the script
+        // waits to be given a captured state.
         LiveScript(Identity script_identity, std::shared_ptr<const Program> compiled,
-                   bool start_enabled, Impl& runtime)
+                   bool start_enabled, Impl& runtime, bool fresh = true)
             : identity(std::move(script_identity)), program(std::move(compiled)), vm(*program),
               enabled(start_enabled) {
             const auto host_identity = identity;
@@ -131,7 +241,7 @@ struct FalconRuntime::Impl {
                 }
                 return std::nullopt;
             });
-            if (enabled && program->find_event("state_entry"))
+            if (fresh && enabled && program->find_event("state_entry"))
                 vm.dispatch("state_entry", {});
         }
     };
@@ -224,6 +334,85 @@ struct FalconRuntime::Impl {
         return program;
     }
 
+    // One script's state, for restore() to read here or in another region.
+    std::string capture(LiveScript& script) {
+        const double now = clock();
+        StateWriter out;
+        for (const auto character : state_magic) out.u8(static_cast<std::uint8_t>(character));
+        out.u8(state_version);
+        out.text(script.identity.asset_id);
+        out.u8(static_cast<std::uint8_t>((script.enabled ? state_enabled : 0) |
+                                         (script.trapped ? state_trapped : 0)));
+        out.f64(script.timer_interval);
+        out.f64(script.timer_interval > 0.0 ? (std::max)(0.0, script.timer_due - now) : 0.0);
+        out.u32(static_cast<std::uint32_t>(script.pending.size()));
+        for (const auto& event : script.pending) {
+            out.text(event.name);
+            out.u32(static_cast<std::uint32_t>(event.args.size()));
+            for (const auto& arg : event.args) out.value(arg);
+        }
+        // The VM records a sleep as what is left of it, and only the runtime
+        // knows how much that is by now.
+        if (script.asleep) script.vm.set_sleep_remaining((std::max)(0.0, script.wake_at - now));
+        const auto vm_state = script.vm.snapshot();
+        out.u32(static_cast<std::uint32_t>(vm_state.size()));
+        auto bytes = out.take();
+        bytes.append(reinterpret_cast<const char*>(vm_state.data()), vm_state.size());
+        if (bytes.size() > max_state_bytes) return {};
+        return bytes;
+    }
+
+    // Puts a captured state into a script made without `fresh`. Throws when
+    // the state does not fit this script; the script is then of no use and
+    // the caller makes another. Nothing is entered in the runtime's tables
+    // here, so a script that failed leaves nothing behind.
+    void restore(LiveScript& script, std::string_view state) {
+        StateReader in(state);
+        for (const auto character : state_magic)
+            if (in.u8() != static_cast<std::uint8_t>(character))
+                throw std::runtime_error("not a script state");
+        if (in.u8() != state_version) throw std::runtime_error("script state of another version");
+        // The state belongs to the source it ran: the same asset, or nothing.
+        if (in.text() != script.identity.asset_id)
+            throw std::runtime_error("script state is for other source");
+        const auto flags = in.u8();
+        const double timer_interval = in.f64();
+        const double timer_left = in.f64();
+        const auto event_count = in.u32();
+        if (event_count > LiveScript::max_pending) throw std::runtime_error("too many events");
+        std::deque<LiveScript::PendingEvent> pending;
+        for (std::uint32_t index = 0; index < event_count; ++index) {
+            LiveScript::PendingEvent event;
+            event.name = in.text();
+            const auto arg_count = in.u32();
+            if (arg_count > 0x40 || !script.program->find_event(event.name))
+                throw std::runtime_error("script state holds an event the script has not");
+            for (std::uint32_t arg = 0; arg < arg_count; ++arg) event.args.push_back(in.value());
+            pending.push_back(std::move(event));
+        }
+        const auto vm_size = in.u32();
+        const auto vm_bytes = in.take(vm_size);
+        if (!in.done()) throw std::runtime_error("script state runs on past its end");
+        script.vm.restore(std::vector<std::uint8_t>(vm_bytes.begin(), vm_bytes.end()));
+        // A host call in progress was being answered by the region the script
+        // left, and nobody here will ever answer it.
+        if (script.vm.waiting()) throw std::runtime_error("script state is inside a host call");
+        const double now = clock();
+        script.enabled = script.enabled && (flags & state_enabled) != 0;
+        script.trapped = (flags & state_trapped) != 0;
+        script.pending = std::move(pending);
+        script.timer_pending = std::any_of(script.pending.begin(), script.pending.end(),
+                                           [](const auto& event) { return event.name == "timer"; });
+        if (timer_interval > 0.0 && timer_left >= 0.0 && timer_left <= timer_interval) {
+            script.timer_interval = timer_interval;
+            script.timer_due = now + timer_left;
+        }
+        if (script.vm.sleep_remaining() > 0.0) {
+            script.asleep = true;
+            script.wake_at = now + script.vm.sleep_remaining();
+        }
+    }
+
     bool erase(const std::string& key) {
         const auto found = scripts.find(key);
         if (found == scripts.end()) return false;
@@ -263,21 +452,36 @@ bool FalconRuntime::resume(std::string_view object_id, std::string_view inventor
 }
 
 FalconRezResult FalconRuntime::rez(Identity identity, std::string_view source,
-                                   bool enabled) {
+                                   bool enabled, std::string_view saved_state) {
     try {
         // Firestorm terminates script-editor uploads with a wire-format NUL.
         // It is not part of the LSL source and must not reach the lexer.
         while (!source.empty() && source.back() == '\0') source.remove_suffix(1);
         auto program = impl_->compile(source);
-        auto live = std::make_unique<Impl::LiveScript>(identity, std::move(program), enabled, *impl_);
+        std::unique_ptr<Impl::LiveScript> live;
+        if (!saved_state.empty()) {
+            try {
+                auto resumed = std::make_unique<Impl::LiveScript>(identity, program, enabled, *impl_, false);
+                impl_->restore(*resumed, saved_state);
+                live = std::move(resumed);
+            } catch (const std::exception&) {
+                // The state does not fit this script: start it afresh.
+            }
+        }
+        const bool restored = live != nullptr;
+        if (!live)
+            live = std::make_unique<Impl::LiveScript>(identity, std::move(program), enabled, *impl_);
         // A failed compile has already thrown, so a script being replaced
         // keeps running until its replacement is ready.
         const auto key = instance_key(identity.object_id, identity.inventory_item_id);
         impl_->erase(key);
         auto& stored = *impl_->scripts.emplace(key, std::move(live)).first->second;
         impl_->by_object[identity.object_id].push_back(&stored);
+        // A restored script may be part-way through a sleep or a timer.
+        if (stored.asleep) impl_->sleepers.emplace(stored.wake_at, &stored);
+        if (stored.timer_interval > 0.0) impl_->timers.emplace(stored.timer_due, &stored);
         impl_->mark_ready(stored);
-        return {true, enabled, {}, {}};
+        return {true, stored.enabled, {}, {}, restored};
     } catch (const ScriptError& error) {
         if (error.line == 0) return {false, false, error.what(), error.what()};
         return {false, false, error.what(),
@@ -301,6 +505,22 @@ bool FalconRuntime::set_enabled(std::string_view object_id,
 
 bool FalconRuntime::erase(std::string_view object_id, std::string_view inventory_item_id) {
     return impl_->erase(instance_key(object_id, inventory_item_id));
+}
+
+std::size_t FalconRuntime::erase_object(std::string_view object_id) {
+    const auto object = impl_->by_object.find(std::string(object_id));
+    if (object == impl_->by_object.end()) return 0;
+    std::vector<std::string> keys;
+    for (const auto* script : object->second)
+        keys.push_back(instance_key(script->identity.object_id, script->identity.inventory_item_id));
+    for (const auto& key : keys) impl_->erase(key);
+    return keys.size();
+}
+
+std::string FalconRuntime::capture(std::string_view object_id, std::string_view inventory_item_id) {
+    const auto found = impl_->scripts.find(instance_key(object_id, inventory_item_id));
+    if (found == impl_->scripts.end()) return {};
+    return impl_->capture(*found->second);
 }
 
 FalconRuntime::ScriptStatus FalconRuntime::object_script_status(

@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -94,7 +95,16 @@ std::vector<std::string> texture_entry_texture_ids(std::span<const std::byte> te
 
 std::optional<ObjectAsset> parse_object_asset(std::span<const std::byte> content);
 std::optional<LinksetAsset> parse_linkset_asset(std::span<const std::byte> content);
+// What a script in an object's contents is doing right now, as the bytes the
+// script runtime captures; empty for a script that is not running. Given to
+// serialize_linkset_asset where the object is leaving the scene with its
+// scripts mid-flight (a take, a crossing), so the state goes with it. A
+// parsed asset carries each one back in TaskInventoryItem::script_state.
+using ScriptStateSource =
+    std::function<std::string(const scene::Entity&, const scene::TaskInventoryItem&)>;
+
 std::string serialize_linkset_asset(
-    const scene::Entity& root, std::span<const scene::Entity* const> children = {});
+    const scene::Entity& root, std::span<const scene::Entity* const> children = {},
+    const ScriptStateSource& script_state = {});
 
 } // namespace homeworldz::asset

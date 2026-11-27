@@ -53,6 +53,11 @@ struct TaskInventoryItem {
     std::uint8_t sale_type{};
     std::int32_t sale_price{};
     std::uint64_t creation_date{};
+    // A script's running state as it arrived with the object (from
+    // inventory, from another region, from the object it was copied from):
+    // opaque bytes the script runtime wrote. Held only until the script is
+    // started from it, and never stored with the scene.
+    std::string script_state;
 };
 
 struct EffectivePermissions {

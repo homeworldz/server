@@ -90,6 +90,45 @@ int main() {
             taken_off->children.size() != 1 || taken_off->children[0].attachment_point != 0)
             return 1;
     }
+    // A script's running state goes into the document only where one is
+    // offered, only for a script, and comes back byte for byte.
+    {
+        auto scripted = root;
+        scripted.task_inventory.push_back(scripted.task_inventory.front());
+        scripted.task_inventory.back().item_id = "70000000-0000-4000-8000-000000000007";
+        scripted.task_inventory.back().name = "Script";
+        scripted.task_inventory.back().asset_type = 10;
+        scripted.task_inventory.back().inventory_type = 10;
+        std::string state;
+        for (int byte = 0; byte < 256; ++byte) state.push_back(static_cast<char>(byte));
+        int asked = 0;
+        const auto with_state = homeworldz::asset::serialize_linkset_asset(
+            scripted, {},
+            [&](const homeworldz::scene::Entity&, const homeworldz::scene::TaskInventoryItem& item) {
+                ++asked;
+                return item.name == "Script" ? state : std::string("never written");
+            });
+        const auto parsed = homeworldz::asset::parse_linkset_asset(std::span(
+            reinterpret_cast<const std::byte*>(with_state.data()), with_state.size()));
+        if (asked != 1 || !parsed || parsed->root.task_inventory.size() != 2 ||
+            !parsed->root.task_inventory[0].script_state.empty() ||
+            parsed->root.task_inventory[1].script_state != state ||
+            parsed->root.task_inventory[1].name != "Script")
+            return 120;
+        // Held on the item, it is not written back: only a running script's
+        // state, asked for, ever is.
+        scripted.task_inventory.back().script_state = state;
+        const auto without = homeworldz::asset::serialize_linkset_asset(scripted);
+        if (without.find("scriptState") != std::string::npos) return 121;
+        // A state that does not read is dropped, and the item still parses.
+        auto broken = with_state;
+        broken.replace(broken.find("\"scriptState\":\"") + 15, 2, "zz");
+        const auto survived = homeworldz::asset::parse_linkset_asset(std::span(
+            reinterpret_cast<const std::byte*>(broken.data()), broken.size()));
+        if (!survived || survived->root.task_inventory.size() != 2 ||
+            !survived->root.task_inventory[1].script_state.empty())
+            return 122;
+    }
     const auto linkset_text = homeworldz::asset::serialize_linkset_asset(root, children);
     const auto linkset = homeworldz::asset::parse_linkset_asset(std::span(
         reinterpret_cast<const std::byte*>(linkset_text.data()), linkset_text.size()));

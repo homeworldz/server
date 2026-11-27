@@ -3847,7 +3847,7 @@ int main(int argc, char* argv[]) {
     });
     const auto rez_task_script = [&](const homeworldz::scene::Entity& entity,
                                      const homeworldz::scene::TaskInventoryItem& item,
-                                     bool enabled) {
+                                     bool enabled, std::string_view saved_state = {}) {
         // Parcel script policy: a script only runs when its parcel allows scripts
         // for the object owner (AllowOtherScripts, or owner/region-owner). The item
         // stays in contents; it just does not execute where scripts are disallowed.
@@ -3864,10 +3864,48 @@ int main(int argc, char* argv[]) {
                 reinterpret_cast<const char*>(asset.data()), asset.size());
             return falcon.rez(
                 {item.asset_id, item.item_id, entity.object_id, entity.owner_id},
-                source, effective_enabled);
+                source, effective_enabled, saved_state);
         } catch (const std::exception& error) {
             return homeworldz::script::FalconRezResult{false, false, error.what(), error.what()};
         }
+    };
+    // What each script of an object leaving the scene is doing, for the
+    // document the object leaves in: a take, a return, a crossing.
+    const homeworldz::asset::ScriptStateSource running_script_state =
+        [&](const homeworldz::scene::Entity& entity,
+            const homeworldz::scene::TaskInventoryItem& item) {
+            return falcon.capture(entity.object_id, item.item_id);
+        };
+    // Starts the scripts of a prim that has just come to stand here, from
+    // inventory, from another region, or as a copy. Each goes on from the
+    // state that came with it, and starts at state_entry when none did or
+    // it does not fit. The state is used once: left on the item, a later
+    // start would take the script back to it.
+    const auto start_object_scripts = [&](homeworldz::scene::EntityId entity_id,
+                                          std::string_view arrival) {
+        auto* entity = scene.find(entity_id);
+        if (!entity) return false;
+        bool started = false;
+        for (auto& item : entity->task_inventory) {
+            const auto saved_state = std::move(item.script_state);
+            item.script_state.clear();
+            if (item.asset_type != 10) continue; // LSL script asset type
+            const auto result = rez_task_script(*entity, item, true, saved_state);
+            started = started || result.compiled;
+            if (result.compiled)
+                std::cout << "{\"level\":\"info\",\"message\":\"object script started\",\"arrival\":"
+                          << homeworldz::api::json_string(arrival) << ",\"objectId\":"
+                          << homeworldz::api::json_string(entity->object_id) << ",\"itemId\":"
+                          << homeworldz::api::json_string(item.item_id) << ",\"stateBytes\":"
+                          << saved_state.size() << ",\"restored\":"
+                          << (result.restored ? "true" : "false") << "}" << std::endl;
+            else
+                std::cerr << "{\"level\":\"warning\",\"message\":\"object script not started\",\"arrival\":"
+                          << homeworldz::api::json_string(arrival) << ",\"objectId\":"
+                          << homeworldz::api::json_string(entity->object_id) << ",\"diagnostic\":"
+                          << homeworldz::api::json_string(result.diagnostic) << "}" << std::endl;
+        }
+        return started;
     };
     // Re-send an entity's ObjectUpdate to every nearby viewer. A script rez,
     // recompile, enable, disable, or removal changes the SCRIPTED / HANDLE_TOUCH
@@ -4748,7 +4786,8 @@ int main(int argc, char* argv[]) {
                                    state.linear_velocity.z};
         transit.angular_velocity = {state.angular_velocity.x, state.angular_velocity.y,
                                     state.angular_velocity.z};
-        transit.linkset = homeworldz::asset::serialize_linkset_asset(*root, children);
+        transit.linkset = homeworldz::asset::serialize_linkset_asset(
+            *root, children, running_script_state);
         transit.sitters = riders;
         // The same document, addressed back here: what rebuilds the object if
         // the far side never takes it. Built before the removal, because after
@@ -4778,6 +4817,10 @@ int main(int argc, char* argv[]) {
             // solid: an avatar that stood up where the seat had been stood on
             // a seat already in the next region (2026-11-12).
             remove_physics_object(part);
+            // Its scripts go on in the next region from the state in the
+            // document, so here they stop.
+            if (const auto* leaving = scene.find(part))
+                static_cast<void>(falcon.erase_object(leaving->object_id));
             if (scene.remove(part)) killed.push_back(static_cast<std::uint32_t>(part));
         }
         try {
@@ -7541,7 +7584,8 @@ int main(int argc, char* argv[]) {
         if (folder.empty()) return;
         const auto asset_id = homeworldz::viewer::random_uuid();
         const auto item_id = homeworldz::viewer::random_uuid();
-        const auto content_text = homeworldz::asset::serialize_linkset_asset(*entity, children);
+        const auto content_text = homeworldz::asset::serialize_linkset_asset(
+            *entity, children, running_script_state);
         const auto content = std::span(
             reinterpret_cast<const std::byte*>(content_text.data()), content_text.size());
         bool item_created = false;
@@ -7571,8 +7615,11 @@ int main(int argc, char* argv[]) {
         const std::string item_name = entity->name;
         const std::string item_description = entity->description;
         const std::string creator_id = entity->creator_id;
-        for (auto part = part_ids.rbegin(); part != part_ids.rend(); ++part)
+        for (auto part = part_ids.rbegin(); part != part_ids.rend(); ++part) {
+            if (const auto* leaving = scene.find(*part))
+                static_cast<void>(falcon.erase_object(leaving->object_id));
             if (scene.remove(*part)) removed_ids.push_back(static_cast<std::uint32_t>(*part));
+        }
         // If the owner is connected, tell their viewer about the new item so it
         // appears in inventory without a relog (About Land return previously only
         // showed up after re-fetching Lost and Found).
@@ -16069,6 +16116,13 @@ int main(int argc, char* argv[]) {
                                     duplicate->local_rotation = {};
                                     duplicate->position = position;
                                     duplicate->velocity = {};
+                                    // A copy's scripts go on from where the
+                                    // original's are, read before the items
+                                    // are given ids of their own.
+                                    for (auto& item : duplicate->task_inventory)
+                                        if (item.asset_type == 10)
+                                            item.script_state = falcon.capture(
+                                                source_copy.object_id, item.item_id);
                                     duplicate->object_id = homeworldz::viewer::random_uuid();
                                     regenerate_task_inventory_item_ids(*duplicate);
                                     duplicate->creation_date = static_cast<std::uint64_t>(
@@ -16083,6 +16137,10 @@ int main(int argc, char* argv[]) {
                                         child->id = child_id;
                                         child->parent_id = duplicate_root_id;
                                         child->velocity = {};
+                                        for (auto& item : child->task_inventory)
+                                            if (item.asset_type == 10)
+                                                item.script_state = falcon.capture(
+                                                    source_child->object_id, item.item_id);
                                         child->object_id = homeworldz::viewer::random_uuid();
                                         regenerate_task_inventory_item_ids(*child);
                                         child->creation_date = duplicate->creation_date;
@@ -16103,6 +16161,11 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                             if (persisted) {
+                                // Before the copies are announced: whether a
+                                // prim is scripted and takes touches is on
+                                // its object update.
+                                for (const auto entity_id : created_entities)
+                                    static_cast<void>(start_object_scripts(entity_id, "copy"));
                                 for (const auto entity_id : created_entities) {
                                     const auto* entity = scene.find(entity_id);
                                     if (!entity) continue;
@@ -16717,7 +16780,8 @@ int main(int argc, char* argv[]) {
                                     const auto asset_id = homeworldz::viewer::random_uuid();
                                     const auto item_id = homeworldz::viewer::random_uuid();
                                     const auto content_text =
-                                        homeworldz::asset::serialize_linkset_asset(*entity, children);
+                                        homeworldz::asset::serialize_linkset_asset(
+                                            *entity, children, running_script_state);
                                     const auto content = std::span(
                                         reinterpret_cast<const std::byte*>(content_text.data()), content_text.size());
                                     auto base_permissions = entity->base_permissions;
@@ -16782,9 +16846,12 @@ int main(int argc, char* argv[]) {
                                             endpoint, std::move(inventory_update), true, now, true))
                                         static_cast<void>(send_udp(viewer_server, endpoint, *outgoing));
                                     if (removes_from_scene)
-                                        for (auto part = part_ids.rbegin(); part != part_ids.rend(); ++part)
+                                        for (auto part = part_ids.rbegin(); part != part_ids.rend(); ++part) {
+                                            if (const auto* leaving = scene.find(*part))
+                                                static_cast<void>(falcon.erase_object(leaving->object_id));
                                             if (scene.remove(*part))
                                                 removed_ids.push_back(static_cast<std::uint32_t>(*part));
+                                        }
                                     ++inventory_items_created;
                                 }
                             }
@@ -16969,6 +17036,11 @@ int main(int argc, char* argv[]) {
                                             // region completeness).
                                             materialize_asset_closure(
                                                 {{item->asset_id, 6}}, "rez");
+                                            // Its scripts go on from the state
+                                            // the object was taken with.
+                                            for (const auto rezzed_id : entity_ids)
+                                                static_cast<void>(
+                                                    start_object_scripts(rezzed_id, "rez"));
                                         }
                                     }
                                 }
@@ -17995,19 +18067,14 @@ int main(int argc, char* argv[]) {
         for (const auto entity_id : pending_crossing_scripts) {
             const auto* entity = scene.find(entity_id);
             if (!entity) continue;
-            bool started = false;
-            for (const auto& item : entity->task_inventory) {
-                if (item.asset_type != 10) continue; // LSL script asset type
-                const auto result = rez_task_script(*entity, item, true);
-                started = started || result.compiled;
-                if (!result.compiled)
-                    std::cerr << "{\"level\":\"warning\",\"message\":\"crossed script "
-                                 "not started\",\"objectId\":"
-                              << homeworldz::api::json_string(entity->object_id)
-                              << ",\"diagnostic\":"
-                              << homeworldz::api::json_string(result.diagnostic) << "}"
-                              << std::endl;
-            }
+            // Each script goes on from the instruction it had reached in the
+            // region it left, and is told the region changed.
+            const bool started = start_object_scripts(entity_id, "crossing");
+            constexpr std::int32_t changed_region = 0x100;
+            if (started)
+                static_cast<void>(falcon.dispatch_event(
+                    entity->object_id, "changed",
+                    {homeworldz::script::Value::make_integer(changed_region)}));
             // The scripted and touch flags are on the object update.
             if (started) broadcast_object_update(*entity, now);
         }
@@ -19280,6 +19347,8 @@ int main(int argc, char* argv[]) {
             for (const auto part_id : part_ids) {
                 local_ids.push_back(static_cast<std::uint32_t>(part_id));
                 if (physics_scene) static_cast<void>(physics_scene->remove(part_id));
+                if (const auto* leaving = scene.find(part_id))
+                    static_cast<void>(falcon.erase_object(leaving->object_id));
                 static_cast<void>(scene.remove(part_id));
                 temporary_expirations.erase(part_id);
             }

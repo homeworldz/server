@@ -95,6 +95,36 @@ std::optional<std::vector<std::byte>> bytes_from_hex(std::string_view value) {
     return result;
 }
 
+// A script's captured state travels as hex: it is binary, and the rest of the
+// document is text.
+constexpr std::size_t max_script_state_bytes = 256 * 1024;
+
+std::optional<std::string> script_state_from_hex(std::string_view value) {
+    if (value.size() % 2 != 0 || value.size() > max_script_state_bytes * 2) return std::nullopt;
+    std::string result(value.size() / 2, '\0');
+    for (std::size_t index = 0; index < result.size(); ++index) {
+        unsigned parsed{};
+        const auto converted = std::from_chars(
+            value.data() + index * 2, value.data() + index * 2 + 2, parsed, 16);
+        if (converted.ec != std::errc{} || converted.ptr != value.data() + index * 2 + 2)
+            return std::nullopt;
+        result[index] = static_cast<char>(parsed);
+    }
+    return result;
+}
+
+std::string script_state_to_hex(std::string_view value) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(value.size() * 2);
+    for (const auto character : value) {
+        const auto byte = static_cast<unsigned char>(character);
+        result.push_back(digits[byte >> 4]);
+        result.push_back(digits[byte & 0x0f]);
+    }
+    return result;
+}
+
 std::string json_string(std::string_view value) {
     constexpr char hex[] = "0123456789abcdef";
     std::string result{"\""};
@@ -171,6 +201,10 @@ std::optional<scene::TaskInventoryItem> parse_task_inventory_item(std::string_vi
     item.sale_type = static_cast<std::uint8_t>(*sale_type);
     item.sale_price = *sale_price;
     item.creation_date = *creation_date;
+    // Optional, and dropped when it does not read: the script then starts
+    // afresh, which is what an asset written before this field gets too.
+    if (const auto state = string_after(text, R"("scriptState":")"))
+        if (auto bytes = script_state_from_hex(*state)) item.script_state = std::move(*bytes);
     return item;
 }
 
@@ -211,7 +245,7 @@ std::optional<std::vector<scene::TaskInventoryItem>> parse_task_inventory(std::s
     return std::nullopt;
 }
 
-std::string task_inventory_json(const scene::Entity& entity) {
+std::string task_inventory_json(const scene::Entity& entity, const ScriptStateSource& script_state) {
     auto result = ",\"taskInventorySerial\":" + std::to_string(entity.task_inventory_serial) +
         ",\"taskInventory\":[";
     bool first = true;
@@ -236,12 +270,18 @@ std::string task_inventory_json(const scene::Entity& entity) {
             ",\"nextPermissions\":" + std::to_string(item.next_permissions) +
             ",\"saleType\":" + std::to_string(item.sale_type) +
             ",\"salePrice\":" + std::to_string(item.sale_price) +
-            ",\"creationDate\":" + std::to_string(item.creation_date) + '}';
+            ",\"creationDate\":" + std::to_string(item.creation_date);
+        if (script_state && item.asset_type == 10) {
+            const auto state = script_state(entity, item);
+            if (!state.empty() && state.size() <= max_script_state_bytes)
+                result += ",\"scriptState\":\"" + script_state_to_hex(state) + '"';
+        }
+        result += '}';
     }
     return result + ']';
 }
 
-std::string object_json(const scene::Entity& entity, bool child) {
+std::string object_json(const scene::Entity& entity, bool child, const ScriptStateSource& script_state) {
     constexpr char hex[] = "0123456789abcdef";
     std::string texture_entry(entity.texture_entry.size() * 2, '0');
     for (std::size_t index = 0; index < entity.texture_entry.size(); ++index) {
@@ -291,7 +331,7 @@ std::string object_json(const scene::Entity& entity, bool child) {
         ",\"groupPermissions\":" + std::to_string(entity.group_permissions) +
         ",\"everyonePermissions\":" + std::to_string(entity.everyone_permissions) +
         ",\"nextOwnerPermissions\":" + std::to_string(entity.next_owner_permissions) +
-        task_inventory_json(entity);
+        task_inventory_json(entity, script_state);
     if (!entity.sculpt_id.empty())
         result += ",\"sculptId\":" + json_string(entity.sculpt_id) +
             ",\"sculptType\":" + std::to_string(entity.sculpt_type);
@@ -634,14 +674,15 @@ std::optional<LinksetAsset> parse_linkset_asset(std::span<const std::byte> conte
 }
 
 std::string serialize_linkset_asset(
-    const scene::Entity& root, std::span<const scene::Entity* const> children) {
-    if (children.empty()) return object_json(root, false);
+    const scene::Entity& root, std::span<const scene::Entity* const> children,
+    const ScriptStateSource& script_state) {
+    if (children.empty()) return object_json(root, false, script_state);
     std::string result{"{\"format\":\"homeworldz-linkset-v1\",\"parts\":["};
-    result += object_json(root, false);
+    result += object_json(root, false, script_state);
     for (const auto* child : children) {
         if (!child || child->parent_id != root.id) continue;
         result += ',';
-        result += object_json(*child, true);
+        result += object_json(*child, true, script_state);
     }
     return result + "]}";
 }

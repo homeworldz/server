@@ -40,6 +40,9 @@ struct FalconRezResult {
     // what lets a click on the error move the cursor to it. Without a known
     // position it is the diagnostic alone.
     std::string viewer_error;
+    // Whether the script went on from a captured state instead of starting
+    // at state_entry.
+    bool restored{};
 };
 
 struct FalconTickResult {
@@ -78,10 +81,24 @@ public:
     bool resume(std::string_view object_id, std::string_view inventory_item_id,
                 std::uint64_t token, std::optional<Value> value);
 
-    FalconRezResult rez(Identity identity, std::string_view source, bool enabled);
+    // Starts a script. With `saved_state` (what capture() gave, here or in
+    // another region) the script goes on from exactly there: its globals, the
+    // instruction it had reached, a sleep or timer part-way through, and the
+    // events still waiting for it. A state that does not fit, because it was
+    // written for other source or by another bytecode ABI, is set aside and
+    // the script starts at state_entry.
+    FalconRezResult rez(Identity identity, std::string_view source, bool enabled,
+                        std::string_view saved_state = {});
+    // Everything one script would need to go on elsewhere, as opaque bytes;
+    // empty when there is no such script or its state is too large to carry.
+    // The script itself is untouched and keeps running.
+    std::string capture(std::string_view object_id, std::string_view inventory_item_id);
     bool set_enabled(std::string_view object_id, std::string_view inventory_item_id,
                      bool enabled);
     bool erase(std::string_view object_id, std::string_view inventory_item_id);
+    // Stops every script in an object that has left the scene. Returns how
+    // many there were.
+    std::size_t erase_object(std::string_view object_id);
     // Whether an object carries scripts and whether any enabled script declares a
     // touch handler. The region advertises these to Firestorm as the SCRIPTED and
     // HANDLE_TOUCH object-update flags so the viewer enables the Touch action and
